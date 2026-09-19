@@ -54,7 +54,9 @@ cd playground/minimax-code && bun perf-demo.ts --timeout-ms 600000  # MiniMax Co
   `config.yaml`（mcode 的 `baseURL` 不吃环境变量插值，与 pi 同理）。
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
-并打印两个候选后端的开销与分辨率）。
+并打印两个候选后端的开销与分辨率）。想把「CPU 与内存」混成一个可比的数（谁跑完同一部剧本烧的资源
+更少）看**统一计分**——那是本项目 2026-09-19 起采用的**标准口径**，见下面的
+「统一计分：harness 横向对比的标准口径」。
 
 ### 场景：长剧本端到端（跑完整个剧本，测时长）
 
@@ -68,7 +70,7 @@ peri 的「预测下一步输入」的，能消掉它固定 5.0s 的收尾等待
 # 七家各一份（工具名/参数形状按各家实测，见 gen-long-run.ts 的 ArgShape）
 bun run scripts/perf/gen-long-run.ts --turns 100 --out data/scenarios/long-run.json           # peri / opencode / Claude Code（Bash + command）
 bun run scripts/perf/gen-long-run.ts --turns 100 --args exec --out data/scenarios/long-run-codex.json
-bun run scripts/perf/gen-long-run.ts --turns 130 --tool bash --out data/scenarios/long-run-pi.json  # pi 要 130：压缩请求每轮多吃一条
+bun run scripts/perf/gen-long-run.ts --turns 133 --tool bash --out data/scenarios/long-run-pi.json  # pi 要 133：压缩请求每轮多吃一条
 bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --args command+description \
   --out data/scenarios/long-run-dsh.json
 bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --out data/scenarios/long-run-minimax-code.json  # mcode：bash + command，轮数 + 1 条就够
@@ -80,7 +82,7 @@ cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 `-p` 模式忽略 `--max-turns`，但真生效时默认 25 会截断剧本，习惯给 harness 带上 `--turns 100`
 （**demo / run.ts 的 `--turns` 是传给 harness 的 `--max-turns`，与生成器同名的那个「轮数」不同义**）。
 想量「与轮数无关的固定成本」用 `--turns 1 --body-kb 0` 生成探针剧本（它同时含启动与收尾，
-两边各占多少看摘要里的「时长分段」）。本次六家的分段读数差异极大——启动 0.2~2.3s、收尾 0.0~10.1s，
+两边各占多少看摘要里的「时长分段」）。最近一批六家的分段读数差异极大——启动 0.1~1.3s、收尾 0.0~10.0s，
 见 `docs/perf-compare.md`。
 摘要里的**「时长分段」**把它拆成三段——启动（起进程 → 首个请求）、运转（首 → 末次请求）、
 收尾（末次请求 → 退出）——实测很值钱：**peri / Codex 的固定成本九成是收尾**（Codex 10.1s 卡在
@@ -88,8 +90,8 @@ cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 掉到 0.4s。peri 曾是固定 5.0s，根因是等一个 Prediction 后台任务，默认剧本的空白收尾条已把它
 消到 ~0.05s，见「已知限制与坑」）。实测数据与验证过程见 `docs/perf-compare.md`。
 注意**「剧本轮数」与「harness 实际执行的轮数」可能不等**：各家自己的辅助请求（标题生成、上下文
-压缩）也消费剧本条目，100 条剧本下 opencode / dsh 实测只跑到 99 轮、pi 要 130 条才够
-跑满 100 轮（数法：`mock.log` 里带工具结果的请求有几条）。生成器写的条目数是 `轮数 + 2`
+压缩）也消费剧本条目，100 条剧本下 opencode / dsh 实测只跑到 99 轮、pi 要 135 条（`--turns 133`）
+才够跑满 100 轮（数法：`mock.log` 里带工具结果的请求有几条）。生成器写的条目数是 `轮数 + 2`
 （两条收尾，见上），peri 那条「预测下一步输入」就落在最后那条空白上。
 
 产物落在**一次运行一个目录**里：`data/runs/<harness>/<runId>/`（`--out-dir` 可改，`data/` 已在
@@ -99,9 +101,9 @@ cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 
 | 文件 | 内容 |
 | --- | --- |
-| `run.json` | **机器接口**：身份 / 剧本（含 sha256）/ mock 与采样参数 / 宿主信息 / 时间线（含首个与末次请求的绝对时刻）/ 时长分段 / 摘要统计 / 退出码 / 产物清单。开跑先写一份 `status:"running"`，结束时原子替换补全；读取端只认它 |
-| `perf.log` | 人读时间线（含注入的环境变量）+ 每秒一行采样摘要 + 末尾总摘要（含「时长分段」启动 / 运转 / 收尾） |
-| `samples.csv` | 原始采样：`ts,elapsed_ms,cpu_pct,rss_kb,tree_cpu_pct,tree_rss_kb,procs` |
+| `run.json` | **机器接口**：身份 / 剧本（含 sha256）/ mock 与采样参数 / 宿主信息 / 时间线（含首个与末次请求的绝对时刻）/ 时长分段 / 摘要统计 / **统一计分 `cost`** / 退出码 / 产物清单。开跑先写一份 `status:"running"`，结束时原子替换补全；读取端只认它 |
+| `perf.log` | 人读时间线（含注入的环境变量）+ 每秒一行采样摘要 + 末尾总摘要（含「时长分段」启动 / 运转 / 收尾与「统一计分」那一行） |
+| `samples.csv` | 原始采样：`ts,elapsed_ms,cpu_pct,rss_kb,tree_cpu_pct,tree_rss_kb,procs,child_cpu_pct`（列**只能往后加**，读取端按表头名取列） |
 | `harness.log` | harness 的 stdout/stderr |
 | `mock.log` | mock server 的输出（含每次请求的摘要行） |
 
@@ -121,7 +123,60 @@ cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
   换算（本机 1 tick ≈ 41.67ns），否则 CPU 会低估 41.7 倍；
 - RSS 用 `ri_resident_size`（字节）；`--no-tree` 可关掉后代进程统计（默认含 harness 拉起的 MCP 子进程，
   RSS 会因此偏高，摘要里主进程与进程树分开列）；
+- **短命子进程靠另一条通道兜**：进程树每隔 `treeRefreshMs`（默认 2000ms）才刷一次 pid 集合，
+  harness 每轮工具调用拉起的 shell 只活几十毫秒，实测默认口径只捕获到它的 33%。这些都是**被回收**
+  的子进程，其 CPU 会累加进父进程 rusage 的 `ri_child_user_time` / `ri_child_system_time`
+  （实测钉死偏移 96/104，**单位同样是 Mach tick**），差分即得 `child_cpu_pct` 列。
+  它与 `tree_cpu_pct` 是两套互补的下界、**可能重叠，不能相加**，计分时取两者较大者；
 - 采样数据先进内存、每 1s 落盘一次，避免每拍同步 I/O 干扰被测对象。
+
+### 统一计分：harness 横向对比的**标准口径**（2026-09-19 起采用）
+
+**以后比「谁更省」一律看 CU，不再拿单个 CPU 均值或 RSS 峰值说事**——那两个数答不了
+「跑完同一部剧本烧掉多少资源」。系数借阿里云函数计算（FC）的 CU（Compute Unit）折算表
+（2026-09-19 核对官方计费页；FC 的口径是「资源使用量 × 转换系数」再求和）：
+
+```
+CU    = 1.0 × 核·秒 + 0.15 × GB·秒      （FC 弹性实例：vCPU 1.0 CU/(vCPU·秒)、内存 0.15 CU/(GB·秒)）
+核·秒 = ∫(tree_cpu_pct / 100) dt         GB·秒 = ∫(tree_rss_kb / 2^20) dt      ← 时间积分，含时长
+分数  = 100 × 本批次最小 CU / 本次 CU    （最优 100 分；**只在同一批次内可比**，跨批次只比 CU）
+```
+
+口径、系数与四处刻意偏差的完整说明只在 **`scripts/perf/score.ts` 的文件头**，别处不许重写一份。
+
+那个 `∫` 是**逐拍累加**（100ms 一拍，按每拍实测间隔差分）：`Σ(每拍资源率 × 该拍间隔)`，
+不是「均值 × 时长」那种估法。报告与页面里的三段（启动 / 运转 / 收尾）是同一口径的**分段积分**，
+只用来回答「钱花在哪一段」：三列之和 = 总分 − 尾部补齐（那 ~0.1s 只进总分，六家实测逐笔成立），
+**不是三段相加**；后代 CPU 的取大也只在整段上取一次，逐段取会在段边界重复计。
+
+**必须守住的几条**（改任何一条都等于换口径，要在 `docs/perf-compare.md` 里写明并重跑全批次）：
+
+- **系数不许微调**，尤其不许为了「让排名好看」动那三个数（`CU_COEFFICIENTS`）；
+- **口径固定进程树**（含 harness 拉起的后代），不用主进程——Codex 主进程 CPU 近 0，
+  真干活的是它 spawn 的原生二进制；
+- **后代 CPU 取 `max(采样到的后代, 已回收子进程计数器)`，不许相加**：两条路都是下界且可能重叠
+  （被看见过的子进程之后被回收，同一段 CPU 会在计数器里再出现一次，实测相加多算 136%）；
+- **时长必须在公式里**（就是上面那个积分），不许退化成「平均 CPU%」之类的无量纲量；
+- **末拍 → harness 退出的空档必须补**（`timing.harnessExitedAtMs` 实测，按末尾三拍速率外推，
+  上限 500ms）；补不了（老产物没记这个时刻）就**明确标下界**，不许静默按 0 混进去；
+- **调用次数项单列**（`callCu`，0.0075 CU/次）**不计入总分**：请求数由剧本决定，不是 harness 的开销；
+- **`samples.csv` 的列只能往后加**，读取端按表头名取列；缺 `child_cpu_pct` 的老产物要在输出里
+  标「进程树口径偏低」（`childColumnPresent: false`），跟数据一起走，不许悄悄按 0 处理。
+
+**出口必须同源**（三处数字对不上就是 bug）：每次运行落 `run.json` 的 `cost` 与 `perf.log` 末尾那行；
+`gen-chart-data.ts` 从 `samples.csv` **现算**（不读 `cost`，这样老产物也同口径可比）→
+`docs/perf-chart.html` 的计分表与 `docs/perf-compare.md` 的计分章节都只显示，不自己记公式。
+报告里给 CU 必须同时给「批内相对」与「下界标记」的说明，`gen-chart-data.ts` 的输出会替你把
+这两类警告打出来。
+
+**新批次要求**：重跑时用当前采样器（`child_cpu_pct` 列是新的），别再拿老产物出排名——
+老批次的 CU 是下界（补不上尾部空档、也漏掉短命子进程，实测 pi 差 ~9%）。
+
+**一批怎么跑**（分数是批内相对值，把不同批次混进一张表就废了）：六家**串行**、每家 **3 次**，
+读数取**端到端时长居中的那一次**（`gen-chart-data.ts --window 3` 是同一口径，`--pick <runId>` 可显式
+点名）；跑批统一带 `--label <批次名>` 便于按批筛产物（最近一批：六家 × 3 轮串行、3 分 12 秒跑完，
+`--label score-batch`）。**跨批次只比 CU**，别比分数、也别比绝对时长——同一台机器、同一份剧本，
+load 2.9 时 peri 是 2.2s，load 10~16 时要 13.2s。
 
 ## 目录结构
 
@@ -138,7 +193,8 @@ src/types.ts    OpenAI 协议类型
 src/*.test.ts   bun:test：脚本解析、游标、SSE 序列、各协议渲染、路由集成
 scripts/perf/run.ts        压测入口：起 mock、起 harness、采样、写记录、出摘要
 scripts/perf/config.ts     压测参数解析（parseArgs）；默认 harness 取 PATH 里的 peri
-scripts/perf/sampler.ts    采样：rusage/ps 后端、差分换算、进程树、CSV 与摘要
+scripts/perf/sampler.ts    采样：rusage/ps 后端、差分换算、进程树、已回收子进程计数器、CSV 与摘要
+scripts/perf/score.ts      统一计分：阿里云 FC 的 CU 口径（核·秒 / GB·秒 → CU → 百分制相对分）
 scripts/perf/verify.ts     采样口径验证实验（已知负载 + 开销 + 后端对比）
 scripts/perf/gen-long-run.ts  生成「长剧本」压测剧本（N 轮正文 + 工具调用，按各家的工具形状）
 scripts/perf/gen-chart-data.ts 汇总长剧本产物 → docs/perf-chart.html 用的图表数据
@@ -147,7 +203,7 @@ scripts/perf/run-meta.ts       run.json 的 schema 与原子写入
 scripts/perf/legacy-run.ts     老布局（平铺产物）的解析：迁移与读取端兼容用，过渡件
 scripts/perf/migrate-layout.ts 老布局 → 新布局的幂等迁移
 scripts/perf/markdown.ts      剧本正文生成（长剧本每轮的 markdown 从这里来）
-scripts/perf/*.test.ts     bun:test：差分换算、参数解析、端到端（真 mock + 假 harness）
+scripts/perf/*.test.ts     bun:test：差分换算、参数解析、计分公式、端到端（真 mock + 假 harness）
 script.json             默认演示脚本（工具调用 + 中文回答）
 scripts/peri-demo.json  按 peri 的消费规律编排的演示脚本
 playground/<harness>/   各自 harness 的运行沙盒 + perf-demo.ts 入口 + 剧本（按需）
@@ -317,8 +373,9 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
   `gen-long-run.ts --tool bash`（默认 `--args command`）生成；实测 `bash` 工具**没有**
   `description` 那种必填参数，也没有 dsh 的审批等待；
 - **消费规律是七家里最干净的**：100 轮剧本实收 **101 条 = 100 轮 + 尾部收尾**，没有标题生成、
-  没有上下文压缩、没有预测请求（对比：pi 要 130 条、dsh 的标题请求会吃第 2 条）——实测 3 次
-  端到端 19.3~19.5s（启动 1.2~1.3s · 运转 17.9~18.0s · 收尾 0.2~0.3s）、CU 21.1~21.3；
+  没有上下文压缩、没有预测请求（对比：pi 要 135 条、dsh 的标题请求会吃第 2 条）——实测 3 次
+  端到端 19.6~20.2s（启动 1.3s · 运转 18.2s · 收尾 0.25s）、CU 21.29~22.06（**已并入常规批次**，
+  与其余五家同批测得，见 `docs/perf-compare.md`）；
 - 启动时会刷新模型目录（`models.dev/api.json` → `filecdn.minimax.chat`），落成沙盒里
   4.7MB 的 `cache/models-dev-catalog.json`（`updatedAt` 每次运行都变）——它不经过 mock，
   但会给启动段带一点外部网络成分，跨机器比时长时要留意；
@@ -388,4 +445,6 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - `usage` 未声明时按字符估算（CJK 1 token/字，其余 4 字符 1 token），要精确值就在条目里显式写；
 - 不校验 `Authorization`；`/v1/models` 返回配置的模型名；`choices` 恒为 1；
 - 脚本消耗比预期快时，先看 mock 的访问日志确认是哪类请求在取号；
+- **harness 的「谁更省」以 CU 为准**（统一计分，标准口径见上）：写报告、出图表、做排名一律引用
+  CU 与它的下界标记，不要另起一套指标；口径只在 `scripts/perf/score.ts` 一处；
 - 改动后跑 `bun test` + `bun run typecheck`；中文注释与文档。

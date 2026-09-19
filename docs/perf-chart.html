@@ -148,11 +148,38 @@
             ul.notes li {
                 margin-bottom: 5px;
             }
+            /* 计分公式：等宽、可滚，长表达式不撑破面板。 */
+            .formula {
+                margin: 0 0 12px;
+                padding: 10px 12px;
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                background: #f7f9fb;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                font-size: 12.5px;
+                line-height: 1.7;
+                overflow-x: auto;
+                white-space: pre;
+            }
+            .formula .from {
+                color: var(--muted);
+            }
+            .score-cell {
+                font-weight: 600;
+                font-variant-numeric: tabular-nums;
+            }
+            .warn {
+                color: #a4531a;
+            }
             .panel {
                 padding: 14px 16px;
                 border: 1px solid var(--line);
                 border-radius: 10px;
                 background: #fff;
+            }
+            /* 计分表列多（10 列、时间列不给折行），窄一点的屏上允许横向滚动，别把面板撑破。 */
+            .scroll-x {
+                overflow-x: auto;
             }
             #error {
                 padding: 14px 16px;
@@ -174,12 +201,14 @@
         </style>
     </head>
     <body>
-        <h1>harness 压测曲线 · 长剧本</h1>
+        <h1>harness 压测 · 长剧本（统一计分 + 逐拍曲线）</h1>
         <p class="sub">
-            长剧本：100 轮 × 约 4KB 正文 + 每轮一次工具调用，<code>--exhausted stop</code> 跑到自然
-            结束；x 为相对时间（采样起点算 0），y 由按钮切换，曲线默认按 1s 窗口平滑（可切回原始）。
-            每条线的峰值标了 harness 名，<strong>内存的纵轴是反的</strong>（占用越大越靠下）。
-            数据来自 <code>data/perf-chart.json</code>，每个 harness 一条线。
+            长剧本：100 轮 × 约 4KB 正文 + 每轮一次工具调用，<code>--exhausted stop</code> 跑到自然结束。
+            <strong>开头是统一计分</strong>——按阿里云 FC 的 CU 系数（1.0×核·秒 + 0.15×GB·秒）把 CPU
+            与内存混成一个数，比「谁更省」看它（口径与系数只在 <code>scripts/perf/score.ts</code> 一处）。
+            下半部分是<strong>逐拍曲线</strong>：x 为相对时间（采样起点算 0），y 由按钮切换，曲线默认按
+            1s 窗口平滑（可切回原始）；每条线的峰值标了 harness 名，<strong>内存的纵轴是反的</strong>
+            （占用越大越靠下）。数据来自 <code>data/perf-chart.json</code>。
         </p>
 
         <div id="error" hidden>
@@ -189,6 +218,22 @@
         </div>
 
         <div id="app" hidden>
+            <!-- 统一计分放在最前：这是本项目的标准口径（谁更省看 CU），打开页面先看到它。 -->
+            <div id="page-scores">
+                <h2>统一计分（本项目的标准口径）：把 CPU 与内存混成一个数</h2>
+                <div class="panel">
+                    <div id="formula" class="formula"></div>
+                    <div class="scroll-x">
+                        <table id="scores">
+                            <thead></thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                    <p class="sub" id="score-note" style="margin: 10px 0 0"></p>
+                </div>
+            </div>
+
+            <h2>逐拍曲线：CPU 与内存怎么随时间走</h2>
             <div class="controls">
                 <div class="group" id="metric-buttons" role="group" aria-label="Y 轴指标">
                     <button data-metric="rss" class="active">内存 RSS</button>
@@ -227,14 +272,13 @@
             <div class="panel">
                 <ul class="notes">
                     <li>
-                        <strong>opencode 已退出排名</strong>（曲线默认收起，点图例可展开）：它是本批次里唯一在
-                        各项指标上都远落后的一家——端到端 38.6s（其余五家 1.5~19.9s，是最快的 pi 1.5s 的
-                        25 倍多）、进程树 CPU 均值 69.9% / 峰值 229.3%（两项都最高）、进程树 RSS 均值
-                        798.9MB / 峰值 943.0MB（第二高的 Claude Code 才 274.9 / 321.9MB，差 2.9 倍）；按
-                        「端到端 × CPU 均值」估整段消耗约 27 核·秒，其余五家 1.0~5.0 核·秒。继续混在榜单里
-                        只会拉长横轴、把其余五家压成一堆，故<strong>后续批次不再跑它、不计入排名</strong>；代码
-                        与沙盒保留在 <code>playground/opencode/</code>，历史读数也照旧留在图里（虚线那条）。
-                        详见 <code>docs/perf-compare.md</code>。
+                        <strong>opencode 已退出排名，这张图上没有它</strong>：它在各项指标上都远落后于其余
+                        各家（端到端 38.6s、进程树 CPU 均值 69.9% / 峰值 229.3%、RSS 均值 798.9MB / 峰值
+                        943.0MB，按「端到端 × CPU 均值」估整段约 27 核·秒 vs 其余 1.0~5.0），继续混在榜单里
+                        只会拉长横轴、把其余各家压成一堆，故<strong>常规批次不再跑它</strong>；生成图表数据时
+                        用 <code>--exclude opencode</code> 把它留在 <code>data/runs/</code> 里的历史产物挡在外面
+                        （想复测就单跑一次、生成时不加这个开关，页面会给它画虚线并默认收起）。
+                        代码与沙盒保留在 <code>playground/opencode/</code>，理由见 <code>docs/perf-compare.md</code>。
                     </li>
                     <li>
                         <strong>一个 harness 一条线</strong>：线的右端就是它退出的时刻；各家的端到端
@@ -242,22 +286,22 @@
                     </li>
                     <li>
                         <strong>虚线是「首个请求」与「末次请求」</strong>（mock 侧记的时刻挪到采样时间轴上）。
-                        虚线右边曲线还在、却几乎零 CPU，那就是<strong>收尾等待</strong>——peri 固定等 5.1s、
-                        Codex 固定等 10.1s（退出时向 <code>chatgpt.com</code> 发请求、本机 DNS 污染导致超时），
-                        与轮数无关；其余各家的收尾都在 0.2s 以内。详见
-                        <code>docs/perf-compare.md</code>。
+                        虚线右边曲线还在、却几乎零 CPU，那就是<strong>收尾等待</strong>——本批次里只剩 Codex
+                        的 10.0s（退出时向 <code>chatgpt.com</code> 发请求、本机 DNS 污染导致超时），
+                        与轮数无关；peri 那个固定 5.0s 的收尾等待已被剧本尾部的空白收尾条消掉（本批收尾
+                        0.09s，见 <code>docs/perf-compare.md</code>），其余各家的收尾都在 0.3s 以内。
                     </li>
                     <li>
                         <strong>请求数 ≠ 轮数</strong>：mock 请求里混着各家自己的辅助请求——peri 的
-                        「预测下一步输入」、opencode / dsh 的标题生成、pi 的上下文压缩总结。
-                        辅助请求同样消费剧本条目，所以 100 条剧本下 opencode / dsh 实际只执行了
-                        99 轮工具调用；<strong>pi 用的是 130 条剧本</strong>（它的压缩从第 70 轮起每轮多吃
-                        一条），132 次请求里 100 次是主循环、30 次是压缩总结。
+                        「预测下一步输入」（吃剧本尾部那条空白、不占轮次）、dsh 的标题生成（吃掉第 2 条
+                        剧本）、pi 的上下文压缩总结（34 条）。辅助请求同样消费剧本条目，所以 100 条剧本下
+                        dsh 实际只执行了 99 轮工具调用；<strong>pi 为此用 133 轮的剧本（135 条）</strong>，
+                        135 次请求 = 100 轮主循环 + 34 条压缩总结 + 1 条初始。
                     </li>
                     <li>
                         <strong>pi 的曲线中途会「变轻」</strong>：压缩之后它回传的历史被压成摘要
-                        （请求体从 <code>messages=200</code> 量级压回 62 条），所以后半程的请求体与内存
-                        不再随轮次增长——这是 pi 自己把上下文管掉了，不是漏跑。
+                        （本批消息数最多到 <code>messages=202</code>，压缩请求 34 条），所以请求体与内存
+                        不像别家那样一路涨——这是 pi 自己把上下文管掉了，不是漏跑。
                     </li>
                     <li>
                         <strong>口径默认「进程树」</strong>：Codex 的 CLI 只是 Node 启动器
@@ -271,10 +315,11 @@
                     <li>
                         <strong>曲线默认按 1s 窗口做滑动平均</strong>（上面可切原始 / 0.5s / 1s / 2s）。
                         100ms 采样下多线程 harness 的 CPU 本就是锯齿：一轮里「拼请求、解析上下文」突发几拍，
-                        等 mock 回包时几乎归零——本批数据里相邻两拍跳 30 个百分点以上的有 opencode 186 处、
-                        dsh 25 处、Claude Code 8 处，<strong>那是真实读数，不是采样抖动</strong>；换 1s 窗口
-                        后这些跳变全部降到 0 处（0.5s 窗口还剩 opencode 3 处）。所以平滑放在看图侧、不动原始
-                        数据：表格里的均值 / 峰值与 <code>samples.csv</code> 始终是原始值，想看毛刺切回「原始」。
+                        等 mock 回包时几乎归零——本批数据里相邻两拍跳 30 个百分点以上的有 MiniMax Code
+                        14 处、Claude Code 4 处、dsh 3 处、pi 1 处（peri / Codex 各 0 处），
+                        <strong>那是真实读数，不是采样抖动</strong>；换 1s 窗口后这些跳变全部降到 0 处
+                        （0.5s 窗口同样为 0）。所以平滑放在看图侧、不动原始数据：表格里的均值 / 峰值与
+                        <code>samples.csv</code> 始终是原始值，想看毛刺切回「原始」。
                     </li>
                     <li>
                         <strong>每条线的峰值上标了 harness 名</strong>（CPU 与内存都标）：圆点就是该家曲线的
@@ -334,6 +379,7 @@
                 codex: "#12876a",
                 pi: "#7a4fd0",
                 dsh: "#b23a8a",
+                "minimax-code": "#0f8ab5",
             };
             const PALETTE = Object.values(COLORS);
 
@@ -647,9 +693,128 @@
                     .join("");
             }
 
+            /**
+             * 计分块：公式与系数全部来自 payload.scoreFormula（口径只在 scripts/perf/score.ts
+             * 一处定义），页面只负责显示 + 把每个 harness 的账摊开。
+             */
+            function renderScores() {
+                const box = document.getElementById("formula");
+                const table = document.getElementById("scores");
+                const note = document.getElementById("score-note");
+                const formula = payload.scoreFormula;
+                if (formula === undefined || !payload.runs.some((run) => run.score !== undefined)) {
+                    // 老 JSON：不硬撑，直接说清怎么办。
+                    box.textContent =
+                        "这份 data/perf-chart.json 里没有计分块（生成器版本较老）。\n" +
+                        "重跑一次 bun run scripts/perf/gen-chart-data.ts 就会带上统一计分。";
+                    table.hidden = true;
+                    note.textContent = "";
+                    return;
+                }
+                table.hidden = false;
+                const c = formula.coefficients;
+                box.innerHTML = [
+                    `CU使用量 = ∑(资源使用量 × CU转换系数)     <span class="from">← ${formula.source}</span>`,
+                    `本图 CU  = ${c.vCpuSecond.toFixed(1)} × 核·秒 + ${c.gbSecond} × GB·秒     <span class="from">（范围：${formula.scope}）</span>`,
+                    `  核·秒 = ∫(CPU% / 100) dt    <span class="from">CPU 是「单核 100%」口径，多线程可 &gt;100%</span>`,
+                    `  GB·秒 = ∫(RSS / 1GB) dt     <span class="from">内存取实测 RSS；FC 用的是「申报规格 × 时长」</span>`,
+                    `  分数  = ${formula.score}`,
+                    `不计入总分: 调用次数 × ${c.callPerRequest} CU/次     <span class="from">请求数由剧本决定，不是 harness 的开销</span>`,
+                    `与 FC 的偏差: ${formula.deviations.join("；")}`,
+                ].join("\n");
+
+                const columns = [
+                    "harness",
+                    "CU",
+                    "分数",
+                    "调用项 CU（不计入）",
+                    "核·秒",
+                    "GB·秒",
+                    "内存项占 CU",
+                    "后代 CPU",
+                    "尾部补齐",
+                    "启动 / 运转 / 收尾 CU（各自积分）",
+                ];
+                const num = (value, digits) => value.toFixed(digits);
+                // 这一节是页面开头，名次得一眼看出来：按 CU 从省到贵排。
+                // 颜色仍按 payload 里的原始次序取，排序不会换色。
+                const colors = new Map();
+                payload.runs.forEach((run, order) => colors.set(run.id, colorOf(run, order)));
+                const ranked = [...payload.runs].sort(
+                    (a, b) => (a.score?.cu ?? Infinity) - (b.score?.cu ?? Infinity),
+                );
+                const rows = ranked.map((run) => {
+                    const s = run.score;
+                    const segments =
+                        s.segments === null
+                            ? "—"
+                            : `${num(s.segments.startup.cu, 3)} / ${num(s.segments.span.cu, 3)} / ${num(s.segments.tail.cu, 3)}`;
+                    const child =
+                        s.childCpuSeconds > 0
+                            ? `${num(s.childCpuSeconds, 3)}（${s.childCpuFrom === "counter" ? "已回收计数器" : "采样到"}）`
+                            : "0";
+                    const share = s.cu > 0 ? `${((s.memoryCu / s.cu) * 100).toFixed(0)}%` : "—";
+                    const tail =
+                        num(s.tailAppliedMs, 0) +
+                        "ms" +
+                        (s.tailGapKnown ? "" : ` <span class="warn">下界</span>`);
+                    return [
+                        `<span class="swatch" style="background:${colors.get(run.id)}"></span>${run.name}` +
+                            (EXCLUDED.has(run.id)
+                                ? `<span style="color:var(--muted)"> · 已退出排名</span>`
+                                : ""),
+                        num(s.cu, 3),
+                        `<span class="score-cell">${num(s.score, 1)}</span>`,
+                        num(s.callCu, 3),
+                        num(s.cpuSeconds, 3),
+                        num(s.gbSeconds, 3),
+                        share,
+                        child,
+                        tail,
+                        segments,
+                    ];
+                });
+
+                table.querySelector("thead").innerHTML =
+                    `<tr>${columns.map((name) => `<th>${name}</th>`).join("")}</tr>`;
+                table.querySelector("tbody").innerHTML = rows
+                    .map((cells) => `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`)
+                    .join("");
+
+                const warnings = [];
+                const noChild = payload.runs.filter((run) => !run.score.childColumnPresent);
+                if (noChild.length > 0) {
+                    warnings.push(
+                        `这几次运行的采样没有 child_cpu_pct 列（进程树口径偏低）：` +
+                            noChild.map((run) => run.name).join("、") +
+                            "——重跑一轮就有",
+                    );
+                }
+                const noTail = payload.runs.filter((run) => !run.score.tailGapKnown);
+                if (noTail.length > 0) {
+                    warnings.push(
+                        `这几次运行没记 harness 退出时刻，末拍 → 退出的空档补不上，CU 是下界：` +
+                            noTail.map((run) => run.name).join("、"),
+                    );
+                }
+                note.innerHTML =
+                    "比「谁更省」看这一列（本项目的标准口径，口径与系数只在 scripts/perf/score.ts 一处）。" +
+                    "分数 = 100 × 本批次最小 CU / 本次 CU（最优 100 分），<strong>只在同一批次内可比</strong>" +
+                    "——机器状态、后台负载、剧本都跟着批次走。计分固定用<strong>进程树</strong>口径" +
+                    "（不受上面「主进程 / 进程树」按钮影响），也不含磁盘项与 GPU 项；" +
+                    "「调用项 CU」是请求数 × 0.0075（FC 的调用次数系数）折出来的，<strong>不计入总分</strong>" +
+                    "——请求数由剧本决定，不是 harness 的开销。" +
+                    "总分是<strong>逐拍累加</strong>（每拍资源率 × 该拍实测间隔），最后那列的三段是同一口径的" +
+                    "<strong>分段积分</strong>：三列之和 = 总分 − 尾部补齐（那 ~0.1s 只进总分），所以别把三段相加当总分。" +
+                    (warnings.length > 0
+                        ? `<br><span class="warn">⚠ ${warnings.join("；")}</span>`
+                        : "");
+            }
+
             function renderAll() {
                 renderChart();
                 renderSummary();
+                renderScores();
             }
 
             function wireControls() {
