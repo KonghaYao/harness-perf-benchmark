@@ -83,21 +83,24 @@ cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 `-p` 模式忽略 `--max-turns`，但真生效时默认 25 会截断剧本，习惯给 harness 带上 `--turns 100`
 （**demo / run.ts 的 `--turns` 是传给 harness 的 `--max-turns`，与生成器同名的那个「轮数」不同义**）。
 想量「与轮数无关的固定成本」用 `--turns 1 --body-kb 0` 生成探针剧本（它同时含启动与收尾，
-两边各占多少看摘要里的「时长分段」）。最近一批六家的分段读数差异极大——启动 0.1~1.3s、收尾 0.0~10.0s，
-见 `docs/perf-compare.md`。
+两边各占多少看摘要里的「时长分段」）。最近一批（第五批 `codex-proxy-fix`）六家的分段是
+**启动 0.10~1.22s、收尾 0.02~0.23s**——两笔大的固定成本（Codex 10.1s、peri 5.0s）本批都已消掉，
+时间几乎全在运转段，见 `docs/perf-compare.md`。
 摘要里的**「时长分段」**把它拆成三段——启动（起进程 → 首个请求）、运转（首 → 末次请求）、
-收尾（末次请求 → 退出）——实测很值钱：**peri / Codex 的固定成本九成是收尾**（Codex 10.1s 卡在
-退出时向 `chatgpt.com` 发的一个请求上，本机 DNS 污染导致 10s 超时；把 HTTPS 出口指向死端口后
-掉到 0.4s。peri 曾是固定 5.0s，根因是等一个 Prediction 后台任务，默认剧本的空白收尾条已把它
-消到 ~0.05s，见「已知限制与坑」）。实测数据与验证过程见 `docs/perf-compare.md`。
+收尾（末次请求 → 退出）——实测很值钱：**两笔最大的固定成本都出在收尾段，且都已消掉**——Codex 的
+10.1s（退出时向 `chatgpt.com` 发请求，本机 DNS 污染导致 10s 超时；demo 把 HTTPS 出口指向死端口后
+掉到 0.04s）与 peri 的 5.0s（等一个 Prediction 后台任务，默认剧本的空白收尾条已把它消到 0.07s）；
+Codex 那笔还顺带说明了「收尾零 CPU 的空等照样花钱」——它顶着约 160MB 内存挂了 10s，1:1 口径下
+值 1.76 CU（占当时总 CU 的 53%），修完名次从第四升到第二。见「已知限制与坑」与 `docs/perf-compare.md`。
 注意**「剧本轮数」与「harness 实际执行的轮数」可能不等**：各家自己的辅助请求（标题生成、上下文
 压缩）也消费剧本条目，100 条剧本下 opencode / dsh 实测只跑到 99 轮、pi 要 135 条（`--turns 133`）
 才够跑满 100 轮（数法：`mock.log` 里带工具结果的请求有几条）。生成器写的条目数是 `轮数 + 2`
 （两条收尾，见上），peri 那条「预测下一步输入」就落在最后那条空白上。
 
 产物落在**一次运行一个目录**里：`data/runs/<harness>/<runId>/`（`--out-dir` 可改，`data/` 已在
-.gitignore 里），`<harness>` 是 `peri` / `opencode` / `claude-code` / `codex` / `pi` / `dsh`
-之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断，见 `scripts/perf/harness-id.ts`），
+.gitignore 里），`<harness>` 是 `peri` / `opencode` / `claude-code` / `codex` / `pi` / `dsh` /
+`minimax-code` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
+`claude-code`、`mcode` → `minimax-code`，见 `scripts/perf/harness-id.ts`），
 `<runId>` 形如 `20260919-140136`（同秒第二次运行加 `-2` 后缀）：
 
 | 文件 | 内容 |
@@ -198,8 +201,8 @@ CU    = 1.0 × 核·秒 + 1.0 × GB·秒        （结构借自 FC；**系数是
 
 **一批怎么跑**（分数是批内相对值，把不同批次混进一张表就废了）：各家**串行**、每家 **3 次**，
 读数取**端到端时长居中的那一次**（`gen-chart-data.ts --window 3` 是同一口径，`--pick <runId>` 可显式
-点名）；跑批统一带 `--label <批次名>` 便于按批筛产物（最近一批：六家 × 3 轮串行、3 分 33 秒跑完，
-`--label cu-1to1`）。**跨批次只比 CU**，别比分数、也别比绝对时长——同一台机器、同一份剧本，
+点名）；跑批统一带 `--label <批次名>` 便于按批筛产物（最近一批：六家 × 3 轮串行、2 分 50 秒跑完，
+`--label codex-proxy-fix`）。**跨批次只比 CU**，别比分数、也别比绝对时长——同一台机器、同一份剧本，
 load 在 4~17 之间波动就能让 MiniMax Code 从 19.8s 变 34.7s；负载尖峰撞上哪一家，哪一家的读数
 就偏保守（重跑比硬解释划算）。
 
@@ -448,8 +451,12 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
   响应则 `execute_prediction` 在拿锁前就返回空动作，5s 立刻消失（实测收尾 5.0s → 0.05s、端到端
   7.7s → 2.6s）——长剧本生成器据此固定带两条收尾条（见上）；要复现旧读数就把尾部那条空白删掉。
   根治得靠 peri 侧（给那把锁加超时，或关闭时拒绝 prediction 写 session）；
-- **Codex 退出固定等 ~10.1s**：退出时向 `https://chatgpt.com/backend-api/plugins/featured` 发请求，
-  本机 DNS 污染 → 连接停在 SYN_SENT → 10s 超时；`HTTPS_PROXY` 指死端口可把这 10s 消掉；
+- **Codex 退出固定等 ~10.1s：demo 已规避**：退出时向 `https://chatgpt.com/backend-api/plugins/featured` 发请求，
+  本机 DNS 污染 → 连接停在 SYN_SENT → 10s 超时。demo 仅对 harness 及其子进程注入
+  `HTTPS_PROXY` / `https_proxy=http://127.0.0.1:9`，让外部 HTTPS 快速失败（本机 9 端口须未监听），
+  并覆盖 `NO_PROXY` / `no_proxy` 为本地地址以保证 mock 直连；不改全局代理或 Codex 配置。
+  三轮工具调用实测收尾 10.2s → 0.1s，4 个请求、退出码 0；`features.plugins=false` 单独无效。
+  沙盒不适用于依赖外部 HTTPS 的剧本；历史排名不回填，新排名须重跑完整批次；
 - Codex 每次启动会起一条 `git fetch https://github.com/openai/plugins.git`（curated 插件同步），
   本机传不完，Codex 退出后**变孤儿进程继续挂着**并往 `$CODEX_HOME/.tmp/` 攒目录；
   压测后 `ps | grep plugins-clone` 清理一下，免得干扰后续读数；

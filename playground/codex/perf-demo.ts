@@ -48,12 +48,20 @@ function prepareSandbox(): void {
 /**
  * 沙盒环境变量（走 runPerf 的 deps.harnessEnv）：
  * - CODEX_HOME：配置与状态都指到沙盒；
+ * - HTTPS 代理指向本机拒绝连接端口，让插件预热/同步快速失败，避免退出等外网超时；
+ *   Codex 0.155.1 的 features.plugins=false 仍会等约 10s。仅影响本次 harness 及其子进程，
+ *   不改系统代理；本地 HTTP mock 显式绕过代理。此沙盒不适用于需要外部 HTTPS 的剧本。
  * - LLM_MOCK_API_KEY：沙盒 config.toml 里 env_key 指的就是它，mock 不校验鉴权，
  *   但变量缺了 codex 会直接报「Missing environment variable」。
  */
 function sandboxEnv(): Record<string, string> {
     return {
         CODEX_HOME: SANDBOX,
+        HTTPS_PROXY: "http://127.0.0.1:9",
+        https_proxy: "http://127.0.0.1:9",
+        // 同时覆盖大小写，避免继承的 NO_PROXY=* 或小写代理让外网绕过快速失败路径。
+        NO_PROXY: "127.0.0.1,localhost,::1",
+        no_proxy: "127.0.0.1,localhost,::1",
         LLM_MOCK_API_KEY: "mock-key",
     };
 }

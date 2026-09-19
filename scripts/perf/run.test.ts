@@ -135,6 +135,45 @@ async function waitGone(pids: number[], timeoutMs = 2000): Promise<number[]> {
 }
 
 describe("runPerf 端到端", () => {
+    it("Codex demo 仅向 harness 注入快速失败代理，并覆盖继承的绕过规则", async () => {
+        const dir = tempDir();
+        const harness = join(dir, "fake-codex");
+        writeFileSync(harness, `#!${process.execPath}
+            const env = process.env;
+            const ok = env.HTTPS_PROXY === "http://127.0.0.1:9"
+                && env.https_proxy === env.HTTPS_PROXY
+                && env.NO_PROXY === "127.0.0.1,localhost,::1"
+                && env.no_proxy === env.NO_PROXY;
+            console.log(ok ? "代理隔离正确" : "代理隔离失败");
+            process.exit(ok ? 0 : 1);
+        `, { mode: 0o755 });
+        const child = Bun.spawn([
+            process.execPath, join(REPO_ROOT, "playground/codex/perf-demo.ts"),
+            "--peri", harness, "--script", SCENARIO,
+            "--out-dir", dir, "--port", String(nextPort++), "--timeout-ms", "10000",
+        ], {
+            cwd: REPO_ROOT,
+            env: {
+                ...process.env,
+                HTTPS_PROXY: "http://127.0.0.1:1",
+                https_proxy: "http://127.0.0.1:2",
+                NO_PROXY: "*",
+                no_proxy: "*",
+            },
+            stdout: "pipe",
+            stderr: "pipe",
+        });
+        // 并行消费管道，防止日志写满后阻塞子进程。
+        const [code] = await Promise.all([
+            child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
+        ]);
+        expect(code).toBe(0);
+        expect(readFileSync(artifact(dir, "harness.log", "codex"), "utf8"))
+            .toContain("代理隔离正确");
+        expect(readFileSync(artifact(dir, "mock.log", "codex"), "utf8"))
+            .toContain("监听 http://localhost:");
+    }, 20_000);
+
     it("PATH 里没有 peri 且没显式指定 → 不猜本地构建产物，直接报错", async () => {
         // 不传 harnessCommand：走默认的 peri 命令。periPath=null 代表 Bun.which("peri") 落空，
         // 这时必须停在报错上——旧行为会悄悄回退 ../perihelion 的 debug 构建（读数不可比）。

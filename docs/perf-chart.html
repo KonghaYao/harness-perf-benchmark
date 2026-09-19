@@ -3,7 +3,7 @@
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>harness 压测曲线 · 长剧本（100 轮 × 4KB）</title>
+        <title>harness-perf-benchmark 榜单 · 长剧本（100 轮 × 4KB）</title>
         <!--
             固定的看图页：只读同目录之外的一份数据 JSON（data/perf-chart.json，由
             `bun run scripts/perf/gen-chart-data.ts` 从压测产物里汇总）。
@@ -140,6 +140,14 @@
                 border-radius: 2px;
                 vertical-align: baseline;
             }
+            /* 厂商图标：表格每行开头，认图比认名字快；色块仍留着（它对应曲线颜色）。 */
+            .logo {
+                width: 18px;
+                height: 18px;
+                margin-right: 6px;
+                border-radius: 4px;
+                vertical-align: -4px;
+            }
             ul.notes {
                 margin: 6px 0 0;
                 padding-left: 20px;
@@ -188,6 +196,30 @@
                 border-radius: 10px;
                 background: #fff;
             }
+            /* 柱状图板块：一排小图，窄屏自动换行。每格自带标题，canvas 撑满标题以下的剩余高度。 */
+            .bars {
+                display: grid;
+                gap: 12px;
+                grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            }
+            .bar-box {
+                margin: 0;
+                padding: 12px 14px 8px;
+                border: 1px solid var(--line);
+                border-radius: 10px;
+                background: #fff;
+            }
+            .bar-box figcaption {
+                margin-bottom: 6px;
+                font-size: 13px;
+            }
+            .bar-box figcaption .unit {
+                color: var(--muted);
+            }
+            .bar-canvas {
+                position: relative;
+                height: 240px;
+            }
             /* 计分表列多（10 列、时间列不给折行），窄一点的屏上允许横向滚动，别把面板撑破。 */
             .scroll-x {
                 overflow-x: auto;
@@ -212,13 +244,14 @@
         </style>
     </head>
     <body>
-        <h1>harness 压测 · 长剧本（统一计分 + 逐拍曲线）</h1>
+        <h1>harness-perf-benchmark 榜单</h1>
         <p class="sub">
             长剧本：100 轮 × 约 4KB 正文 + 每轮一次工具调用，<code>--exhausted stop</code> 跑到自然结束。
             <strong>开头是统一计分</strong><span class="beta">Beta</span>：把 CPU 与内存按
             <strong>1:1</strong> 折成一个数——<code>CU = 1.0×核·秒 + 1.0×GB·秒</code>
             （公式结构借自阿里云 FC 的「资源使用量 × 转换系数」，系数是本项目定的），再折成批内百分制；
-            另给一列不折算的<strong>峰值</strong>（最坏一刻要占多少）。口径与系数只在
+            另给一列不折算的<strong>峰值</strong>（最坏一刻要占多少）。接着是<strong>柱状概览</strong>：
+            CU 与两个峰值各一排横条，条短的是省的。口径与系数只在
             <code>scripts/perf/score.ts</code> 一处。<strong>还在 Beta：口径没定稿</strong>，
             拿它看趋势可以，别把名次当结论——两处取舍（后代 CPU 算不算、时长怎么算）还没讨论完。
             下半部分是<strong>逐拍曲线</strong>：x 为相对时间（采样起点算 0），y 由按钮切换，曲线默认按
@@ -246,6 +279,37 @@
                     </div>
                     <p class="sub" id="score-note" style="margin: 10px 0 0"></p>
                 </div>
+            </div>
+
+            <!--
+                柱状图板块：把「统一计分表」里最要紧的三列（CU / 峰值 CPU / 峰值内存）各自画成
+                一排横条，谁省谁贵一眼看出来。横向条（indexAxis: "y"）是为了让 harness 名与图标
+                排在左边当类目轴，长名字不会被竖排刻度截断。三个指标单位不同（CU / % / MB），
+                不共用一个数值轴，所以是三张独立的小图。
+            -->
+            <div id="page-bars">
+                <h2>柱状看：CU 与两个峰值（每条越短越好）</h2>
+                <div class="bars">
+                    <figure class="bar-box">
+                        <figcaption>
+                            统一计分 CU <span class="unit">· 面积口径（核·秒 + 内存），越低越省</span>
+                        </figcaption>
+                        <div class="bar-canvas"><canvas id="bar-cu"></canvas></div>
+                    </figure>
+                    <figure class="bar-box">
+                        <figcaption>
+                            峰值 CPU <span class="unit">· 进程树，单核 = 100%，最坏一刻</span>
+                        </figcaption>
+                        <div class="bar-canvas"><canvas id="bar-cpu"></canvas></div>
+                    </figure>
+                    <figure class="bar-box">
+                        <figcaption>
+                            峰值内存 RSS <span class="unit">· 进程树，最坏一刻占用</span>
+                        </figcaption>
+                        <div class="bar-canvas"><canvas id="bar-rss"></canvas></div>
+                    </figure>
+                </div>
+                <p class="sub" id="bars-note" style="margin: 10px 0 0"></p>
             </div>
 
             <h2>逐拍曲线：CPU 与内存怎么随时间走</h2>
@@ -301,10 +365,12 @@
                     </li>
                     <li>
                         <strong>虚线是「首个请求」与「末次请求」</strong>（mock 侧记的时刻挪到采样时间轴上）。
-                        虚线右边曲线还在、却几乎零 CPU，那就是<strong>收尾等待</strong>——本批次里只剩 Codex
-                        的 10.1s（退出时向 <code>chatgpt.com</code> 发请求、本机 DNS 污染导致超时），
-                        与轮数无关；peri 那个固定 5.0s 的收尾等待已被剧本尾部的空白收尾条消掉（本批收尾
-                        0.04s，见 <code>docs/perf-compare.md</code>），其余各家的收尾都在 0.3s 以内。
+                        虚线右边曲线还在、却几乎零 CPU，那就是<strong>收尾等待</strong>——本批六家都已很小
+                        （pi 0.02s · Codex 0.04s · Claude Code 0.06s · peri 0.07s · dsh 0.07s ·
+                        MiniMax Code 0.23s）。历史上这里有过两笔大账，本批都已消掉：Codex 的 10.1s
+                        （退出时向 <code>chatgpt.com</code> 发请求、本机 DNS 污染导致超时，现由 demo 注入
+                        死端口代理）与 peri 的固定 5.0s（等 Prediction 后台任务，现由剧本尾部的空白收尾条
+                        消掉）。两笔的根因与验证见 <code>docs/perf-compare.md</code>。
                     </li>
                     <li>
                         <strong>请求数 ≠ 轮数</strong>：mock 请求里混着各家自己的辅助请求——peri 的
@@ -331,7 +397,7 @@
                         <strong>曲线默认按 1s 窗口做滑动平均</strong>（上面可切原始 / 0.5s / 1s / 2s）。
                         100ms 采样下多线程 harness 的 CPU 本就是锯齿：一轮里「拼请求、解析上下文」突发几拍，
                         等 mock 回包时几乎归零——本批数据里相邻两拍跳 30 个百分点以上的有 MiniMax Code
-                        19 处、Claude Code 5 处、dsh 5 处、pi 1 处（peri / Codex 各 0 处），
+                        21 处、Claude Code 3 处、dsh 3 处、pi 1 处（peri / Codex 各 0 处），
                         <strong>那是真实读数，不是采样抖动</strong>；换 1s 窗口后这些跳变全部降到 0 处
                         （0.5s 窗口同样为 0）。所以平滑放在看图侧、不动原始数据：表格里的均值 / 峰值与
                         <code>samples.csv</code> 始终是原始值，想看毛刺切回「原始」。
@@ -405,6 +471,66 @@
                 "minimax-code": "#0f8ab5",
             };
             const PALETTE = Object.values(COLORS);
+
+            /**
+             * 厂商图标，放在同目录的 logos/ 下（相对路径，页面得从仓库根起服务才认得出，
+             * 别改成绝对路径）。来源与许可：
+             *   claude-code / codex / dsh / minimax-code / opencode ← @lobehub/icons-static-svg（MIT），
+             *     SVG 内的 <title> 已核对是「Claude Code」「Codex」「DeepSeek」「Minimax」「opencode」；
+             *   pi ← pi 官方 README 引用的 https://pi.dev/logo-auto.svg；
+             *   peri ← 自家品牌图 perihelion/images/img_peri_silver_flat_logo_s01.png（裁到 mark、缩成 64px）。
+             * 商标归各家所有，这里只用来标识「这一行/这条线是哪家 harness」。
+             * 键必须用 harness id（与 COLORS 同一套，见 scripts/perf/harness-id.ts）：写错了不会报错，
+             * 只会静默退回「只有名字、没有图标」。
+             */
+            const LOGOS = {
+                peri: "logos/peri.png",
+                opencode: "logos/opencode.svg",
+                "claude-code": "logos/claude-code.svg",
+                codex: "logos/codex.svg",
+                pi: "logos/pi.svg",
+                dsh: "logos/dsh.svg",
+                "minimax-code": "logos/minimax-code.svg",
+            };
+
+            /** 表格单元里的「图标 + 名字」：认不出的 harness 只给名字，不留破图占位。 */
+            const logoOf = (id) =>
+                LOGOS[id] === undefined ? "" : `<img class="logo" src="${LOGOS[id]}" alt="" />`;
+
+            // 图例用的图标对象：Chart.js 的 pointStyle 要的是**已加载完的 Image**，所以预先加载，
+            // 加载好之前（或失败时）图例退回原来的方形色块，不空一块。
+            //
+            // 尺寸必须**显式写死**：Chart.js 画图片点样式时用的是 image.width / image.height
+            // （源码里 `drawImage(f, -f.width/2, -f.height/2, f.width, f.height)`），
+            // 图例的 pointStyleWidth 只影响格子布局、影响不到图片本身。不写死的话各家图标各按
+            // 自身内在尺寸画：lobehub 那几张是 `width="1em"`（16px）、pi 的官方 logo 没有宽高属性
+            // （150px）、peri.png 是 64px——图例里就会一大一小还互相压字。
+            const LEGEND_ICON_PX = 14;
+            const logoImages = new Map(
+                Object.entries(LOGOS).map(([id, src]) => {
+                    const image = new Image();
+                    const ready = new Promise((resolve) => {
+                        image.onload = resolve;
+                        image.onerror = () => resolve();
+                    });
+                    image.width = LEGEND_ICON_PX;
+                    image.height = LEGEND_ICON_PX;
+                    image.src = src;
+                    return [id, { image, ready }];
+                }),
+            );
+            // 图标不该拖住页面：最多等 1.5s，到点就按「没加载出来」画（表格里的 <img> 自己会补上）。
+            const logosReady = Promise.race([
+                Promise.all([...logoImages.values()].map((entry) => entry.ready)),
+                new Promise((resolve) => setTimeout(resolve, 1500)),
+            ]);
+
+            const legendIcon = (id) => {
+                const entry = logoImages.get(id);
+                return entry !== undefined && entry.image.complete && entry.image.naturalWidth > 0
+                    ? entry.image
+                    : undefined;
+            };
 
             /**
              * 已退出排名的 harness：曲线默认收起（点图例可展开看历史读数）、画成虚线、汇总表里
@@ -582,6 +708,8 @@
                     }
                     return {
                         label: run.name,
+                        // 图例里画厂商图标（取不到就是 undefined，退回默认的方形点样式）
+                        pointStyle: legendIcon(run.id),
                         hidden: EXCLUDED.has(run.id),
                         // 退场的画虚线：万一被点开，也一眼看得出它不在榜单里
                         borderDash: EXCLUDED.has(run.id) ? [5, 3] : [],
@@ -657,7 +785,17 @@
                             },
                         },
                         plugins: {
-                            legend: { position: "top", labels: { usePointStyle: true, boxWidth: 8 } },
+                            legend: {
+                                position: "top",
+                                labels: {
+                                    usePointStyle: true,
+                                    // 格子按 pointStyleWidth 排（usePointStyle 下 boxWidth 只是兜底），
+                                    // 与上面 LEGEND_ICON_PX 保持一致，否则图例自己算的间距与画出来的图对不上。
+                                    pointStyleWidth: 14,
+                                    boxWidth: 12,
+                                    boxHeight: 12,
+                                },
+                            },
                             tooltip: {
                                 callbacks: {
                                     title: (items) => `t = ${items[0].parsed.x.toFixed(1)}s`,
@@ -693,7 +831,8 @@
                     const peak = Math.max(...values);
                     const tail = run.segments === null ? "—" : seconds(run.segments.tailMs);
                     return [
-                        `<span class="swatch" style="background:${colorOf(run, order)}"></span>${run.name}` +
+                        logoOf(run.id) +
+                            `<span class="swatch" style="background:${colorOf(run, order)}"></span>${run.name}` +
                             (EXCLUDED.has(run.id)
                                 ? `<span style="color:var(--muted)"> · 已退出排名</span>`
                                 : ""),
@@ -785,7 +924,8 @@
                             ? ""
                             : ` title="峰值出现在 ${(peaks.treeRssAtMs / 1000).toFixed(2)}s，当时 ${peaks.procs} 个进程"`;
                     return [
-                        `<span class="swatch" style="background:${colors.get(run.id)}"></span>${run.name}` +
+                        logoOf(run.id) +
+                            `<span class="swatch" style="background:${colors.get(run.id)}"></span>${run.name}` +
                             (EXCLUDED.has(run.id)
                                 ? `<span style="color:var(--muted)"> · 已退出排名</span>`
                                 : ""),
@@ -851,10 +991,155 @@
                         : "");
             }
 
+            /**
+             * y 轴图标：Chart.js 的刻度标签只能画文字，图标得自己补。做法是用 ticks.padding
+             * 在「轴」与「文字」之间留出一条空档（22px），再把 14px 的图标右对齐画进去
+             * ——右端离轴 4px、左端离文字 4px，互不重叠。
+             *
+             * 数据按 canvas id 存表里、不挂在 chart 实例上：`animation: false` 时首帧是在
+             * `new Chart()` 里同步画完的，构造之后再挂 `chart.$bars` 已经晚了（首帧什么也画不出，
+             * 后面又没有任何东西触发重画）。
+             */
+            const barEntries = new Map();
+            const axisLogoPlugin = {
+                id: "axisLogos",
+                afterDraw(chart) {
+                    const entries = barEntries.get(chart.canvas.id);
+                    if (entries === undefined) return;
+                    const { ctx, chartArea, scales } = chart;
+                    const size = LEGEND_ICON_PX;
+                    ctx.save();
+                    entries.forEach((entry, index) => {
+                        const image = logoImages.get(entry.run.id)?.image;
+                        if (image === undefined || !image.complete || image.naturalWidth === 0) return;
+                        const y = scales.y.getPixelForTick(index);
+                        if (!Number.isFinite(y)) return;
+                        ctx.drawImage(image, chartArea.left - 4 - size, y - size / 2, size, size);
+                    });
+                    ctx.restore();
+                },
+            };
+
+            /** 条末的数值：放得下就写在条外右侧（深灰），放不下翻进条内（白字）。 */
+            const barValuePlugin = {
+                id: "barValues",
+                afterDatasetsDraw(chart) {
+                    const entries = barEntries.get(chart.canvas.id);
+                    if (entries === undefined) return;
+                    const { ctx, chartArea } = chart;
+                    ctx.save();
+                    ctx.font = "600 11px -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif";
+                    ctx.textBaseline = "middle";
+                    chart.getDatasetMeta(0).data.forEach((bar, index) => {
+                        const entry = entries[index];
+                        if (entry === undefined) return;
+                        const outside = bar.x + 6 + ctx.measureText(entry.text).width <= chartArea.right;
+                        ctx.textAlign = outside ? "left" : "right";
+                        ctx.fillStyle = outside ? "#41474e" : "#fff";
+                        ctx.fillText(entry.text, outside ? bar.x + 6 : bar.x - 6, bar.y);
+                    });
+                    ctx.restore();
+                },
+            };
+
+            /**
+             * 柱状图板块：把计分表里最要紧的三列（CU / 峰值 CPU / 峰值内存）各画一排横条，
+             * 条短的是省的，自上而下按「越小越好」排。
+             *
+             * 三个指标单位不同（CU / % / MB），不共用一个数值轴，所以是三张独立的小图；
+             * 口径固定进程树（与计分表一致），**不随上面「主进程 / 进程树」按钮变**，所以只建一次。
+             */
+            let barCharts = null;
+            function renderBars() {
+                const scored = payload.runs.filter((run) => run.score !== undefined);
+                if (scored.length === 0) {
+                    // 老 JSON 里没有计分块：跟计分表一样不硬撑，把整块收起来。
+                    document.getElementById("page-bars").hidden = true;
+                    return;
+                }
+                if (barCharts !== null) return;
+                const colors = new Map();
+                payload.runs.forEach((run, order) => colors.set(run.id, colorOf(run, order)));
+
+                const specs = [
+                    { id: "bar-cu", value: (run) => run.score.cu, digits: 3, unit: " CU" },
+                    { id: "bar-cpu", value: (run) => run.score.peaks?.treeCpuPercent, digits: 1, unit: "%" },
+                    { id: "bar-rss", value: (run) => run.score.peaks?.treeRssMb, digits: 1, unit: " MB" },
+                ];
+                barCharts = specs.map((spec) => {
+                    const entries = scored
+                        .map((run) => ({
+                            run,
+                            value: spec.value(run),
+                            // 已退出排名那家（若数据里还带着）标一下，免得看着像在榜单里
+                            label:
+                                run.name + (EXCLUDED.has(run.id) ? "（已退出排名）" : ""),
+                        }))
+                        .filter((entry) => Number.isFinite(entry.value))
+                        .sort((a, b) => a.value - b.value)
+                        .map((entry) => ({
+                            ...entry,
+                            text: entry.value.toFixed(spec.digits) + spec.unit,
+                        }));
+
+                    barEntries.set(spec.id, entries);
+                    const chart = new Chart(document.getElementById(spec.id), {
+                        type: "bar",
+                        data: {
+                            labels: entries.map((entry) => entry.label),
+                            datasets: [
+                                {
+                                    data: entries.map((entry) => entry.value),
+                                    backgroundColor: entries.map((entry) => colors.get(entry.run.id)),
+                                    borderRadius: 4,
+                                    maxBarThickness: 20,
+                                    barPercentage: 0.72,
+                                },
+                            ],
+                        },
+                        options: {
+                            indexAxis: "y",
+                            animation: false,
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            // 右侧留出条末数值的位置
+                            layout: { padding: { right: 54 } },
+                            scales: {
+                                x: {
+                                    beginAtZero: true,
+                                    grid: { color: "#f1f3f5" },
+                                    ticks: { font: { size: 10.5 } },
+                                },
+                                y: {
+                                    grid: { display: false },
+                                    // padding 把刻度文字推开，空出来的地方画厂商图标（见 axisLogoPlugin）
+                                    ticks: { font: { size: 11 }, padding: 22 },
+                                },
+                            },
+                            plugins: {
+                                legend: { display: false },
+                                tooltip: {
+                                    callbacks: {
+                                        label: (item) => `${item.parsed.x.toFixed(spec.digits)}${spec.unit}`,
+                                    },
+                                },
+                            },
+                        },
+                        plugins: [axisLogoPlugin, barValuePlugin],
+                    });
+                    return chart;
+                });
+                document.getElementById("bars-note").innerHTML =
+                    "三个指标都固定按<strong>进程树</strong>口径算（不受上面「主进程 / 进程树」按钮影响）；" +
+                    "CU 是整段的面积，两个峰值是「最坏一刻」——同一家这两栏的名次可以不同：" +
+                    "CU 低说明跑完全程更省，峰值低说明最坏那一刻不会顶到机器上限。";
+            }
+
             function renderAll() {
                 renderChart();
                 renderSummary();
                 renderScores();
+                renderBars();
             }
 
             function wireControls() {
@@ -966,6 +1251,8 @@
                     `生成于 ${data.generatedAt}；${data.pickRule}；产物目录 ${data.sourceDir}。` +
                     "换数据重跑：bun run scripts/perf/gen-chart-data.ts（可加 --pick <runId> 指定某一次运行）。";
                 document.getElementById("app").hidden = false;
+                // 等图例图标加载完再画第一版图：Chart.js 不会因为图标后到而自己重画。
+                await logosReady;
                 wireControls();
                 renderAll();
             }
