@@ -6,13 +6,20 @@
  */
 
 import { afterAll, describe, expect, it } from "bun:test";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+    existsSync,
+    mkdtempSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    symlinkSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { REPO_ROOT, loadPerfConfig, type PerfConfig } from "./config";
 import { EXIT_HARNESS, EXIT_SETUP, EXIT_TIMEOUT, runPerf } from "./run";
 
-const SCENARIO = resolve(REPO_ROOT, "scripts/perf-scenario.json");
 const tempDirs: string[] = [];
 /** 每个用例换端口，避免相互抢占（mock 会真的监听）。 */
 let nextPort = 41_000 + Math.floor(Math.random() * 5_000);
@@ -22,6 +29,18 @@ function tempDir(): string {
     tempDirs.push(dir);
     return dir;
 }
+
+/**
+ * 测试用剧本：写在测试自己的临时目录里，**不依赖仓库里的剧本文件**——压测剧本一律由生成器
+ * （scripts/perf/gen-long-run.ts）按需现造，仓库里没有随手可用的默认剧本。
+ */
+function minimalScenario(dir: string): string {
+    const path = join(dir, "scenario.json");
+    writeFileSync(path, `${JSON.stringify({ responses: ["测试响应"] }, null, 4)}\n`);
+    return path;
+}
+
+const SCENARIO = minimalScenario(tempDir());
 
 afterAll(() => {
     for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
@@ -38,6 +57,10 @@ function makeConfig(overrides: Partial<PerfConfig> = {}): PerfConfig {
         periPath: process.execPath,
         workDir: REPO_ROOT,
         outDir: tempDir(),
+        // 固定 harness 身份，产物路径就能预测（`<outDir>/test-harness/<runId>/`）；
+        // 「不给时从命令推断」由单独的用例覆盖。
+        harnessId: "test-harness",
+        label: null,
         port: nextPort++,
         exhausted: "loop",
         sampler: "rusage",
@@ -47,15 +70,30 @@ function makeConfig(overrides: Partial<PerfConfig> = {}): PerfConfig {
     };
 }
 
-/** 产物目录里按后缀找唯一文件（runId 带时间戳，无法预先拼出完整名）。 */
-function artifact(runDir: string, suffix: string): string {
-    const name = readdirSync(runDir).find((entry) => entry.endsWith(suffix));
-    if (name === undefined) throw new Error(`产物目录 ${runDir} 里没有 ${suffix}`);
-    return join(runDir, name);
+/** 一次运行的目录（`<outDir>/<harnessId>/<runId>/`）；runId 带时间戳，只能扫出来。 */
+function runDirOf(outDir: string, harnessId = "test-harness"): string {
+    const harnessDir = join(outDir, harnessId);
+    const runIds = readdirSync(harnessDir).sort();
+    if (runIds.length !== 1) throw new Error(`期望 ${harnessDir} 下恰好一次运行，实际 ${runIds.length}`);
+    return join(harnessDir, runIds[0]!);
 }
 
-function listArtifacts(runDir: string): string[] {
-    return readdirSync(runDir).sort();
+/** 一次运行目录里的产物文件（run.json + 四份原始产物）。 */
+function artifact(outDir: string, fileName: string, harnessId = "test-harness"): string {
+    const path = join(runDirOf(outDir, harnessId), fileName);
+    if (!existsSync(path)) throw new Error(`运行目录里没有 ${fileName}`);
+    return path;
+}
+
+function readRunMeta(outDir: string, harnessId = "test-harness"): Record<string, unknown> {
+    return JSON.parse(readFileSync(artifact(outDir, "run.json", harnessId), "utf8")) as Record<
+        string,
+        unknown
+    >;
+}
+
+function listArtifacts(outDir: string): string[] {
+    return readdirSync(runDirOf(outDir)).sort();
 }
 
 /**
@@ -96,6 +134,14 @@ async function waitGone(pids: number[], timeoutMs = 2000): Promise<number[]> {
 }
 
 describe("runPerf 端到端", () => {
+    it("PATH 里没有 peri 且没显式指定 → 不猜本地构建产物，直接报错", async () => {
+        // 不传 harnessCommand：走默认的 peri 命令。periPath=null 代表 Bun.which("peri") 落空，
+        // 这时必须停在报错上——旧行为会悄悄回退 ../perihelion 的 debug 构建（读数不可比）。
+        const config = makeConfig({ periPath: null, harnessId: null });
+        await expect(runPerf(config)).rejects.toThrow(/PATH 里找不到 peri/);
+        expect(existsSync(join(config.outDir, "test-harness"))).toBe(false);
+    });
+
     it("真 mock + 假 harness：跑完留下四份产物、CSV 与摘要自洽", async () => {
         const config = makeConfig({ timeoutMs: 20_000 });
         const pidFile = join(config.outDir, "harness-pids.json");
@@ -106,10 +152,16 @@ describe("runPerf 端到端", () => {
         });
 
         expect(code).toBe(0);
-        // 四份产物 + 假 harness 自己写的 pid 文件
-        expect(listArtifacts(config.outDir).length).toBe(5);
+        // 一次运行 = 一个目录：run.json + 四份原始产物
+        expect(listArtifacts(config.outDir)).toEqual([
+            "harness.log",
+            "mock.log",
+            "perf.log",
+            "run.json",
+            "samples.csv",
+        ]);
 
-        const csv = readFileSync(artifact(config.outDir, "-samples.csv"), "utf8")
+        const csv = readFileSync(artifact(config.outDir, "samples.csv"), "utf8")
             .trim()
             .split("\n");
         expect(csv[0]).toBe("ts,elapsed_ms,cpu_pct,rss_kb,tree_cpu_pct,tree_rss_kb,procs");
@@ -122,7 +174,7 @@ describe("runPerf 端到端", () => {
         expect(cpu.every((value) => Number.isFinite(value) && value >= 0)).toBe(true);
         expect(rss.every((value) => value > 0)).toBe(true);
 
-        const perf = readFileSync(artifact(config.outDir, "-perf.log"), "utf8");
+        const perf = readFileSync(artifact(config.outDir, "perf.log"), "utf8");
         expect(perf).toContain("mock 就绪");
         expect(perf).toContain("采样开始");
         expect(perf).toContain("harness 退出: code=0");
@@ -130,10 +182,113 @@ describe("runPerf 端到端", () => {
         expect(perf).toMatch(/样本数: \d+/);
 
         // mock 真被用起来了：日志里有监听与请求记录
-        const mockLog = readFileSync(artifact(config.outDir, "-mock.log"), "utf8");
+        const mockLog = readFileSync(artifact(config.outDir, "mock.log"), "utf8");
         expect(mockLog).toContain("监听 http://localhost:");
-        // 产物路径要打到 stdout，方便直接查看
-        expect(lines.some((line) => line.includes("-perf.log"))).toBe(true);
+        // 产物目录要打到 stdout，方便直接打开查看
+        expect(lines.some((line) => line.includes("test-harness"))).toBe(true);
+
+        // run.json：身份、时长、分段、摘要、退出码、产物清单都要齐（读取端只认它）
+        const meta = readRunMeta(config.outDir);
+        expect(meta).toMatchObject({
+            schemaVersion: 1,
+            status: "ok",
+            error: null,
+            legacy: null,
+            sampling: { intervalMs: 100, backend: "rusage", withTree: true, format: "csv" },
+            exit: { code: 0, signal: null },
+            summarySource: "runtime",
+        });
+        expect((meta.harness as Record<string, unknown>).id).toBe("test-harness");
+        expect((meta.harness as Record<string, unknown>).idSource).toBe("explicit");
+        expect((meta.mock as Record<string, unknown>).requestsSource).toBe("status");
+        expect((meta.duration as Record<string, number>).endToEndMs).toBeGreaterThan(1_000);
+        expect((meta.summary as Record<string, number>).count).toBeGreaterThanOrEqual(6);
+        // 假 harness 不打印任何东西，所以 harness.log 是 0 字节——但文件必须在（peri 被强杀时也是这个形状）
+        const artifacts = meta.artifacts as Record<string, { file: string; bytes: number } | null>;
+        expect(artifacts.harness?.file).toBe("harness.log");
+        expect(artifacts.mock!.bytes).toBeGreaterThan(0);
+        // 采样起点要落在 harness 启动之后、退出之前，读取端靠它把分界线挪到曲线的时间轴上
+        const timing = meta.timing as Record<string, number>;
+        expect(timing.harnessStartedAtMs).toBeLessThanOrEqual(timing.samplingStartedAtMs);
+    });
+
+    it("harness 身份：不给 --harness 时从启动命令的第一个 token 推断（带别名）", async () => {
+        // 用符号链接冒充「命令名与目录名不同」的那类 harness：`claude` → claude-code。
+        const binDir = tempDir();
+        const link = join(binDir, "claude");
+        symlinkSync(process.execPath, link);
+        const config = makeConfig({ timeoutMs: 20_000, harnessId: null, periPath: link });
+        const code = await runPerf(config, {
+            harnessCommand: () => [link, "-e", "await Bun.sleep(400); process.exit(0);"],
+            log: () => {},
+        });
+
+        expect(code).toBe(0);
+        const meta = readRunMeta(config.outDir, "claude-code");
+        expect((meta.harness as Record<string, unknown>).id).toBe("claude-code");
+        expect((meta.harness as Record<string, unknown>).idSource).toBe("command");
+        expect(runDirOf(config.outDir, "claude-code")).toContain("/claude-code/");
+    });
+
+    it("同一秒的第二次运行不会写进同一组文件（runId 加 -2 后缀）", async () => {
+        const config = makeConfig({ timeoutMs: 20_000 });
+        const first = await runPerf(config, {
+            harnessCommand: () => fakeHarness(300, join(config.outDir, "pids-1.json")),
+            log: () => {},
+        });
+        const second = await runPerf(config, {
+            harnessCommand: () => fakeHarness(300, join(config.outDir, "pids-2.json")),
+            log: () => {},
+        });
+
+        expect([first, second]).toEqual([0, 0]);
+        const runIds = readdirSync(join(config.outDir, "test-harness")).sort();
+        expect(runIds.length).toBe(2);
+        // 撞在同一秒里才会加后缀；跨秒就是两个正常的 runId（这条断言在两种情况下都成立）
+        if (runIds[0]!.slice(0, 15) === runIds[1]!.slice(0, 15)) expect(runIds[1]).toMatch(/-2$/);
+        // 两份产物各自独立：不是同一组文件被追加了两遍
+        for (const runId of runIds) {
+            const meta = JSON.parse(
+                readFileSync(join(config.outDir, "test-harness", runId, "run.json"), "utf8"),
+            ) as Record<string, unknown>;
+            expect(meta.status).toBe("ok");
+            expect((meta.runId as string).length).toBeGreaterThan(0);
+        }
+    });
+
+    it("时长分段：借 mock 侧的首/末次请求时刻，把端到端时长拆成启动 / 运转 / 收尾", async () => {
+        // 假 harness：先睡 300ms（冒充启动开销），打两次 mock，再睡 1.1s（冒充收尾等待）。
+        const config = makeConfig({ timeoutMs: 20_000 });
+        const script = `
+            const base = "http://127.0.0.1:${config.port}";
+            await Bun.sleep(300);
+            for (let i = 0; i < 2; i += 1) {
+                await fetch(base + "/v1/chat/completions", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: "{}",
+                });
+            }
+            await Bun.sleep(1100);
+            process.exit(0);
+        `;
+        const code = await runPerf(config, {
+            harnessCommand: () => [process.execPath, "-e", script],
+        });
+
+        expect(code).toBe(0);
+        const perf = readFileSync(artifact(config.outDir, "perf.log"), "utf8");
+        const line = perf.split("\n").find((entry) => entry.includes("时长分段:"))!;
+        expect(line).toMatch(
+            /时长分段: 启动 → 首个请求 [\d.]+s ｜ 首个请求 → 末次请求 [\d.]+s ｜ 末次请求 → 退出 [\d.]+s/,
+        );
+        // 三段各自的数量级要能对上假 harness 的设计（启动 0.3s、收尾 1.1s）
+        const [, startup, span, tail] = line.match(/([\d.]+)s .*?([\d.]+)s .*?([\d.]+)s/)!;
+        expect(Number(startup)).toBeGreaterThanOrEqual(0.2);
+        expect(Number(span)).toBeLessThan(1);
+        expect(Number(tail)).toBeGreaterThanOrEqual(1);
+        // 收尾零请求时给一句说明，免得读的人以为是 harness 在干活
+        expect(line).toContain("收尾零请求");
     });
 
     it("harnessEnv 注入子进程，并写进 perf.log（凭据只留键名）", async () => {
@@ -156,7 +311,7 @@ describe("runPerf 端到端", () => {
         expect(seen.injected).toBe("hello");
         // 注入是「追加」：原有环境（PATH 等）照旧。
         expect(seen.inherited).toBe("PATH");
-        const perf = readFileSync(artifact(config.outDir, "-perf.log"), "utf8");
+        const perf = readFileSync(artifact(config.outDir, "perf.log"), "utf8");
         expect(perf).toContain("LLM_MOCK_INJECTED=hello");
         expect(perf).toContain("LLM_MOCK_API_KEY='***'");
         expect(perf).not.toContain("secret");
@@ -195,7 +350,7 @@ describe("runPerf 端到端", () => {
         expect(code).toBe(EXIT_TIMEOUT);
         expect(lines.some((line) => line.includes("超时 1000ms"))).toBe(true);
 
-        const perf = readFileSync(artifact(config.outDir, "-perf.log"), "utf8");
+        const perf = readFileSync(artifact(config.outDir, "perf.log"), "utf8");
         expect(perf).toContain("超时 1000ms: 终止 harness");
         expect(perf).toContain("signal=SIGTERM");
         expect(perf).toContain("=== 摘要 ===");
@@ -219,7 +374,7 @@ describe("runPerf 端到端", () => {
         });
         expect(code).toBe(EXIT_HARNESS);
         expect(lines.some((line) => line.includes("harness 非 0 退出"))).toBe(true);
-        expect(readFileSync(artifact(config.outDir, "-perf.log"), "utf8")).toContain("=== 摘要 ===");
+        expect(readFileSync(artifact(config.outDir, "perf.log"), "utf8")).toContain("=== 摘要 ===");
     });
 
     it("采样对象在首次采样前就退出 → 2，摘要说明样本为 0", async () => {
@@ -230,21 +385,26 @@ describe("runPerf 端到端", () => {
             log: (line) => lines.push(line),
         });
         expect(code).toBe(EXIT_HARNESS);
-        const perf = readFileSync(artifact(config.outDir, "-perf.log"), "utf8");
+        const perf = readFileSync(artifact(config.outDir, "perf.log"), "utf8");
         expect(perf).toContain("样本数: 0");
         expect(perf).toContain("harness 退出: code=3");
     });
 
-    it("剧本不存在 → 1，根本不启动 mock", async () => {
+    it("剧本不存在 → 1，根本不启动 mock；run.json 留下 setup-error 的判定", async () => {
         const config = makeConfig({ scriptPath: "/nonexistent/scenario.json" });
         const lines: string[] = [];
         const code = await runPerf(config, { log: (line) => lines.push(line) });
         expect(code).toBe(EXIT_SETUP);
         expect(lines.some((line) => line.includes("mock 剧本不存在"))).toBe(true);
-        expect(listArtifacts(config.outDir).some((name) => name.endsWith("-mock.log"))).toBe(false);
-        expect(readFileSync(artifact(config.outDir, "-perf.log"), "utf8")).toContain(
+        expect(existsSync(join(runDirOf(config.outDir), "mock.log"))).toBe(false);
+        expect(readFileSync(artifact(config.outDir, "perf.log"), "utf8")).toContain(
             "错误 mock 剧本不存在",
         );
+        // 早退也要留下可判定的 run.json：读取端据此跳过，而不是把半截运行当成跑完
+        const meta = readRunMeta(config.outDir);
+        expect(meta.status).toBe("setup-error");
+        expect(String(meta.error)).toContain("mock 剧本不存在");
+        expect(meta.endedAt).toBeTruthy();
     });
 
     it("剧本非法 JSON（mock 起不来）→ 1，日志带 mock 的报错", async () => {
@@ -301,9 +461,8 @@ describe("runPerf 端到端", () => {
             expect(message).toContain("mock");
             expect(message).toMatch(/已被占用|不是本次启动的 mock/);
             // 退出发生在起 harness 之前：不该留下 harness.log（否则等于用别人的数据压了一轮）。
-            expect(listArtifacts(config.outDir).some((name) => name.endsWith("-harness.log"))).toBe(
-                false,
-            );
+            expect(existsSync(join(runDirOf(config.outDir), "harness.log"))).toBe(false);
+            expect(readRunMeta(config.outDir).status).toBe("setup-error");
         } finally {
             stale.stop(true);
         }
@@ -325,15 +484,18 @@ describe("loadPerfConfig → runPerf 联通", () => {
                 "20000",
                 "--script",
                 SCENARIO,
+                "--harness",
+                "test-harness",
             ],
             REPO_ROOT,
         );
         expect(config.outDir).toBe(outDir);
+        expect(config.harnessId).toBe("test-harness");
         const code = await runPerf(config, {
             harnessCommand: () => fakeHarness(500, join(outDir, "harness-pids.json")),
             log: () => {},
         });
         expect(code).toBe(0);
-        expect(readFileSync(artifact(outDir, "-perf.log"), "utf8")).toContain("=== 摘要 ===");
+        expect(readFileSync(artifact(outDir, "perf.log"), "utf8")).toContain("=== 摘要 ===");
     });
 });

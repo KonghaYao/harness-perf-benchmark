@@ -9,8 +9,9 @@
  *
  * 与 peri / opencode 版 demo 的差异：
  * - harness 命令是 `claude -p "<prompt>" --dangerously-skip-permissions --no-session-persistence`
- *   （本版本没有 --max-turns，`-p` 模式下也没有轮数上限，压测时长由 --timeout-ms 决定，
- *   与 opencode 一样不会自行收敛；请只配只读工具的剧本——权限检查被跳过了）；
+ *   （本版本没有 --max-turns，`-p` 模式下也没有轮数上限；默认剧本是有限长的长剧本，
+ *   配 `--exhausted stop` 让它在剧本走完后自行收尾，所以端到端时长是完整的；
+ *   换剧本时请只配只读工具——权限检查被跳过了）；
  * - Claude Code 没有随 cwd 生效的 provider 配置，接入点只能靠环境变量；沙盒变量经
  *   `deps.harnessEnv` 注入（见 sandboxEnv），逐个覆盖全局同名变量，否则会打到用户自己的代理；
  * - **隔离必须改 HOME**：状态目录可以用 CLAUDE_CONFIG_DIR 挪走，但用户级 settings
@@ -21,19 +22,24 @@
  * 注意：工作目录是沙盒，但 Claude Code 会向上找到仓库根的 CLAUDE.md 当项目记忆，
  * 每次请求都会带上（属预期，与本 mock 无关）。
  *
- * 产物：<仓库>/data/claude-date/<runId>-{perf.log,samples.csv,harness.log,mock.log}
+ * 产物：<仓库>/data/runs/<harness>/<runId>/{run.json,perf.log,samples.csv,harness.log,mock.log}
  */
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { REPO_ROOT, loadPerfConfig, type PerfConfig } from "../../scripts/perf/config";
 import { EXIT_OK, EXIT_SETUP, USAGE, runPerf } from "../../scripts/perf/run";
 
 const argv = process.argv.slice(2);
 const MODEL = "llm-mock";
+/** 用户显式给了某个选项就不再插手（下面按各家默认值补的那些项都这么判断）。 */
+const given = (name: string): boolean =>
+    argv.some((arg) => arg === name || arg.startsWith(`${name}=`));
 
 if (argv.includes("-h") || argv.includes("--help")) {
     console.log(USAGE);
     console.log("提示: 这是 Claude Code 版 demo，harness 命令固定为 `claude -p <prompt> --dangerously-skip-permissions --no-session-persistence`；");
     console.log(`      沙盒在 ${join(import.meta.dir, ".home")}（HOME + CLAUDE_CONFIG_DIR），不碰 ~/.claude 的 settings 与 hooks。`);
+    console.log("      默认剧本是 data/scenarios/long-run.json（长剧本，Bash 工具调用，");
+    console.log("      与 peri / opencode 共用），--exhausted 默认 stop。");
     console.log("      想看能自行收尾的完整工具循环（三轮调用后打印回答），用：");
     console.log("        bun perf-demo.ts --script playground/claude-code/script.json --exhausted hold");
     process.exit(EXIT_OK);
@@ -73,6 +79,19 @@ function sandboxEnv(port: number): Record<string, string> {
 
 try {
     const config = loadPerfConfig(argv, REPO_ROOT);
+
+    // 产物目录的身份：`data/runs/<harness>/<runId>/`。不给也能从启动命令推断，
+    // 但 demo 明确写出来更稳（命令被包装、换路径都不会影响落点）。
+    if (!argv.some((arg) => arg === "--harness" || arg.startsWith("--harness="))) {
+        config.harnessId = "claude-code";
+    }
+
+    // 默认剧本：长剧本生成器用 Bash 形状造的那份（Claude Code 认 Bash，与 peri / opencode 共用）。
+    // run.ts 的 --script 是必填，默认值因此得由各家 demo 自己带。
+    if (!given("--script")) config.scriptPath = resolve(REPO_ROOT, "data/scenarios/long-run.json");
+    // 耗尽策略跟着默认剧本走：`-p` 模式自己不会收敛，靠 stop 让它在剧本走完后收尾退出，
+    // 端到端时长才完整；loop 会一直供压到兜底超时，那是已经废弃的固定窗口口径。
+    if (!given("--exhausted")) config.exhausted = "stop";
 
     // harness 工作目录默认是 playground/peri（peri 沙盒），这里固定为 claude-code 沙盒。
     if (!argv.some((arg) => arg === "--work-dir" || arg.startsWith("--work-dir="))) {

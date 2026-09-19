@@ -13,7 +13,7 @@
  *   （跑一个任务、把最终回答写到 stdout、退出码 0），不起端口、不留后台进程；
  * - 隔离靠 **DSH_HOME**（本目录下的 .dsh-home/）：profile 树、会话库、storages、
  *   匿名用户 id 全从这里找，指到沙盒就不会读 ~/.dsh；
- * - **provider 全靠环境变量注入，不用生成配置文件**（与 pi / grok 不同）：dsh 内置的
+ * - **provider 全靠环境变量注入，不用生成配置文件**（与 pi 不同）：dsh 内置的
  *   deepseek 适配器认 `$DEEPSEEK_BASE_URL`（优先于默认的 https://api.deepseek.com）与
  *   `$DEEPSEEK_API_KEY`（凭据引用名），换端口只改环境变量；
  * - 线协议是 **OpenAI Chat Completions**（`POST {baseURL}/chat/completions`，stream），
@@ -22,14 +22,14 @@
  *   只读命令直接执行、不需要审批；需要升权的命令在 headless 下无人可批（不会有 flaky 的
  *   自动放行），所以剧本请自觉只放只读命令；
  * - `DSH_TELEMETRY_DISABLED` 关遥测（启动器认这个开关，任何非空值都算关），压测不掺外部流量；
- * - 默认剧本是 scripts/dsh-scenario.json：dsh 的 shell 工具叫 `bash`，参数
+ * - 默认剧本是 data/scenarios/long-run-dsh.json：dsh 的 shell 工具叫 `bash`，参数
  *   `{command, description}` **两个都必填**（缺 description 会被工具自己拒掉）；
  * - 消费规律：一次 prompt = 主请求 + 一条「会话标题生成」请求（同 provider，messages=2），
  *   之后每轮工具调用再各一条主请求——编排剧本要把标题那条算进去；
  * - 环境变量必须走 deps.harnessEnv：Bun 1.4 下 `process.env.X = …` 不会被 Bun.spawn 继承
  *   （实测，见 scripts/perf/run.ts 的 RunDeps.harnessEnv 注释），而 harness 是 run.ts 起的。
  *
- * 产物：<仓库>/data/claude-date/<runId>-{perf.log,samples.csv,harness.log,mock.log}
+ * 产物：<仓库>/data/runs/<harness>/<runId>/{run.json,perf.log,samples.csv,harness.log,mock.log}
  */
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -44,7 +44,7 @@ if (argv.includes("-h") || argv.includes("--help")) {
     console.log(USAGE);
     console.log("提示: 这是 dsh 版 demo，harness 命令固定为 `dsh --profile headless <prompt>`；");
     console.log(`      DSH_HOME 指向 ${SANDBOX}，provider 走环境变量（$DEEPSEEK_BASE_URL / $DEEPSEEK_API_KEY，不用改配置文件）。`);
-    console.log("      默认剧本是 scripts/dsh-scenario.json（bash 工具调用，配 --exhausted loop 持续供压）。");
+    console.log("      默认剧本是 data/scenarios/long-run-dsh.json（bash 工具调用，--exhausted 默认 stop）。");
     console.log("      想看能自行收尾的完整工具循环（三轮调用后打印回答），用：");
     console.log("        bun perf-demo.ts --script playground/deepseek/script.json --exhausted stop");
     process.exit(EXIT_OK);
@@ -75,9 +75,21 @@ try {
     if (!argv.some((arg) => arg === "--work-dir" || arg.startsWith("--work-dir="))) {
         config.workDir = import.meta.dir;
     }
-    // 默认剧本：dsh 的 bash 工具要 description，别的 harness 那几份都不能直接用。
+    // 产物目录的身份：`data/runs/<harness>/<runId>/`。不给也能从启动命令推断，
+    // 但 demo 明确写出来更稳（命令被包装、换路径都不会影响落点）。
+    if (!argv.some((arg) => arg === "--harness" || arg.startsWith("--harness="))) {
+        config.harnessId = "dsh";
+    }
+
+    // 默认剧本：dsh 的 bash 工具要 description，别家那几份都不能直接用。
+    // run.ts 的 --script 是必填，默认值因此得由各家 demo 自己带。
     if (!argv.some((arg) => arg === "--script" || arg.startsWith("--script="))) {
-        config.scriptPath = resolve(REPO_ROOT, "scripts/dsh-scenario.json");
+        config.scriptPath = resolve(REPO_ROOT, "data/scenarios/long-run-dsh.json");
+    }
+    // 耗尽策略跟着默认剧本走：长剧本要跑到自然结束才测得到端到端时长；loop 会一直供压
+    // 到兜底超时，那是已经废弃的固定窗口口径。
+    if (!argv.some((arg) => arg === "--exhausted" || arg.startsWith("--exhausted="))) {
+        config.exhausted = "stop";
     }
 
     // 二进制：显式 --peri 优先，否则从 PATH 找 dsh（npm i -g @deepseek-ai/dsh）。

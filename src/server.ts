@@ -18,7 +18,9 @@ const USAGE = `llm-mock — OpenAI Chat Completions mock 服务
 选项:
   --script <path>        脚本文件（必填，亦可用 SCRIPT_PATH）
   --port <n>             监听端口（默认 3457）
-  --exhausted <policy>   脚本耗尽后: error | hold | loop（默认 error）
+  --exhausted <policy>   脚本耗尽后: error | hold | loop | stop（默认 error）
+                         stop 返回一条「任务结束」纯文本（finish_reason=stop），
+                         让 harness 自行收尾退出——长剧本端到端计时用这一档
   --model <name>         响应中补全的模型名（默认 llm-mock）
   --delay-ms <n>         首包前延迟毫秒（覆盖脚本 defaults）
   --chunk-delay-ms <n>   流式 chunk 间隔毫秒（覆盖脚本 defaults）

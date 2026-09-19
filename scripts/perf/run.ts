@@ -5,7 +5,19 @@
  *   1. 起 mock server（指定剧本，轮询 /__mock/status 等就绪）；
  *   2. 在 work-dir（默认 playground/peri，其 .peri/settings.json 把 provider 指向 mock）下起 harness；
  *   3. 每 interval-ms（默认 100ms）采一次 harness 进程的 CPU 与 RSS——**不采 GPU**；
- *   4. 全程写入 out-dir 下四个文件，结束时在 perf.log 与 stdout 打印摘要。
+ *   4. 全程写进一次运行自己的目录 `<out-dir>/<harness>/<runId>/`（见下），结束时打印摘要。
+ *
+ * 产物布局（一次运行 = 一个可整个拷走的目录）：
+ *
+ *   <out-dir>/<harness>/<runId>/run.json      机器接口：身份 / 配置 / 时间线 / 分段 / 摘要 / 退出码
+ *                              samples.csv    逐拍原始采样
+ *                              perf.log       人读时间线 + 末尾摘要
+ *                              harness.log    harness stdout/stderr 原文
+ *                              mock.log       mock 输出原文
+ *
+ * `run.json` 分两次写：开跑时写 `status:"running"` 的那批（即使进程被 kill -9，也知道这是谁在跑什么），
+ * 结束时原子替换补全（`finally` 里兜底，早退路径也会留下 status）。读取端只认 `run.json`，
+ * 不再从中文日志里正则扒字段——那是老布局的坑，见 legacy-run.ts。
  *
  * 采样口径与选型依据见 scripts/perf/sampler.ts 的文件头；可用 `bun run scripts/perf/verify.ts`
  * 复现「已知负载 → 读数」的验证实验。
@@ -22,10 +34,21 @@ import {
     mkdirSync,
     openSync,
     readFileSync,
+    renameSync,
+    statSync,
     writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { cpus, hostname, loadavg, platform, release, totalmem } from "node:os";
+import { join, relative } from "node:path";
 import { REPO_ROOT, formatRunId, loadPerfConfig, type PerfConfig } from "./config";
+import { harnessIdFromCommand } from "./harness-id";
+import {
+    RUN_META_SCHEMA_VERSION,
+    hostSnapshot,
+    writeJsonAtomic,
+    type RunMeta,
+    type RunStatus,
+} from "./run-meta";
 import {
     CSV_HEADER,
     ProcessSampler,
@@ -59,6 +82,7 @@ const FLUSH_INTERVAL_MS = 1000;
 export const USAGE = `llm-mock 压测采样器 —— 起 mock、起 harness、定时采样、出记录
 
 用法:
+  bun run scripts/perf/run.ts --script data/scenarios/long-run.json --exhausted stop --timeout-ms 600000
   bun run scripts/perf/run.ts [选项]
 
 选项:
@@ -67,24 +91,31 @@ export const USAGE = `llm-mock 压测采样器 —— 起 mock、起 harness、�
   --timeout-ms <n>        兜底时限毫秒，到点强制终止 harness（默认 60000）
   --ready-timeout-ms <n>  mock 就绪等待上限毫秒（默认 10000）
   --prompt <text>         harness 的提示词
-  --script <path>         mock 剧本（默认 scripts/perf-scenario.json）
-  --peri <path>           harness 二进制（默认取 PATH 里的 peri；找不到才退回 <仓库>/../perihelion/target/debug/peri）
+  --script <path>         mock 剧本（**必填**；剧本由生成器现造，例：data/scenarios/long-run.json）
+  --peri <path>           harness 二进制（默认只认 PATH 里的发布版 peri；PATH 里没有就必须显式指定，
+                          本工具不会去猜 ../perihelion 的本地 debug 构建）
   --work-dir <path>       harness 工作目录（默认 playground/peri）
-  --out-dir <path>        产物目录（默认 data/claude-date）
+  --out-dir <path>        产物根目录（默认 data/runs）
+  --harness <id>          harness 身份（目录名，如 claude-code）。不给就从启动命令推断
+  --label <text>          批次/场景标签，写进 run.json，便于日后按批次筛（可选）
   --port <n>              mock 端口（默认 3457）
-  --exhausted <policy>    mock 剧本耗尽策略：loop（默认，可持续供压）| hold | error；
-                            hold/error 下剧本走完即停，harness 有机会自行退出并写出 harness.log
+  --exhausted <policy>    mock 剧本耗尽策略：loop（默认，可持续供压）| stop | hold | error
+                           stop 让 mock 在剧本走完后返回「任务结束」纯文本，harness 自行收尾退出，
+                           用于「跑完一整个长剧本、测端到端时长」（超时只作兜底，读数不该用它）；
+                           hold/error 下剧本走完即停，harness 有机会自行退出并写出 harness.log
   --sampler <kind>        采样后端：rusage（默认，FFI proc_pid_rusage）| ps（兜底）
   --no-tree               不统计 harness 的后代进程（默认统计，含其拉起的 MCP 子进程）
   --peri-arg <arg>        透传给 harness 的参数，可重复。值以 - 开头时必须用 --peri-arg=<值>：
                             --peri-arg=--db-path --peri-arg=/tmp/peri.db
   -h, --help              显示本帮助
 
-产物（<runId> 形如 20260919-153012）:
-  <out-dir>/<runId>-perf.log      时间线事件 + 每秒采样摘要 + 末尾总摘要
-  <out-dir>/<runId>-samples.csv   原始采样，列：${CSV_HEADER}
-  <out-dir>/<runId>-harness.log   harness 的 stdout/stderr
-  <out-dir>/<runId>-mock.log      mock server 的输出
+产物（一次运行 = 一个目录，可整个拷走）:
+  <out-dir>/<harness>/<runId>/run.json     机器接口：身份 / 配置 / 时间线 / 分段 / 摘要 / 退出码
+                             samples.csv   逐拍原始采样，列：${CSV_HEADER}
+                             perf.log      时间线事件 + 每秒采样摘要 + 末尾总摘要（人读）
+                             harness.log   harness 的 stdout/stderr
+                             mock.log      mock server 的输出
+  <runId> 形如 20260919-153012；同秒第二次运行自动加 -2 后缀。
 
 退出码:
   0 正常   1 配置/mock/环境错误   2 harness 非 0 退出   3 超时被强制终止   130 被中断
@@ -125,9 +156,17 @@ export interface RunDeps {
     log?: (line: string) => void;
     /** 单调时钟（毫秒）。 */
     clock?: () => number;
+    /** 墙上时钟（epoch 毫秒）：与 mock 侧记的请求时刻同源，用于把端到端时长拆段。 */
+    epochNow?: () => number;
 }
 
 function defaultHarnessCommand(config: PerfConfig): string[] {
+    if (config.periPath === null) {
+        throw new Error(
+            "PATH 里找不到 peri：装好发布版（Bun.which(\"peri\") 能命中），或用 --peri <path> 显式指定。" +
+                "本工具不会回退 ../perihelion 的 debug 构建——那种读数不能与发布版混着用",
+        );
+    }
     return [
         config.periPath,
         "-p",
@@ -277,7 +316,11 @@ function tailOf(path: string, lines = 5): string {
     }
 }
 
-/** mock 的访问日志每消费一条剧本记一行，用它统计请求数（游标在 loop 策略下不累计）。 */
+/**
+ * 从 mock 日志里数请求数——**只作兜底**（mock 提前挂掉、读不到 /__mock/status 时）。
+ * 主路径用 status.requests：stop 策略下剧本耗尽后的收尾响应不消费剧本，日志里也不会写
+ * 「消费第 N 条」，按行数数会漏掉尾巴上的几次请求。
+ */
 function countMockRequests(path: string): number {
     try {
         return readFileSync(path, "utf8")
@@ -286,6 +329,91 @@ function countMockRequests(path: string): number {
     } catch {
         return 0;
     }
+}
+
+/**
+ * 把端到端时长拆成三段：启动（起进程 → 首个请求）、运转（首个请求 → 末次请求）、
+ * 收尾（末次请求 → 退出）。mock 侧记的请求时刻与 harness 起止是同一台机器的同一个钟，
+ * 直接相减即可。实测这个拆分很有必要：peri / Codex 的所谓「启动开销」大半是收尾期的
+ * 固定等待（见 docs/perf-compare.md），只看总时长会把账记到启动头上。
+ *
+ * 日志（segmentLines）与 run.json（segments 字段）共用这一处计算，免得两处各算一遍。
+ * mock 一个请求都没收到时返回 null——拆不出来就说拆不出来，不猜。
+ */
+export function segmentsOf(
+    status: Record<string, unknown> | null,
+    startEpoch: number,
+    exitEpoch: number,
+): { startupMs: number; spanMs: number; tailMs: number; idleTail: boolean } | null {
+    const first = typeof status?.firstRequestAt === "number" ? status.firstRequestAt : null;
+    const last = typeof status?.lastRequestAt === "number" ? status.lastRequestAt : null;
+    if (first === null || last === null) return null;
+    const tailMs = exitEpoch - last;
+    return {
+        startupMs: first - startEpoch,
+        spanMs: last - first,
+        tailMs,
+        // 收尾段一秒以上没有任何请求 = harness 在自己的宽限期里空等（peri 5s / Codex 10s）。
+        idleTail: tailMs >= 1000,
+    };
+}
+
+function segmentLines(
+    status: Record<string, unknown> | null,
+    startEpoch: number,
+    exitEpoch: number,
+): string[] {
+    const segments = segmentsOf(status, startEpoch, exitEpoch);
+    if (segments === null) return ["时长分段: （mock 未收到请求，拆不出来）"];
+    const seconds = (ms: number): string => `${(ms / 1000).toFixed(1)}s`;
+    return [
+        `时长分段: 启动 → 首个请求 ${seconds(segments.startupMs)} ｜ 首个请求 → 末次请求 ` +
+            `${seconds(segments.spanMs)} ｜ 末次请求 → 退出 ${seconds(segments.tailMs)}` +
+            (segments.idleTail ? "（收尾零请求：harness 自己的退出等待，与剧本轮数无关）" : ""),
+    ];
+}
+
+/** 文件 stat → run.json 的 binary 字段（不存在给 null，不抛）。 */
+function statOrNull(path: string): { path: string; sizeBytes: number; mtimeMs: number } | null {
+    try {
+        const info = statSync(path);
+        return { path, sizeBytes: info.size, mtimeMs: Math.round(info.mtimeMs) };
+    } catch {
+        return null;
+    }
+}
+
+/** 剧本的 sha256 前 16 位（跨机器复测时确认「同一份剧本」）。 */
+function hashOrNull(path: string): string | null {
+    try {
+        return new Bun.CryptoHasher("sha256").update(readFileSync(path)).digest("hex").slice(0, 16);
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * runId：`YYYYMMDD-HHMMSS`（本地时区）。同一秒里的第二次运行加 `-2` / `-3` 后缀——
+ * 否则两次运行会写进同一组文件（老布局用 `flag:"a"` 追加，实测会静默交错）。
+ */
+export function uniqueRunId(dir: string): string {
+    const base = formatRunId(new Date());
+    if (!existsSync(join(dir, base))) return base;
+    for (let n = 2; ; n += 1) {
+        const candidate = `${base}-${n}`;
+        if (!existsSync(join(dir, candidate))) return candidate;
+    }
+}
+
+/** 产物文件清单 → run.json 的 artifacts（字节数用来判断 harness.log 是否为空的强杀产物）。 */
+function artifactsOf(
+    files: Record<"perf" | "samples" | "harness" | "mock", string>,
+): RunMeta["artifacts"] {
+    const entries = Object.entries(files).map(([role, path]) => {
+        const info = statOrNull(path);
+        return [role, info === null ? null : { file: path.split("/").pop()!, bytes: info.sizeBytes }];
+    });
+    return Object.fromEntries(entries) as RunMeta["artifacts"];
 }
 
 async function fetchMockStatus(url: string): Promise<Record<string, unknown> | null> {
@@ -303,18 +431,26 @@ async function fetchMockStatus(url: string): Promise<Record<string, unknown> | n
  */
 export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<number> {
     const clock = deps.clock ?? (() => performance.now());
+    const epochNow = deps.epochNow ?? (() => Date.now());
     const stdout = deps.log ?? ((line: string) => console.log(line));
     const probeReady = deps.probeReady ?? defaultProbeReady;
     const harnessCommand = deps.harnessCommand ?? defaultHarnessCommand;
     const mockCommand = deps.mockCommand ?? defaultMockCommand;
 
-    const runId = formatRunId(new Date());
+    // 命令行要在建目录之前算出来：harness 身份要么由 --harness / demo 显式给出，
+    // 要么就从它的第一个 token 推断（见 harness-id.ts 的解析顺序）。
+    const command = harnessCommand(config);
+    const harnessId = config.harnessId ?? harnessIdFromCommand(command);
+    const runId = uniqueRunId(join(config.outDir, harnessId));
+    // 一次运行 = 一个自包含目录：整个拷走就是一次完整记录。
+    const runDir = join(config.outDir, harnessId, runId);
     const files = {
-        perf: join(config.outDir, `${runId}-perf.log`),
-        samples: join(config.outDir, `${runId}-samples.csv`),
-        harness: join(config.outDir, `${runId}-harness.log`),
-        mock: join(config.outDir, `${runId}-mock.log`),
+        perf: join(runDir, "perf.log"),
+        samples: join(runDir, "samples.csv"),
+        harness: join(runDir, "harness.log"),
+        mock: join(runDir, "mock.log"),
     };
+    const metaPath = join(runDir, "run.json");
     const statusUrl = `http://127.0.0.1:${config.port}/__mock/status`;
 
     let perfBuffer: string[] = [];
@@ -347,30 +483,125 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         interrupted = true;
     };
 
+    // run.json 的内容随跑随填（时间线、分段、摘要都要等跑完）；finish() 负责落盘并定 status。
+    const meta: RunMeta = {
+        schemaVersion: RUN_META_SCHEMA_VERSION,
+        runId,
+        status: "running",
+        error: null,
+        legacy: null,
+        harness: {
+            id: harnessId,
+            idSource: config.harnessId === null ? "command" : "explicit",
+            command,
+            commandLine: quote(command),
+            cwd: config.workDir,
+            binary: statOrNull(command[0]),
+            version: null,
+            env: null,
+        },
+        scenario: {
+            path: config.scriptPath,
+            relPath: relative(REPO_ROOT, config.scriptPath).startsWith("..")
+                ? null
+                : relative(REPO_ROOT, config.scriptPath),
+            name: config.scriptPath.split("/").pop() ?? config.scriptPath,
+            sizeBytes: statOrNull(config.scriptPath)?.sizeBytes ?? null,
+            sha256: hashOrNull(config.scriptPath),
+        },
+        mock: {
+            port: config.port,
+            exhausted: config.exhausted,
+            readyMs: null,
+            requests: null,
+            requestsSource: null,
+            cursor: null,
+        },
+        sampling: {
+            intervalMs: config.intervalMs,
+            // 开跑先记请求值，跑完由实际 backend 覆盖（rusage 不可用时会回退到 ps）。
+            backend: config.sampler,
+            withTree: config.withTree,
+            format: "csv",
+        },
+        limits: {
+            timeoutMs: config.timeoutMs,
+            readyTimeoutMs: config.readyTimeoutMs,
+            maxTurns: config.turns,
+        },
+        prompt: config.prompt,
+        label: config.label,
+        host: hostSnapshot(),
+        startedAtMs: epochNow(),
+        startedAt: new Date().toISOString(),
+        endedAtMs: null,
+        endedAt: null,
+        duration: { endToEndMs: null, samplingWindowMs: null },
+        timing: {
+            harnessStartedAtMs: null,
+            samplingStartedAtMs: null,
+            firstRequestAtMs: null,
+            lastRequestAtMs: null,
+            harnessExitedAtMs: null,
+        },
+        segments: null,
+        summary: null,
+        summarySource: null,
+        exit: null,
+        artifacts: null,
+    };
+
+    let finalized = false;
+    /** 定稿并原子落盘。早退路径也要调它——半截的 run 与跑完的 run 必须能分辨。 */
+    const finish = (status: RunStatus): void => {
+        if (finalized) return;
+        finalized = true;
+        meta.status = status;
+        meta.endedAtMs = epochNow();
+        meta.endedAt = new Date(meta.endedAtMs).toISOString();
+        if (meta.host !== null) {
+            const [one, five, fifteen] = loadavg();
+            meta.host.loadAvgEnd = [one ?? 0, five ?? 0, fifteen ?? 0];
+        }
+        meta.artifacts = artifactsOf(files);
+        try {
+            writeJsonAtomic(metaPath, meta);
+        } catch {
+            // 落盘失败不该掩盖真正的错误。
+        }
+    };
+
     try {
-        mkdirSync(config.outDir, { recursive: true });
+        mkdirSync(runDir, { recursive: true });
         writeFileSync(
             files.perf,
             [
                 "# llm-mock 压测记录",
                 `runId: ${runId}`,
-                `开始: ${new Date().toISOString()}`,
-                `产物目录: ${config.outDir}`,
+                `harness: ${harnessId}`,
+                `开始: ${meta.startedAt}`,
+                `产物目录: ${runDir}`,
                 "",
             ].join("\n") + "\n",
-            { flag: "a" },
         );
-        if (!existsSync(files.samples)) writeFileSync(files.samples, CSV_HEADER + "\n");
+        writeFileSync(files.samples, CSV_HEADER + "\n");
+        writeJsonAtomic(metaPath, meta);
+        // 起手就把 run.json 落盘：即使进程随后被 kill -9，也留下「谁在跑什么」。
+        stdout(`[perf] 产物目录: ${runDir}`);
         process.on("SIGINT", onSignal);
         process.on("SIGTERM", onSignal);
 
+        // 查的是真正会被 spawn 的那个二进制（command[0]）：各 demo 用自家 harness 时
+        // config.periPath 可能是 null（PATH 里没有 peri），不该拿它当判据。
         for (const [label, path] of [
-            ["harness 二进制", config.periPath],
+            ["harness 二进制", command[0]],
             ["mock 剧本", config.scriptPath],
             ["harness 工作目录", config.workDir],
         ] as const) {
             if (!existsSync(path)) {
                 fail(`${label}不存在: ${path}`);
+                meta.error = `${label}不存在: ${path}`;
+                finish("setup-error");
                 return EXIT_SETUP;
             }
         }
@@ -393,7 +624,10 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         let status: Record<string, unknown> | null = null;
         while (clock() < readyDeadline) {
             if (mock.exitCode !== null) {
-                fail(mockStartFailure(mock.exitCode, files.mock, config.port));
+                const message = mockStartFailure(mock.exitCode, files.mock, config.port);
+                fail(message);
+                meta.error = message;
+                finish("setup-error");
                 return EXIT_SETUP;
             }
             if (await probeReady(statusUrl)) {
@@ -407,37 +641,59 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
                     ready = true;
                     break;
                 }
-                fail(
+                const message =
                     `端口 ${config.port} 上听着的不是本次启动的 mock：状态里的剧本是 ` +
-                        `${status === null ? "（读不到）" : String(status.source)}，` +
-                        `本次是 ${config.scriptPath}；多半是上一轮残留的 mock，` +
-                        `用 --port 换一个端口，或先把它杀掉`,
-                );
+                    `${status === null ? "（读不到）" : String(status.source)}，` +
+                    `本次是 ${config.scriptPath}；多半是上一轮残留的 mock，` +
+                    `用 --port 换一个端口，或先把它杀掉`;
+                fail(message);
+                meta.error = message;
+                finish("setup-error");
                 return EXIT_SETUP;
             }
             await Bun.sleep(READY_POLL_MS);
         }
         if (!ready) {
-            fail(
+            const message =
                 `等待 mock 就绪超时（${config.readyTimeoutMs}ms）: ${statusUrl} 无响应；` +
-                    `端口 ${config.port} 可能被别的进程占用，或 mock 卡在启动`,
-            );
+                `端口 ${config.port} 可能被别的进程占用，或 mock 卡在启动`;
+            fail(message);
+            meta.error = message;
+            finish("setup-error");
             return EXIT_SETUP;
         }
+        meta.mock.readyMs = Math.round(clock() - t0);
+        meta.mock.cursor = {
+            index: typeof status?.index === "number" ? status.index : 0,
+            size: typeof status?.size === "number" ? status.size : 0,
+            exhausted: status?.exhausted === true,
+        };
         timeline(
             `mock 就绪: http://127.0.0.1:${config.port}（剧本 ${status?.size ?? "?"} 条，` +
                 `耗尽策略 ${status?.policy ?? "?"}）`,
         );
 
         // 3. 起 harness
-        const command = harnessCommand(config);
         const extraEnv = deps.harnessEnv?.(config);
+        if (extraEnv !== undefined) {
+            // 凭据只留键名：run.json 与 perf.log 都会被分享出去。
+            meta.harness.env = Object.fromEntries(
+                Object.entries(extraEnv).map(([key, value]) => [
+                    key,
+                    /(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(key) ? "***" : value,
+                ]),
+            );
+        }
         timeline(
             `启动 harness: ${quote(command)}（cwd=${config.workDir}` +
                 (extraEnv === undefined ? "" : `，env +${describeEnv(extraEnv)}`) +
                 "）",
         );
         harnessFd = openSync(files.harness, "a");
+        const harnessStart = clock();
+        // 墙上时刻另记一份：mock 侧的首/末次请求时刻也是 epoch 毫秒，两边要能相减。
+        const harnessStartEpoch = epochNow();
+        meta.timing.harnessStartedAtMs = harnessStartEpoch;
         harness = Bun.spawn(command, {
             cwd: config.workDir,
             detached: true,
@@ -460,25 +716,28 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
                 backend = createPsBackend();
             }
         }
+        meta.sampling.backend = backend.kind;
         timeline(
             `采样开始: ${backend.describe()}，间隔 ${config.intervalMs}ms，` +
                 `落盘周期 ${FLUSH_INTERVAL_MS}ms`,
         );
         const sampler = new ProcessSampler({ pid: harnessPid, backend, withTree: config.withTree });
         if (!sampler.prime()) {
-            fail(
+            const message =
                 `采样对象 pid=${harnessPid} 在首次采样前已退出` +
-                    `（退出码 ${harnessProc.exitCode ?? "null"}）；` +
-                    `harness 日志末尾: ${tailOf(files.harness, 3)}`,
-            );
+                `（退出码 ${harnessProc.exitCode ?? "null"}）；` +
+                `harness 日志末尾: ${tailOf(files.harness, 3)}`;
+            fail(message);
+            meta.error = message;
+            finish("harness-exit");
             return EXIT_HARNESS;
         }
         if (config.withTree) sampler.refreshTree();
-        stdout(`[perf] 产物: ${files.perf}`);
 
         const samples: ProcessSample[] = [];
         const csvBuffer: string[] = [];
         const samplingStart = clock();
+        meta.timing.samplingStartedAtMs = epochNow();
         const deadline = samplingStart + config.timeoutMs;
         let nextTick = samplingStart + config.intervalMs;
         let lastReadAt = samplingStart;
@@ -531,7 +790,17 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
             await stopProcess(harnessProc, "harness", timeline);
         }
         const exit: ExitInfo = { code: harnessProc.exitCode, signal: harnessProc.signalCode };
-        timeline(`harness 退出: code=${exit.code ?? "null"} signal=${exit.signal ?? "无"}`);
+        // 端到端时长单独记：采样窗口的 durationMs 只覆盖「首次采样 → 最后一次采样」，
+        // 比 harness 真实存活时间略短。长剧本实验比的就是这个数，口径要说清楚。
+        const harnessElapsedMs = clock() - harnessStart;
+        const harnessExitEpoch = epochNow();
+        meta.exit = exit;
+        meta.timing.harnessExitedAtMs = harnessExitEpoch;
+        meta.duration.endToEndMs = Math.round(harnessElapsedMs);
+        timeline(
+            `harness 退出: code=${exit.code ?? "null"} signal=${exit.signal ?? "无"}，` +
+                `存活 ${(harnessElapsedMs / 1000).toFixed(1)}s`,
+        );
 
         const finalStatus = await fetchMockStatus(statusUrl);
         await stopProcess(mock, "mock", timeline);
@@ -544,8 +813,28 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         }
         closeFileDescriptors();
 
-        const requests = countMockRequests(files.mock);
+        const requests =
+            typeof finalStatus?.requests === "number"
+                ? finalStatus.requests
+                : countMockRequests(files.mock);
         const summary = summarize(samples);
+        meta.mock.requests = requests;
+        meta.mock.requestsSource = typeof finalStatus?.requests === "number" ? "status" : "mock-log";
+        if (finalStatus !== null) {
+            meta.mock.cursor = {
+                index: typeof finalStatus.index === "number" ? finalStatus.index : 0,
+                size: typeof finalStatus.size === "number" ? finalStatus.size : 0,
+                exhausted: finalStatus.exhausted === true,
+            };
+        }
+        meta.timing.firstRequestAtMs =
+            typeof finalStatus?.firstRequestAt === "number" ? finalStatus.firstRequestAt : null;
+        meta.timing.lastRequestAtMs =
+            typeof finalStatus?.lastRequestAt === "number" ? finalStatus.lastRequestAt : null;
+        meta.duration.samplingWindowMs = Math.round(summary.durationMs);
+        meta.segments = segmentsOf(finalStatus, harnessStartEpoch, harnessExitEpoch);
+        meta.summary = { ...summary };
+        meta.summarySource = "runtime";
         perfBuffer.push("", "=== 摘要 ===", ...summaryLines(summary, config));
         perfBuffer.push(
             `mock 请求数: ${requests}` +
@@ -553,20 +842,40 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
                     ? `（${(requests / (summary.durationMs / 1000)).toFixed(1)} 次/秒）`
                     : ""),
             `mock 游标: index=${finalStatus?.index ?? "?"} / ${finalStatus?.size ?? "?"}`,
-            `产物: ${files.perf} · ${files.samples} · ${files.harness} · ${files.mock}`,
+            `端到端时长: ${(harnessElapsedMs / 1000).toFixed(1)}s（harness 启动 → 退出；` +
+                `采样窗口 ${(summary.durationMs / 1000).toFixed(1)}s）`,
+            ...segmentLines(finalStatus, harnessStartEpoch, harnessExitEpoch),
+            `产物: ${runDir}（run.json · perf.log · samples.csv · harness.log · mock.log）`,
         );
         flushPerf();
         stdout("[perf] === 摘要 ===");
         for (const line of summaryLines(summary, config)) stdout(`[perf] ${line}`);
-        stdout(`[perf] mock 请求数: ${requests} · 产物: ${config.outDir}`);
+        stdout(`[perf] mock 请求数: ${requests} · 产物: ${runDir}`);
+        stdout(`[perf] 端到端时长: ${(harnessElapsedMs / 1000).toFixed(1)}s`);
+        for (const line of segmentLines(finalStatus, harnessStartEpoch, harnessExitEpoch)) {
+            stdout(`[perf] ${line}`);
+        }
 
-        if (interrupted) return EXIT_INTERRUPTED;
-        if (timedOut) return EXIT_TIMEOUT;
-        if (exit.code === 0) return EXIT_OK;
+        if (interrupted) {
+            finish("interrupted");
+            return EXIT_INTERRUPTED;
+        }
+        if (timedOut) {
+            finish("timeout");
+            return EXIT_TIMEOUT;
+        }
+        if (exit.code === 0) {
+            finish("ok");
+            return EXIT_OK;
+        }
         stdout(`[perf] harness 非 0 退出，详见 ${files.harness}`);
+        finish("harness-exit");
         return EXIT_HARNESS;
     } catch (unexpected) {
-        fail((unexpected as Error).message);
+        const message = (unexpected as Error).message;
+        fail(message);
+        meta.error = message;
+        finish("setup-error");
         return EXIT_SETUP;
     } finally {
         process.off("SIGINT", onSignal);
@@ -576,6 +885,8 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         if (mock !== null) await stopProcess(mock, "mock", () => {});
         closeFileDescriptors();
         flushPerf();
+        // 兜底：任何没想到的提前返回（或抛异常）也要留下一份能断定「没跑完」的 run.json。
+        finish("incomplete");
     }
 
     function closeFileDescriptors(): void {

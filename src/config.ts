@@ -14,8 +14,8 @@
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 
-/** 脚本耗尽后的行为：报错 / 重复最后一条 / 从头循环。 */
-export type ExhaustedPolicy = "error" | "hold" | "loop";
+/** 脚本耗尽后的行为：报错 / 重复最后一条 / 从头循环 / 返回收尾响应。 */
+export type ExhaustedPolicy = "error" | "hold" | "loop" | "stop";
 
 export interface MockConfig {
     port: number;
@@ -50,9 +50,11 @@ function port(value: string | undefined): number {
 
 function policy(value: string | undefined): ExhaustedPolicy {
     if (value === undefined || value === "") return "error";
-    if (value === "error" || value === "hold" || value === "loop") return value;
+    if (value === "error" || value === "hold" || value === "loop" || value === "stop") {
+        return value;
+    }
     throw new Error(
-        `exhausted 必须是 error | hold | loop，收到: ${JSON.stringify(value)}`,
+        `exhausted 必须是 error | hold | loop | stop，收到: ${JSON.stringify(value)}`,
     );
 }
 

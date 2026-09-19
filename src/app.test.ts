@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createApp } from "./app";
 import type { ExhaustedPolicy, MockConfig } from "./config";
-import { ScriptPlayer } from "./script";
+import { ScriptPlayer, STOP_MESSAGE } from "./script";
 import type { ChatCompletion, ChatCompletionChunk } from "./types";
 
 const CONFIG: MockConfig = {
@@ -157,6 +157,28 @@ describe("POST /v1/chat/completions（非流式）", () => {
         const second = await readJson(await post(app, "/v1/chat/completions", {}));
         expect(first.choices[0].message.content).toBe("only");
         expect(second.choices[0].message.content).toBe("only");
+    });
+
+    it("stop 策略下耗尽后给出可收尾的纯文本（三条路由都能走到）", async () => {
+        const { app } = build({ responses: ["唯一一条"], policy: "stop" });
+        expect((await post(app, "/v1/chat/completions", {})).status).toBe(200);
+
+        const end = await readJson(await post(app, "/v1/chat/completions", {}));
+        expect(end.choices[0].message.content).toBe(STOP_MESSAGE);
+        expect(end.choices[0].message.tool_calls).toBeUndefined();
+        expect(end.choices[0].finish_reason).toBe("stop");
+
+        // 三协议共用同一个播放器：适配层要都能把收尾响应渲染成正常结束。
+        const messages = await post(app, "/v1/messages", { model: "mock-model" });
+        expect(messages.status).toBe(200);
+        expect(await readJson(messages)).toMatchObject({
+            type: "message",
+            stop_reason: "end_turn",
+        });
+
+        const responses = await post(app, "/v1/responses", { model: "mock-model" });
+        expect(responses.status).toBe(200);
+        expect(await readJson(responses)).toMatchObject({ status: "completed" });
     });
 });
 

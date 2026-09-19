@@ -65,7 +65,7 @@ export interface SamplerBackend {
     read(pid: number): CumulativeReading | null;
 }
 
-const CSV_COLUMNS = [
+export const CSV_COLUMNS = [
     "ts",
     "elapsed_ms",
     "cpu_pct",
@@ -74,6 +74,8 @@ const CSV_COLUMNS = [
     "tree_rss_kb",
     "procs",
 ] as const;
+
+export type CsvColumn = (typeof CSV_COLUMNS)[number];
 
 export const CSV_HEADER = CSV_COLUMNS.join(",");
 
@@ -142,6 +144,41 @@ export function formatCsvRow(sample: ProcessSample): string {
         (sample.treeRssBytes / 1024).toFixed(0),
         String(sample.procs),
     ].join(",");
+}
+
+/**
+ * 采样 CSV → 采样点。**按表头名映射列，不按下标写死**：
+ * 加一列指标不该让读取端失效，但**必需列缺失必须报错**——宁可炸，
+ * 也不要把 cpu 读成内存、画出一张看起来很正常但完全错的图。
+ */
+export function parseSamplesCsv(text: string): ProcessSample[] {
+    const lines = text.trim().split("\n");
+    const header = (lines[0] ?? "").split(",").map((name) => name.trim());
+    const columnIndex = new Map(header.map((name, index) => [name, index]));
+    const missing = CSV_COLUMNS.filter((name) => !columnIndex.has(name));
+    if (missing.length > 0) {
+        throw new Error(
+            `采样 CSV 缺必需列 ${missing.join(", ")}（表头: ${header.join(",")}）`,
+        );
+    }
+    const cell = (cells: string[], name: CsvColumn): string => cells[columnIndex.get(name)!]!;
+
+    const samples: ProcessSample[] = [];
+    for (const line of lines.slice(1)) {
+        if (line.trim() === "") continue;
+        const cells = line.split(",");
+        const ts = Date.parse(cell(cells, "ts"));
+        samples.push({
+            ts: Number.isNaN(ts) ? 0 : ts,
+            elapsedMs: Number(cell(cells, "elapsed_ms")),
+            cpuPercent: Number(cell(cells, "cpu_pct")),
+            rssBytes: Number(cell(cells, "rss_kb")) * 1024,
+            treeCpuPercent: Number(cell(cells, "tree_cpu_pct")),
+            treeRssBytes: Number(cell(cells, "tree_rss_kb")) * 1024,
+            procs: Number(cell(cells, "procs")),
+        });
+    }
+    return samples;
 }
 
 export interface SampleSummary {

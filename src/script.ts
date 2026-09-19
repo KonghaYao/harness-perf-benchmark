@@ -61,6 +61,19 @@ export interface ScriptStatus {
     index: number;
     remaining: number;
     exhausted: boolean;
+    /**
+     * 累计请求数（每次 take() 记一笔）。与 index 的区别：stop 策略下剧本耗尽后的收尾
+     * 响应不推进游标，但请求确实发生了——压测统计要的是这个口径。
+     */
+    requests: number;
+    /**
+     * 首次 / 最近一次 take() 的墙上时刻（epoch 毫秒；null = 还没被请求过）。
+     * 压测用它把端到端时长拆成「启动（起进程 → 首个请求）」「轮次区间」「收尾（末次请求 → 退出）」
+     * 三段——实测 peri / Codex 的所谓启动开销大半是**退出期**的固定等待（见 docs/perf-compare.md）。
+     * harness 与 mock 同机同时钟，两边的时间戳可以直接相减。
+     */
+    firstRequestAt: number | null;
+    lastRequestAt: number | null;
 }
 
 function fail(where: string, message: string): never {
@@ -277,6 +290,30 @@ function parseDefaults(raw: unknown, source: string): ScriptDefaults {
     };
 }
 
+/**
+ * stop 策略的收尾响应：剧本耗尽后不再有预设内容，返回一条明确宣告结束的纯文本
+ * （无工具调用、finish_reason=stop），让 harness 收到后**自行收尾退出**。
+ *
+ * 这是「跑完一整个长剧本、测端到端时长」类压测的前提：没有它，harness 只会停在
+ * 等下一次响应上，最后被压测工具按超时强杀，时长读数就被兜底时限污染了。
+ */
+export const STOP_MESSAGE = "（llm-mock）剧本已全部回放完毕，本次任务到此结束。";
+
+/** 合成收尾响应；节奏不参与剧本配置——立刻返回、单块吐出（文本很短）。 */
+function stopResponse(): ScriptResponse {
+    return {
+        id: null,
+        created: null,
+        model: null,
+        message: { role: "assistant", content: STOP_MESSAGE },
+        finishReason: "stop",
+        usage: null,
+        delayMs: 0,
+        chunkDelayMs: 0,
+        chunkSize: 1,
+    };
+}
+
 export interface RawScript {
     responses: unknown[];
     defaults: ScriptDefaults;
@@ -321,6 +358,11 @@ export class ScriptPlayer {
     #source: string;
     #configDefaults: ScriptDefaults;
     #index = 0;
+    #requests = 0;
+    #firstRequestAt: number | null = null;
+    #lastRequestAt: number | null = null;
+    /** stop 策略的收尾响应只构造一次（长压测里可能被反复取用）。 */
+    #stopEntry: ScriptResponse | null = null;
 
     constructor(
         raw: RawScript,
@@ -360,13 +402,20 @@ export class ScriptPlayer {
 
     /**
      * 取下一次响应并推进游标。
-     * 耗尽时：error 返回 null（调用方报错）；hold 重复最后一条；loop 从头再来。
+     * 耗尽时：error 返回 null（调用方报错）；hold 重复最后一条；loop 从头再来；
+     * stop 返回收尾响应（纯文本 + finish_reason=stop，让 harness 自行收尾退出）。
      */
     take(): ScriptResponse | null {
+        // 取号即记录时刻：这是「请求到达 mock」的时间，不含响应本身的节奏（delayMs 等）。
+        const at = Date.now();
+        this.#requests += 1;
+        this.#lastRequestAt = at;
+        this.#firstRequestAt ??= at;
         if (this.#entries.length === 0) return null;
         if (this.#index >= this.#entries.length) {
             if (this.#policy === "hold") return this.#entries[this.#entries.length - 1]!;
             if (this.#policy === "loop") this.#index = 0;
+            else if (this.#policy === "stop") return (this.#stopEntry ??= stopResponse());
             else return null;
         }
         return this.#entries[this.#index++]!;
@@ -380,6 +429,9 @@ export class ScriptPlayer {
             index: this.#index,
             remaining: Math.max(0, this.#entries.length - this.#index),
             exhausted: this.#index >= this.#entries.length,
+            requests: this.#requests,
+            firstRequestAt: this.#firstRequestAt,
+            lastRequestAt: this.#lastRequestAt,
         };
     }
 

@@ -65,6 +65,11 @@ describe("loadConfig", () => {
             { PORT: "5555", MOCK_EXHAUSTED: "hold" },
         );
         expect(fromArgs).toMatchObject({ port: 6666, exhausted: "error" });
+
+        // stop 同样是合法策略（剧本耗尽后返回收尾响应，供长剧本端到端计时）。
+        expect(loadConfig(["--script", "s.json", "--exhausted", "stop"], {}).exhausted).toBe(
+            "stop",
+        );
     });
 
     it("非法取值给出可定位的错误", () => {

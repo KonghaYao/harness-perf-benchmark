@@ -16,15 +16,15 @@
  * - 沙盒 models.json **每次启动由本文件生成**：读同目录的 models.json（人读的源文件，
  *   baseUrl 写的是默认端口），只把 provider 的 baseUrl 换成本次端口再写进沙盒。pi 的 models.json
  *   只对 apiKey / headers 做 `$VAR` 插值（0.85.1 实测），baseUrl 不吃环境变量，换端口只能改文件；
- * - 默认剧本是 scripts/pi-scenario.json：pi 的内建工具名全小写（bash 而非 peri 的 Bash），
- *   照抄 scripts/perf-scenario.json 会被 pi 当成未知工具；
+ * - 默认剧本是 data/scenarios/long-run-pi.json：pi 的内建工具名全小写（bash 而非 peri 的 Bash），
+ *   照抄 peri 那份长剧本（`--tool Bash`）会被 pi 当成未知工具；
  * - 环境变量必须走 deps.harnessEnv：Bun 1.4 下 `process.env.X = …` 不会被 Bun.spawn 继承
  *   （实测，见 scripts/perf/run.ts 的 RunDeps.harnessEnv 注释），而 harness 是 run.ts 起的。
  *
  * 注意：工作目录是沙盒，但 pi 会向上找到仓库根的 CLAUDE.md 当上下文文件，每次请求都带上（属预期，
  * 与 Claude Code 相同；想关掉给 harness 加 --no-context-files）。
  *
- * 产物：<仓库>/data/claude-date/<runId>-{perf.log,samples.csv,harness.log,mock.log}
+ * 产物：<仓库>/data/runs/<harness>/<runId>/{run.json,perf.log,samples.csv,harness.log,mock.log}
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -44,7 +44,7 @@ if (argv.includes("-h") || argv.includes("--help")) {
     console.log(USAGE);
     console.log("提示: 这是 pi 版 demo，harness 命令固定为 `pi -p <prompt> --model llm-mock/llm-mock --no-session --no-extensions`；");
     console.log(`      PI_CODING_AGENT_DIR 指向 ${SANDBOX}（每次启动用本目录的 models.json 换端口后覆盖），不碰 ~/.pi/agent。`);
-    console.log("      默认剧本是 scripts/pi-scenario.json（bash 工具调用，配 --exhausted loop 持续供压）。");
+    console.log("      默认剧本是 data/scenarios/long-run-pi.json（bash 工具调用，--exhausted 默认 stop）。");
     console.log("      想看能自行收尾的完整工具循环（三轮调用后打印回答），用：");
     console.log("        bun perf-demo.ts --script playground/pi/script.json --exhausted hold");
     process.exit(EXIT_OK);
@@ -91,9 +91,21 @@ try {
     if (!argv.some((arg) => arg === "--work-dir" || arg.startsWith("--work-dir="))) {
         config.workDir = import.meta.dir;
     }
-    // 默认剧本：pi 的工具名与 peri / opencode / Claude Code 都不同（bash 小写），不能沿用全局默认那份。
+    // 产物目录的身份：`data/runs/<harness>/<runId>/`。不给也能从启动命令推断，
+    // 但 demo 明确写出来更稳（命令被包装、换路径都不会影响落点）。
+    if (!argv.some((arg) => arg === "--harness" || arg.startsWith("--harness="))) {
+        config.harnessId = "pi";
+    }
+
+    // 默认剧本：pi 的工具名与 peri / opencode / Claude Code 都不同（bash 小写），不能沿用它们那份。
+    // run.ts 的 --script 是必填，默认值因此得由各家 demo 自己带。
     if (!argv.some((arg) => arg === "--script" || arg.startsWith("--script="))) {
-        config.scriptPath = resolve(REPO_ROOT, "scripts/pi-scenario.json");
+        config.scriptPath = resolve(REPO_ROOT, "data/scenarios/long-run-pi.json");
+    }
+    // 耗尽策略跟着默认剧本走：长剧本要跑到自然结束才测得到端到端时长；loop 会一直供压
+    // 到兜底超时，那是已经废弃的固定窗口口径。
+    if (!argv.some((arg) => arg === "--exhausted" || arg.startsWith("--exhausted="))) {
+        config.exhausted = "stop";
     }
 
     // 二进制：显式 --peri 优先，否则从 PATH 找 pi（npm i -g @earendil-works/pi-coding-agent）。

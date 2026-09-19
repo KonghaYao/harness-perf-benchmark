@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExhaustedPolicy } from "./config";
-import { normalizeEntry, parseScript, ScriptPlayer } from "./script";
+import { normalizeEntry, parseScript, ScriptPlayer, STOP_MESSAGE } from "./script";
 
 const DEFAULTS = { delayMs: 0, chunkDelayMs: 0, chunkSize: 1 };
 
@@ -139,11 +139,24 @@ describe("ScriptPlayer", () => {
 
     it("按顺序推进游标", () => {
         const p = player();
+        expect(p.status()).toMatchObject({ firstRequestAt: null, lastRequestAt: null });
         expect([texts(p), texts(p), texts(p)]).toEqual(["a", "b", "c"]);
-        expect(p.status()).toMatchObject({ size: 3, index: 3, remaining: 0, exhausted: true });
+        expect(p.status()).toMatchObject({
+            size: 3,
+            index: 3,
+            remaining: 0,
+            exhausted: true,
+            requests: 3,
+        });
+        // 首/末次请求的时刻都要落在这次调用区间内，压测靠它把端到端时长拆成三段。
+        const status = p.status();
+        const now = Date.now();
+        expect(status.firstRequestAt).toBeGreaterThan(0);
+        expect(status.lastRequestAt).toBeGreaterThanOrEqual(status.firstRequestAt!);
+        expect(status.lastRequestAt).toBeLessThanOrEqual(now);
     });
 
-    it("耗尽的三种策略", () => {
+    it("耗尽的四种策略", () => {
         const error = player("error");
         error.take();
         error.take();
@@ -163,6 +176,29 @@ describe("ScriptPlayer", () => {
         loop.take();
         expect(texts(loop)).toBe("a");
         expect(loop.status().index).toBe(1);
+    });
+
+    it("stop 策略：耗尽后给出可收尾的纯文本，游标不再推进", () => {
+        const p = player("stop");
+        p.take();
+        p.take();
+        p.take();
+        for (let i = 0; i < 3; i += 1) {
+            const end = p.take();
+            expect(end?.message.content).toBe(STOP_MESSAGE);
+            expect(end?.message.tool_calls).toBeUndefined();
+            expect(end?.finishReason).toBe("stop");
+            // 收尾响应不参与剧本节奏：不引入额外等待。
+            expect(end?.delayMs).toBe(0);
+            expect(end?.chunkDelayMs).toBe(0);
+        }
+        expect(p.status()).toMatchObject({
+            index: 3,
+            remaining: 0,
+            exhausted: true,
+            // 6 次 take()：3 次消费剧本 + 3 次取收尾响应，请求数都要记上。
+            requests: 6,
+        });
     });
 
     it("显式配置的节奏优先于脚本 defaults", () => {

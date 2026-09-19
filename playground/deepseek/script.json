@@ -1,5 +1,5 @@
 {
-    "note": "dsh 端到端演示剧本：让 dsh 连续跑三轮 bash 工具循环（真实执行 ls / echo / pwd），最后打印收尾文本自行退出。**注意第 2 条是给「会话标题生成」请求准备的**：dsh 0.1.5-rc.2 在首条主请求之后会额外发一条标题请求（同 provider、messages=2），它在脚本里同样要占一条——实测的到达顺序是 主请求 → 标题请求 → 主请求 ……，所以第 2 条写成一句纯文本当标题，工具轮次从第 3 条继续。配 --exhausted hold 用：即使意料之外地多来一次请求，拿到的也是同一条收尾文本。压测请用 scripts/dsh-scenario.json + --exhausted loop。工具名与形状按实测：bash 小写，参数 {command, description} 两个都必填。",
+    "note": "dsh 端到端演示剧本：让 dsh 连续跑三轮 bash 工具循环（真实执行 ls / echo / pwd），最后打印收尾文本自行退出。**注意第 2 条是给「会话标题生成」请求准备的**：dsh 0.1.5-rc.2 在首条主请求之后会额外发一条标题请求（同 provider、messages=2），它在脚本里同样要占一条——实测的到达顺序是 主请求 → 标题请求 → 主请求 ……，所以第 2 条写成一句纯文本当标题，工具轮次从第 3 条继续。配 --exhausted hold 用：即使意料之外地多来一次请求，拿到的也是同一条收尾文本。压测请用长剧本（data/scenarios/long-run-dsh.json，由 scripts/perf/gen-long-run.ts 的 --tool bash --args command+description 生成）+ --exhausted stop。工具名与形状按实测：bash 小写，参数 {command, description} 两个都必填。",
     "defaults": {
         "delayMs": 10,
         "chunkDelayMs": 1,

@@ -151,6 +151,7 @@ export function createApp(deps: AppDeps): Hono {
         const request = body as ChatCompletionRequest;
 
         // 取号发生在响应开始之前：即使流被中途取消，该脚本条目也已消费。
+        const before = player.status();
         const entry = player.take();
         if (entry === null) {
             const status = player.status();
@@ -159,7 +160,7 @@ export function createApp(deps: AppDeps): Hono {
                 c,
                 500,
                 `脚本已耗尽（${status.size} 条全部消费，来源 ${status.source}）：` +
-                    "POST /__mock/reset 可重置游标，或用 --exhausted hold|loop 改变耗尽策略",
+                    "POST /__mock/reset 可重置游标，或用 --exhausted hold|loop|stop 改变耗尽策略",
                 "mock_script_exhausted",
                 "script_exhausted",
             );
@@ -170,7 +171,15 @@ export function createApp(deps: AppDeps): Hono {
             created: entry.created ?? Math.floor(now() / 1000),
             model: entry.model ?? request.model ?? config.model,
         };
-        log(`[llm-mock] ${describeRequest(request)} → 消费第 ${player.status().index} 条`);
+        // 正常行给「消费第 N 条」；stop 策略的收尾响应不推进游标，单独标出来
+        // （按行数数请求会漏掉它，统计口径见 ScriptStatus.requests）。
+        const consumed = player.status();
+        log(
+            `[llm-mock] ${describeRequest(request)} → ` +
+                (before.exhausted && before.policy === "stop"
+                    ? `剧本已耗尽（stop 策略），返回收尾响应（第 ${consumed.requests} 次请求）`
+                    : `消费第 ${consumed.index} 条`),
+        );
         // 脚本未声明 usage 时按请求与内容估算，保留真实响应里该有的 token 语义。
         const prompt = messagesValue(body.messages ?? body);
 
@@ -221,6 +230,7 @@ export function createApp(deps: AppDeps): Hono {
                 return c.json(adapter.error("请求体必须是 JSON 对象", "invalid_request_error"), 400);
             }
 
+            const before = player.status();
             const entry = player.take();
             if (entry === null) {
                 const status = player.status();
@@ -228,7 +238,7 @@ export function createApp(deps: AppDeps): Hono {
                 return c.json(
                     adapter.error(
                         `脚本已耗尽（${status.size} 条全部消费，来源 ${status.source}）：` +
-                            "POST /__mock/reset 可重置游标，或用 --exhausted hold|loop 改变耗尽策略",
+                            "POST /__mock/reset 可重置游标，或用 --exhausted hold|loop|stop 改变耗尽策略",
                         "script_exhausted",
                     ),
                     500,
@@ -240,8 +250,12 @@ export function createApp(deps: AppDeps): Hono {
                 created: entry.created ?? Math.floor(now() / 1000),
                 model: entry.model ?? (typeof body.model === "string" ? body.model : config.model),
             };
+            const consumed = player.status();
             log(
-                `[llm-mock] ${adapter.name} ${adapter.describe(body)} → 消费第 ${player.status().index} 条`,
+                `[llm-mock] ${adapter.name} ${adapter.describe(body)} → ` +
+                    (before.exhausted && before.policy === "stop"
+                        ? `剧本已耗尽（stop 策略），返回收尾响应（第 ${consumed.requests} 次请求）`
+                        : `消费第 ${consumed.index} 条`),
             );
             const prompt = adapter.promptValue(body);
             const ctx = { prompt, request: body };

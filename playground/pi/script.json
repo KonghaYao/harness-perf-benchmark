@@ -1,5 +1,5 @@
 {
-    "note": "pi 端到端演示剧本：前三条是 bash 工具调用，让 pi 连续跑三轮工具循环（真实执行 ls / echo / pwd）；最后一条是纯文本，pi 收到就收工并把这句话打印出来。所以本剧本要配 --exhausted hold 用：即使意料之外地多来一次请求，拿到的也是同一条收尾文本。压测请用 scripts/pi-scenario.json + --exhausted loop。工具名与形状按 pi 0.85.1 实测：内建工具名全小写，bash 吃 {\"command\": \"…\"}。",
+    "note": "pi 端到端演示剧本：前三条是 bash 工具调用，让 pi 连续跑三轮工具循环（真实执行 ls / echo / pwd）；最后一条是纯文本，pi 收到就收工并把这句话打印出来。所以本剧本要配 --exhausted hold 用：即使意料之外地多来一次请求，拿到的也是同一条收尾文本。压测请用长剧本（data/scenarios/long-run-pi.json，由 scripts/perf/gen-long-run.ts 的 --tool bash 生成）+ --exhausted stop。工具名与形状按 pi 0.85.1 实测：内建工具名全小写，bash 吃 {\"command\": \"…\"}。",
     "defaults": {
         "delayMs": 10,
         "chunkDelayMs": 1,

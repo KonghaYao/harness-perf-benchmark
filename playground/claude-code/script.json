@@ -1,5 +1,5 @@
 {
-    "note": "Claude Code 端到端演示剧本：前三条是 Bash 工具调用（只读轻量命令），让 agent 连续跑三轮工具循环；最后一条是纯文本回答（finish_reason stop → stop_reason end_turn），agent 收到后结束循环并把这句话打印出来。所以本剧本要配 --exhausted hold 用：即使意料之外地多来一次请求，拿到的也是同一条收尾回答。压测请用 scripts/perf-scenario.json + --exhausted loop。",
+    "note": "Claude Code 端到端演示剧本：前三条是 Bash 工具调用（只读轻量命令），让 agent 连续跑三轮工具循环；最后一条是纯文本回答（finish_reason stop → stop_reason end_turn），agent 收到后结束循环并把这句话打印出来。所以本剧本要配 --exhausted hold 用：即使意料之外地多来一次请求，拿到的也是同一条收尾回答。压测请用长剧本（data/scenarios/long-run.json，由 scripts/perf/gen-long-run.ts 生成）+ --exhausted stop。",
     "defaults": {
         "delayMs": 10,
         "chunkDelayMs": 1,

@@ -2,9 +2,12 @@ import { describe, expect, it } from "bun:test";
 import { resolve } from "node:path";
 import { REPO_ROOT, defaultHarnessPath, formatRunId, loadPerfConfig } from "./config";
 
+/** 剧本必填后，多数用例只关心被覆盖的那几项，统一在这里补一个占位路径。 */
+const argvWithScript = (...args: string[]): string[] => ["--script", "s.json", ...args];
+
 describe("loadPerfConfig", () => {
-    it("内置默认值：100ms 采样、60s 兜底、loop 剧本、playground/peri 工作目录", () => {
-        const config = loadPerfConfig([], REPO_ROOT);
+    it("内置默认值：100ms 采样、60s 兜底、loop 耗尽策略、playground/peri 工作目录", () => {
+        const config = loadPerfConfig(argvWithScript(), REPO_ROOT);
         expect(config).toMatchObject({
             turns: 25,
             intervalMs: 100,
@@ -16,10 +19,19 @@ describe("loadPerfConfig", () => {
             withTree: true,
             periArgs: [],
         });
-        expect(config.scriptPath).toBe(resolve(REPO_ROOT, "scripts/perf-scenario.json"));
+        expect(config.scriptPath).toBe(resolve(REPO_ROOT, "s.json"));
         expect(config.periPath).toBe(defaultHarnessPath());
         expect(config.workDir).toBe(resolve(REPO_ROOT, "playground/peri"));
-        expect(config.outDir).toBe(resolve(REPO_ROOT, "data/claude-date"));
+        expect(config.outDir).toBe(resolve(REPO_ROOT, "data/runs"));
+        // harness 身份默认由 run.ts 从启动命令推断，config 层给 null
+        expect(config.harnessId).toBeNull();
+        expect(config.label).toBeNull();
+    });
+
+    it("剧本必填：没有 --script 直接报错，不给隐式默认剧本", () => {
+        expect(() => loadPerfConfig([], REPO_ROOT)).toThrow(/--script/);
+        // 空串等同于没给：parseArgs 允许 --script ""，但那不该被当成一份剧本路径
+        expect(() => loadPerfConfig(["--script", "  "], REPO_ROOT)).toThrow(/--script/);
     });
 
     it("可覆盖各项参数；相对路径按传入的 cwd 解析", () => {
@@ -73,25 +85,35 @@ describe("loadPerfConfig", () => {
     it("--peri-arg 可重复，按顺序透传", () => {
         // 值以 - 开头时必须写 --peri-arg=<值>（parseArgs 的规则），普通值可空格分隔
         const config = loadPerfConfig(
-            ["--peri-arg=--db-path", "--peri-arg=/tmp/p.db", "--peri-arg", "/tmp/extra"],
+            argvWithScript("--peri-arg=--db-path", "--peri-arg=/tmp/p.db", "--peri-arg", "/tmp/extra"),
             REPO_ROOT,
         );
         expect(config.periArgs).toEqual(["--db-path", "/tmp/p.db", "/tmp/extra"]);
     });
 
     it("非法取值给出可定位的错误", () => {
-        expect(() => loadPerfConfig(["--interval-ms", "0"], REPO_ROOT)).toThrow(/interval-ms/);
-        expect(() => loadPerfConfig(["--interval-ms", "abc"], REPO_ROOT)).toThrow(/interval-ms/);
-        expect(() => loadPerfConfig(["--timeout-ms", "10"], REPO_ROOT)).toThrow(/timeout-ms/);
-        expect(() => loadPerfConfig(["--turns", "0"], REPO_ROOT)).toThrow(/turns/);
-        expect(() => loadPerfConfig(["--port", "70000"], REPO_ROOT)).toThrow(/port/);
-        expect(() => loadPerfConfig(["--sampler", "nope"], REPO_ROOT)).toThrow(/sampler/);
-        expect(() => loadPerfConfig(["--exhausted", "nope"], REPO_ROOT)).toThrow(/exhausted/);
-        expect(() => loadPerfConfig(["--prompt", "   "], REPO_ROOT)).toThrow(/prompt/);
+        expect(() => loadPerfConfig(argvWithScript("--interval-ms", "0"), REPO_ROOT)).toThrow(
+            /interval-ms/,
+        );
+        expect(() => loadPerfConfig(argvWithScript("--interval-ms", "abc"), REPO_ROOT)).toThrow(
+            /interval-ms/,
+        );
+        expect(() => loadPerfConfig(argvWithScript("--timeout-ms", "10"), REPO_ROOT)).toThrow(
+            /timeout-ms/,
+        );
+        expect(() => loadPerfConfig(argvWithScript("--turns", "0"), REPO_ROOT)).toThrow(/turns/);
+        expect(() => loadPerfConfig(argvWithScript("--port", "70000"), REPO_ROOT)).toThrow(/port/);
+        expect(() => loadPerfConfig(argvWithScript("--sampler", "nope"), REPO_ROOT)).toThrow(
+            /sampler/,
+        );
+        expect(() => loadPerfConfig(argvWithScript("--exhausted", "nope"), REPO_ROOT)).toThrow(
+            /exhausted/,
+        );
+        expect(() => loadPerfConfig(argvWithScript("--prompt", "   "), REPO_ROOT)).toThrow(/prompt/);
     });
 
     it("拒绝未知参数", () => {
-        expect(() => loadPerfConfig(["--nope"], REPO_ROOT)).toThrow();
+        expect(() => loadPerfConfig(argvWithScript("--nope"), REPO_ROOT)).toThrow();
         expect(() => loadPerfConfig(["positional"], REPO_ROOT)).toThrow();
     });
 });

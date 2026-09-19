@@ -102,7 +102,7 @@ curl -N -s localhost:3457/v1/chat/completions \
 ```
 --script <path>        脚本文件（必填，亦可用 SCRIPT_PATH）
 --port <n>             监听端口（默认 3457）
---exhausted <policy>   脚本耗尽后: error | hold | loop（默认 error）
+--exhausted <policy>   脚本耗尽后: error | hold | loop | stop（默认 error）
 --model <name>         响应中补全的模型名（默认 llm-mock）
 --delay-ms <n>         首包前延迟毫秒
 --chunk-delay-ms <n>   流式 chunk 间隔毫秒
@@ -116,7 +116,11 @@ curl -N -s localhost:3457/v1/chat/completions \
 
 - `error`（默认）：返回 500 与 `code: "script_exhausted"`，提示 use `/__mock/reset`；
 - `hold`：每次重复最后一条；
-- `loop`：从头循环。
+- `loop`：从头循环；
+- `stop`：返回一条「任务结束」纯文本（`finish_reason: "stop"`，无工具调用）。harness 收到后
+  会当作任务完成、自行收尾退出——用于「跑完一整个长剧本、测端到端时长」的压测场景，
+  避免 harness 卡在等下一次响应上直到被超时强杀。`/__mock/status` 里的 `requests` 统计
+  累计请求数（含这些收尾响应，`index` 不推进）。
 
 默认不静默兜底，避免把"剧本已播完"伪装成正常响应。
 
@@ -156,15 +160,16 @@ providers，`active_alias` 与同名 profile 档位覆盖全局。
 > 文件，直接把同一段 JSON 交给 `peri --settings '<json>'`——单文件来源，
 > 不合并全局与工作区配置）。
 
-随后在本项目目录下运行（peri 二进制从 perihelion 仓库构建，与本项目同级）：
+随后在本项目目录下运行（peri 用 PATH 里的发布版；本仓库不拿 perihelion 的本地 debug 构建当
+测试 harness——debug 构建的读数与发布版不可比）：
 
 ```bash
 # 终端 1：起 mock（用配套的多轮演示脚本，含 Bash 工具调用）
 bun run src/server.ts --script scripts/peri-demo.json
 
 # 终端 2：在本目录下跑 peri（非交互 print 模式）
-../perihelion/target/debug/peri -p "你好" --max-turns 1 --no-session-persistence
-../perihelion/target/debug/peri -p "看一下目录里有什么" --max-turns 4 --dangerously-skip-permissions
+peri -p "你好" --max-turns 1 --no-session-persistence
+peri -p "看一下目录里有什么" --max-turns 4 --dangerously-skip-permissions
 ```
 
 ### 一个 prompt 会消费几条脚本
@@ -191,7 +196,7 @@ prediction 能力时；TUI 与 print 模式都会），它是一个无工具的�
 mock 的访问日志会打印每次请求的 `stream / model / messages / last=role:"…"`，
 用于确认是哪一类请求消费了脚本——当游标推进比预期快时，先看这里。
 
-实测（`target/debug/peri`）：peri 会输出脚本内容、真实执行 `Bash`、把 `ls`
+实测（PATH 里的 peri 3.17）：peri 会输出脚本内容、真实执行 `Bash`、把 `ls`
 结果作为 tool 消息回传后继续消费下一条；脚本播完后主流程仍正常退出
 （后续预测请求收到 500 `script_exhausted`，不影响已完成的回答）。
 

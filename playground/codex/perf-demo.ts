@@ -12,12 +12,12 @@
  * - 隔离靠 **CODEX_HOME**（本目录下的 .codex/，每次启动把 config.toml 覆盖进去）：
  *   用户全局的 ~/.codex/config.toml 挂着 hooks 与别的 provider，被读到就压不到本 mock；
  * - 端口用命令行覆盖 `-c model_providers.llm-mock.base_url=…`，换 --port 不用改沙盒 config.toml；
- * - 默认剧本是 scripts/codex-scenario.json（peri 的 perf-scenario.json 里是 Bash 工具调用，
- *   codex 不认这个工具名），要换剧本显式传 --script；
+ * - 默认剧本是 data/scenarios/long-run-codex.json（长剧本，exec 形状——peri 那份长剧本里是
+ *   Bash 工具调用，codex 不认这个工具名），要换剧本显式传 --script；
  * - 环境变量必须走 deps.harnessEnv：Bun 1.4 下 `process.env.X = …` 不会被 Bun.spawn 继承
  *   （实测，见 scripts/perf/run.ts 的 RunDeps.harnessEnv 注释），而 harness 是 run.ts 起的。
  *
- * 产物：<仓库>/data/claude-date/<runId>-{perf.log,samples.csv,harness.log,mock.log}
+ * 产物：<仓库>/data/runs/<harness>/<runId>/{run.json,perf.log,samples.csv,harness.log,mock.log}
  */
 import { copyFileSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -33,7 +33,7 @@ if (argv.includes("-h") || argv.includes("--help")) {
     console.log(USAGE);
     console.log("提示: 这是 Codex 版 demo，harness 命令固定为 `codex exec --skip-git-repo-check -s read-only --ephemeral <prompt>`；");
     console.log(`      CODEX_HOME 指向 ${SANDBOX}（每次启动用本目录的 config.toml 覆盖），不碰 ~/.codex 的 hooks 与 provider。`);
-    console.log("      默认剧本是 scripts/codex-scenario.json（exec 工具调用，配 --exhausted loop 持续供压）。");
+    console.log("      默认剧本是 data/scenarios/long-run-codex.json（exec 工具调用，--exhausted 默认 stop）。");
     console.log("      想看能自行收尾的完整工具循环（三轮调用后打印回答），用：");
     console.log("        bun perf-demo.ts --script playground/codex/script.json --exhausted hold");
     process.exit(EXIT_OK);
@@ -65,9 +65,21 @@ try {
     if (!argv.some((arg) => arg === "--work-dir" || arg.startsWith("--work-dir="))) {
         config.workDir = import.meta.dir;
     }
+    // 产物目录的身份：`data/runs/<harness>/<runId>/`。不给也能从启动命令推断，
+    // 但 demo 明确写出来更稳（命令被包装、换路径都不会影响落点）。
+    if (!argv.some((arg) => arg === "--harness" || arg.startsWith("--harness="))) {
+        config.harnessId = "codex";
+    }
+
     // 默认剧本：codex 认的工具名/形状与 peri、opencode 都不同，默认值不能沿用它俩的。
+    // run.ts 的 --script 是必填，默认值因此得由各家 demo 自己带。
     if (!argv.some((arg) => arg === "--script" || arg.startsWith("--script="))) {
-        config.scriptPath = resolve(REPO_ROOT, "scripts/codex-scenario.json");
+        config.scriptPath = resolve(REPO_ROOT, "data/scenarios/long-run-codex.json");
+    }
+    // 耗尽策略跟着默认剧本走：长剧本要跑到自然结束才测得到端到端时长；loop 会一直供压
+    // 到兜底超时，那是已经废弃的固定窗口口径。
+    if (!argv.some((arg) => arg === "--exhausted" || arg.startsWith("--exhausted="))) {
+        config.exhausted = "stop";
     }
 
     // 二进制：显式 --peri 优先，否则从 PATH 找 codex。

@@ -1,5 +1,5 @@
 {
-    "note": "Codex 端到端演示剧本：前三条是 exec（codex 唯一的 custom 工具，arguments 是裸 JavaScript 源码而不是 JSON）调用，让 codex 连续跑三轮工具循环；最后一条是纯文本，codex 收到就收工并把这句话打印出来。所以本剧本要配 --exhausted hold 用：即使意料之外地多来一次请求，拿到的也是同一条收尾文本。压测请用 scripts/codex-scenario.json + --exhausted loop。Responses 协议里没有 stop_reason，收不收尾全看有没有 tool_calls（见 src/responses.ts）。",
+    "note": "Codex 端到端演示剧本：前三条是 exec（codex 唯一的 custom 工具，arguments 是裸 JavaScript 源码而不是 JSON）调用，让 codex 连续跑三轮工具循环；最后一条是纯文本，codex 收到就收工并把这句话打印出来。所以本剧本要配 --exhausted hold 用：即使意料之外地多来一次请求，拿到的也是同一条收尾文本。压测请用长剧本（data/scenarios/long-run-codex.json，由 scripts/perf/gen-long-run.ts 的 --args exec 生成）+ --exhausted stop。Responses 协议里没有 stop_reason，收不收尾全看有没有 tool_calls（见 src/responses.ts）。",
     "defaults": {
         "delayMs": 10,
         "chunkDelayMs": 1,

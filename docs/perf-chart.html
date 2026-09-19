@@ -1,0 +1,740 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>harness 压测曲线 · 长剧本（100 轮 × 4KB）</title>
+        <!--
+            固定的看图页：只读同目录之外的一份数据 JSON（data/perf-chart.json，由
+            `bun run scripts/perf/gen-chart-data.ts` 从压测产物里汇总）。
+
+            本地打开（file:// 会被 CORS 挡在 fetch 上，必须起个静态服务）：
+                cd <仓库根> && python3 -m http.server 8080
+                → http://localhost:8080/docs/perf-chart.html
+
+            图表库走 CDN（unpkg 的 Chart.js 4 UMD），2s 内没到就自动换本地兜底
+            （vendor/chart.umd.min.js，同一份 v4.5.1 的拷贝，已 gitignore）——本机浏览器走 PAC 代理，
+            实测公共 CDN 不是报错而是挂着不动，所以超时是必需的、且不能写成静态的 script 标签
+            （卡住时连后续解析都停下）。两处都拿不到时页面会直说，而不是白屏。
+        -->
+        <style>
+            :root {
+                --fg: #1b1f24;
+                --muted: #6a737d;
+                --line: #e3e6ea;
+                --bg: #fbfbfc;
+                --accent: #2f6fed;
+            }
+            * {
+                box-sizing: border-box;
+            }
+            body {
+                margin: 0 auto;
+                max-width: 1080px;
+                padding: 24px 20px 56px;
+                background: var(--bg);
+                color: var(--fg);
+                font: 14px/1.6 -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+                    sans-serif;
+            }
+            h1 {
+                margin: 0 0 4px;
+                font-size: 21px;
+            }
+            h2 {
+                margin: 28px 0 8px;
+                font-size: 15px;
+            }
+            .sub {
+                margin: 0 0 18px;
+                color: var(--muted);
+            }
+            code {
+                padding: 1px 5px;
+                border-radius: 4px;
+                background: #eef1f4;
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                font-size: 12.5px;
+            }
+            .controls {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 16px;
+                align-items: center;
+                margin-bottom: 14px;
+            }
+            .group {
+                display: inline-flex;
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                overflow: hidden;
+                background: #fff;
+            }
+            .group button {
+                padding: 6px 14px;
+                border: 0;
+                border-right: 1px solid var(--line);
+                background: #fff;
+                color: var(--muted);
+                font: inherit;
+                cursor: pointer;
+            }
+            .group button:last-child {
+                border-right: 0;
+            }
+            .group button:hover {
+                background: #f2f5f9;
+            }
+            .group button.active {
+                background: var(--accent);
+                color: #fff;
+            }
+            .toggle {
+                display: inline-flex;
+                gap: 6px;
+                align-items: center;
+                color: var(--muted);
+                cursor: pointer;
+                user-select: none;
+            }
+            .chart-box {
+                position: relative;
+                height: 62vh;
+                min-height: 360px;
+                padding: 12px;
+                border: 1px solid var(--line);
+                border-radius: 10px;
+                background: #fff;
+            }
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 13px;
+            }
+            th,
+            td {
+                padding: 6px 8px;
+                border-bottom: 1px solid var(--line);
+                text-align: right;
+                white-space: nowrap;
+            }
+            th:first-child,
+            td:first-child {
+                text-align: left;
+            }
+            th:nth-child(2),
+            td:nth-child(2) {
+                text-align: left;
+                color: var(--muted);
+                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            }
+            thead th {
+                color: var(--muted);
+                font-weight: 500;
+            }
+            .swatch {
+                display: inline-block;
+                width: 9px;
+                height: 9px;
+                margin-right: 6px;
+                border-radius: 2px;
+                vertical-align: baseline;
+            }
+            ul.notes {
+                margin: 6px 0 0;
+                padding-left: 20px;
+                color: #41474e;
+            }
+            ul.notes li {
+                margin-bottom: 5px;
+            }
+            .panel {
+                padding: 14px 16px;
+                border: 1px solid var(--line);
+                border-radius: 10px;
+                background: #fff;
+            }
+            #error {
+                padding: 14px 16px;
+                border: 1px solid #f0c2c2;
+                border-radius: 10px;
+                background: #fff6f6;
+            }
+            #error pre {
+                margin: 8px 0 0;
+                padding: 10px 12px;
+                border-radius: 6px;
+                background: #f4f6f8;
+                overflow-x: auto;
+                font-size: 12.5px;
+            }
+            [hidden] {
+                display: none !important;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>harness 压测曲线 · 长剧本</h1>
+        <p class="sub">
+            长剧本：100 轮 × 约 4KB 正文 + 每轮一次工具调用，<code>--exhausted stop</code> 跑到自然
+            结束；x 为相对时间（采样起点算 0），y 由按钮切换，曲线默认按 1s 窗口平滑（可切回原始）。
+            每条线的峰值标了 harness 名，<strong>内存的纵轴是反的</strong>（占用越大越靠下）。
+            数据来自 <code>data/perf-chart.json</code>，每个 harness 一条线。
+        </p>
+
+        <div id="error" hidden>
+            <strong id="error-title">数据没加载出来</strong>
+            <div id="error-why" class="sub" style="margin: 6px 0 0"></div>
+            <pre id="error-cmd"></pre>
+        </div>
+
+        <div id="app" hidden>
+            <div class="controls">
+                <div class="group" id="metric-buttons" role="group" aria-label="Y 轴指标">
+                    <button data-metric="rss" class="active">内存 RSS</button>
+                    <button data-metric="cpu">CPU</button>
+                </div>
+                <div class="group" id="scope-buttons" role="group" aria-label="统计口径">
+                    <button data-scope="tree" class="active">进程树</button>
+                    <button data-scope="main">主进程</button>
+                </div>
+                <div class="group" id="smooth-buttons" role="group" aria-label="曲线平滑窗口">
+                    <button data-smooth="0">原始</button>
+                    <button data-smooth="500">0.5s</button>
+                    <button data-smooth="1000" class="active">1s</button>
+                    <button data-smooth="2000">2s</button>
+                </div>
+                <label class="toggle">
+                    <input type="checkbox" id="marks" checked />
+                    标注首个 / 末次请求
+                </label>
+            </div>
+
+            <div class="chart-box">
+                <canvas id="chart"></canvas>
+            </div>
+
+            <h2>这次画的是哪几次运行</h2>
+            <div class="panel">
+                <table id="summary">
+                    <thead></thead>
+                    <tbody></tbody>
+                </table>
+                <p class="sub" id="pick-rule" style="margin: 10px 0 0"></p>
+            </div>
+
+            <h2>读数怎么读</h2>
+            <div class="panel">
+                <ul class="notes">
+                    <li>
+                        <strong>一个 harness 一条线</strong>：线的右端就是它退出的时刻；各家的端到端
+                        时长能差一个数量级，所以横向长度本身就是结论之一。
+                    </li>
+                    <li>
+                        <strong>虚线是「首个请求」与「末次请求」</strong>（mock 侧记的时刻挪到采样时间轴上）。
+                        虚线右边曲线还在、却几乎零 CPU，那就是<strong>收尾等待</strong>——peri 固定等 5.1s、
+                        Codex 固定等 10.1s（退出时向 <code>chatgpt.com</code> 发请求、本机 DNS 污染导致超时），
+                        与轮数无关；其余各家的收尾都在 0.2s 以内。详见
+                        <code>docs/perf-compare.md</code>。
+                    </li>
+                    <li>
+                        <strong>请求数 ≠ 轮数</strong>：mock 请求里混着各家自己的辅助请求——peri 的
+                        「预测下一步输入」、opencode / dsh 的标题生成、pi 的上下文压缩总结。
+                        辅助请求同样消费剧本条目，所以 100 条剧本下 opencode / dsh 实际只执行了
+                        99 轮工具调用；<strong>pi 用的是 130 条剧本</strong>（它的压缩从第 70 轮起每轮多吃
+                        一条），132 次请求里 100 次是主循环、30 次是压缩总结。
+                    </li>
+                    <li>
+                        <strong>pi 的曲线中途会「变轻」</strong>：压缩之后它回传的历史被压成摘要
+                        （请求体从 <code>messages=200</code> 量级压回 62 条），所以后半程的请求体与内存
+                        不再随轮次增长——这是 pi 自己把上下文管掉了，不是漏跑。
+                    </li>
+                    <li>
+                        <strong>口径默认「进程树」</strong>：Codex 的 CLI 只是 Node 启动器
+                        （主进程 40MB 上下、CPU 近 0），真正干活的是它 spawn 的原生二进制，
+                        切到「主进程」看 Codex 会严重低报。
+                    </li>
+                    <li>
+                        CPU 是<strong>单核 100%</strong> 口径，多线程进程可以 &gt;100%；内存取 RSS（含共享内存，
+                        含工具调用的子进程时按进程树算）。
+                    </li>
+                    <li>
+                        <strong>曲线默认按 1s 窗口做滑动平均</strong>（上面可切原始 / 0.5s / 1s / 2s）。
+                        100ms 采样下多线程 harness 的 CPU 本就是锯齿：一轮里「拼请求、解析上下文」突发几拍，
+                        等 mock 回包时几乎归零——本批数据里相邻两拍跳 30 个百分点以上的有 opencode 186 处、
+                        dsh 25 处、Claude Code 8 处，<strong>那是真实读数，不是采样抖动</strong>；换 1s 窗口
+                        后这些跳变全部降到 0 处（0.5s 窗口还剩 opencode 3 处）。所以平滑放在看图侧、不动原始
+                        数据：表格里的均值 / 峰值与 <code>samples.csv</code> 始终是原始值，想看毛刺切回「原始」。
+                    </li>
+                    <li>
+                        <strong>每条线的峰值上标了 harness 名</strong>（CPU 与内存都标）：圆点就是该家曲线的
+                        最高处——平滑开着时标的是平滑后的峰值，想看原始峰值先把窗口切回「原始」；汇总表里
+                        那列始终按原始读数算。名字默认写在峰值右侧，右边放不下时翻到左侧（内存峰值多半
+                        落在收尾处，容易贴着右边界）。
+                    </li>
+                    <li>
+                        <strong>内存的纵轴是反的</strong>（0 在顶、占用越大越靠下）：曲线往下走 = 内存变重，
+                        方向与「负担加重」一致；CPU 轴仍是正常方向（越高越忙）。
+                    </li>
+                    <li>
+                        机器上同时有别的工作负载时绝对值会偏高，<strong>横向比形状比数值更稳</strong>；
+                        要更干净的数字就空机器上重跑，再生成一次 JSON。
+                    </li>
+                </ul>
+            </div>
+        </div>
+
+        <script>
+            // samples 行的列序，与 scripts/perf/gen-chart-data.ts 的 SAMPLE_COLUMNS 一致。
+            const COL = { elapsed: 0, cpu: 1, rss: 2, treeCpu: 3, treeRss: 4, procs: 5 };
+
+            // 图表库的两个来源：CDN 先试（2s 超时），拿不到换仓库里的本地拷贝。
+            const CDN_URL = "https://unpkg.com/chart.js@4/dist/chart.umd.min.js";
+            const VENDOR_URL = "vendor/chart.umd.min.js";
+
+            const METRICS = {
+                rss: {
+                    unit: "MB",
+                    // 内存轴反转（0 在顶、占用越大越靠下）：曲线的走向与「内存变重」同向，
+                    // 一眼能看出哪家一路涨、哪家中途把自己压回去了。
+                    axis: "内存 RSS（MB）· 纵轴已反转",
+                    reverse: true,
+                    index: { main: COL.rss, tree: COL.treeRss },
+                    // KB → MB
+                    value: (row, index) => row[index] / 1024,
+                    digits: 0,
+                },
+                cpu: {
+                    unit: "%",
+                    axis: "CPU（%，单核 = 100%）",
+                    reverse: false,
+                    index: { main: COL.cpu, tree: COL.treeCpu },
+                    value: (row, index) => row[index],
+                    digits: 1,
+                },
+            };
+
+            // 认得的 harness 用固定色（跟 docs 里的表对应），不认识按顺序发色。
+            // 键必须用 harness id（`claude-code` 不是 `claude`，见 scripts/perf/harness-id.ts）——
+            // 写错了不会报错，只会悄悄掉进 PALETTE 轮询、跟别人撞色。
+            const COLORS = {
+                peri: "#d1495b",
+                opencode: "#2f6fed",
+                "claude-code": "#d98218",
+                codex: "#12876a",
+                pi: "#7a4fd0",
+                dsh: "#b23a8a",
+            };
+            const PALETTE = Object.values(COLORS);
+
+            const state = { metric: "rss", scope: "tree", marks: true, smoothMs: 1000 };
+            let payload = null;
+            let chart = null;
+
+            const colorOf = (run, order) => COLORS[run.id] ?? PALETTE[order % PALETTE.length];
+            const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`;
+            const round = (value, digits) => Number(value.toFixed(digits));
+            const fmt = (value, metric) => value.toFixed(METRICS[metric].digits);
+
+            /** 虚线分界线：每条线上画「首个请求」「末次请求」两根，颜色跟随该 harness。 */
+            const marksPlugin = {
+                id: "requestMarks",
+                afterDatasetsDraw(canvas) {
+                    if (!state.marks) return;
+                    const { ctx, chartArea, scales } = canvas;
+                    ctx.save();
+                    ctx.setLineDash([5, 4]);
+                    ctx.lineWidth = 1;
+                    ctx.globalAlpha = 0.5;
+                    canvas.data.datasets.forEach((dataset) => {
+                        if (!dataset.marks) return;
+                        ctx.strokeStyle = dataset.borderColor;
+                        for (const ms of [dataset.marks.first, dataset.marks.last]) {
+                            const x = scales.x.getPixelForValue(ms / 1000);
+                            if (!Number.isFinite(x) || x < chartArea.left || x > chartArea.right) continue;
+                            ctx.beginPath();
+                            ctx.moveTo(x, chartArea.top);
+                            ctx.lineTo(x, chartArea.bottom);
+                            ctx.stroke();
+                        }
+                    });
+                    ctx.restore();
+                },
+            };
+
+            /**
+             * 峰值标记：在每条曲线自己的最高点画一个点，右侧写 harness 名（CPU 与内存都画）。
+             *
+             * 取的是**画出来的**那条线（跟着平滑窗口走），所以标记点必然落在曲线上；汇总表里的
+             * 峰值按原始读数算，平滑开着时两者会有出入（想看原始峰值就把窗口切回「原始」）。
+             * 名字先试右侧，右边放不下就翻到左侧——否则最后那几条线（内存峰值多半在收尾处）
+             * 的字会越出画布。
+             */
+            const peakPlugin = {
+                id: "peakLabels",
+                afterDatasetsDraw(canvas) {
+                    const { ctx, chartArea, scales } = canvas;
+                    ctx.save();
+                    ctx.font = "600 11px -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif";
+                    ctx.textBaseline = "middle";
+
+                    // 先把所有峰值点换算成像素，顺手算好名字框的横向范围。
+                    const labels = [];
+                    for (const dataset of canvas.data.datasets) {
+                        if (!dataset.peak) continue;
+                        const x = scales.x.getPixelForValue(dataset.peak.x);
+                        const y = scales.y.getPixelForValue(dataset.peak.y);
+                        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+                        if (x < chartArea.left || x > chartArea.right) continue;
+                        const width = ctx.measureText(dataset.label).width;
+                        // 名字先试右侧，右边放不下就翻到左侧（内存峰值多半落在收尾处，贴着右边界）
+                        const toRight = x + 8 + width <= chartArea.right;
+                        labels.push({
+                            dataset,
+                            x,
+                            y,
+                            toRight,
+                            left: toRight ? x + 8 : x - 8 - width,
+                            right: toRight ? x + 8 + width : x - 8,
+                        });
+                    }
+
+                    // 两个峰值挨得近时（内存图里 dsh 与 Codex 的 y 只差 10px）名字会叠在一起，
+                    // 按 y 排一遍、给前者让位——只挪字不挪点，点始终在曲线上。
+                    labels.sort((a, b) => a.y - b.y);
+                    const placed = [];
+                    for (const label of labels) {
+                        let textY = label.y;
+                        for (let moved = true; moved; ) {
+                            moved = false;
+                            for (const other of placed) {
+                                const overlapsX = label.left < other.right && label.right > other.left;
+                                if (overlapsX && Math.abs(textY - other.textY) < 12) {
+                                    textY = other.textY + 12;
+                                    moved = true;
+                                }
+                            }
+                        }
+                        label.textY = Math.min(textY, chartArea.bottom - 8);
+                        // 落笔点：写在右侧时左对齐到 left，翻到左侧时右对齐到 right
+                        label.textX = label.toRight ? label.left : label.right;
+                        placed.push(label);
+                    }
+
+                    for (const label of labels) {
+                        const { dataset } = label;
+                        ctx.fillStyle = dataset.borderColor;
+                        ctx.beginPath();
+                        ctx.arc(label.x, label.y, 3.5, 0, Math.PI * 2);
+                        ctx.fill();
+                        ctx.textAlign = label.toRight ? "left" : "right";
+                        // 描一圈白边：峰值点正压在别人曲线上，纯色字会糊成一团
+                        ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
+                        ctx.lineWidth = 3;
+                        ctx.strokeText(dataset.label, label.textX, label.textY);
+                        ctx.fillText(dataset.label, label.textX, label.textY);
+                    }
+                    ctx.restore();
+                },
+            };
+
+            /**
+             * 时间窗对称滑动平均（`t` 是 elapsed_ms，`y` 是按当前指标与口径取出的读数）。
+             *
+             * 窗口按**毫秒**算而不是按点数：采样间隔由 --interval-ms 决定，点数会跟着变，写死
+             * 「前后各 5 个点」换个间隔就不是同一个窗口了。首尾两端的窗口按实际重叠部分截断
+             * （只有半边），端点因此更贴原始读数、不会被无中生有地拉平。
+             */
+            function smoothSeries(series, windowMs) {
+                if (windowMs <= 0 || series.length < 3) return series;
+                const half = windowMs / 2;
+                const out = new Array(series.length);
+                let sum = 0;
+                let head = 0;
+                let tail = 0; // 窗口是 [head, tail)
+                for (let i = 0; i < series.length; i += 1) {
+                    const center = series[i].t;
+                    while (tail < series.length && series[tail].t <= center + half) {
+                        sum += series[tail].y;
+                        tail += 1;
+                    }
+                    while (series[head].t < center - half) {
+                        sum -= series[head].y;
+                        head += 1;
+                    }
+                    out[i] = { t: center, y: sum / (tail - head) };
+                }
+                return out;
+            }
+
+            /** 提示框里的读数：平滑开着时点明这是平滑值，免得被当成 samples.csv 里的原始读数。 */
+            function tooltipLabel(metric) {
+                return (item) =>
+                    `${item.dataset.label}: ${item.parsed.y}${metric.unit}` +
+                    (state.smoothMs > 0 ? `（${state.smoothMs / 1000}s 平滑）` : "");
+            }
+
+            function buildDatasets() {
+                const metric = METRICS[state.metric];
+                const index = metric.index[state.scope];
+                return payload.runs.map((run, order) => {
+                    const color = colorOf(run, order);
+                    // 先留着 elapsed_ms（x 轴要秒，平滑要毫秒），平滑完再换算。
+                    const raw = run.samples.map((row) => ({
+                        t: row[COL.elapsed],
+                        y: metric.value(row, index),
+                    }));
+                    const smoothed = smoothSeries(raw, state.smoothMs);
+                    let peakIndex = 0;
+                    for (let i = 1; i < smoothed.length; i += 1) {
+                        if (smoothed[i].y > smoothed[peakIndex].y) peakIndex = i;
+                    }
+                    return {
+                        label: run.name,
+                        data: smoothed.map((point) => ({
+                            x: point.t / 1000,
+                            y: round(point.y, metric.digits),
+                        })),
+                        peak:
+                            smoothed.length === 0
+                                ? null
+                                : {
+                                      x: smoothed[peakIndex].t / 1000,
+                                      y: round(smoothed[peakIndex].y, metric.digits),
+                                  },
+                        borderColor: color,
+                        backgroundColor: color,
+                        borderWidth: 1.6,
+                        pointRadius: 0,
+                        pointHitRadius: 8,
+                        tension: 0,
+                        marks: run.requestMarksMs,
+                    };
+                });
+            }
+
+            function renderChart() {
+                const metric = METRICS[state.metric];
+                const datasets = buildDatasets();
+                const maxSeconds = Math.ceil(
+                    Math.max(...payload.runs.map((run) => run.endToEndMs)) / 1000,
+                );
+
+                if (chart !== null) {
+                    chart.data.datasets = datasets;
+                    chart.options.scales.y.title.text = metric.axis;
+                    chart.options.scales.y.reverse = metric.reverse;
+                    chart.options.plugins.tooltip.callbacks.label = tooltipLabel(metric);
+                    chart.update();
+                    return;
+                }
+
+                chart = new Chart(document.getElementById("chart"), {
+                    type: "line",
+                    data: { datasets },
+                    options: {
+                        animation: false,
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        interaction: { mode: "nearest", intersect: false, axis: "x" },
+                        scales: {
+                            x: {
+                                type: "linear",
+                                beginAtZero: true,
+                                suggestedMax: maxSeconds,
+                                title: { display: true, text: "相对时间（秒）" },
+                                ticks: { callback: (value) => `${value}s` },
+                                grid: { color: "#f1f3f5" },
+                            },
+                            y: {
+                                type: "linear",
+                                beginAtZero: true,
+                                reverse: metric.reverse,
+                                title: { display: true, text: metric.axis },
+                                ticks: {
+                                    // 单位现取当前指标，不要在创建时定格：刻度回调是在建图时注册的，
+                                    // 里面闭包住当时的 metric 的话，切到 CPU 后读数还会标着「MB」。
+                                    callback: (value) => `${value}${METRICS[state.metric].unit}`,
+                                },
+                                grid: { color: "#eef1f4" },
+                            },
+                        },
+                        plugins: {
+                            legend: { position: "top", labels: { usePointStyle: true, boxWidth: 8 } },
+                            tooltip: {
+                                callbacks: {
+                                    title: (items) => `t = ${items[0].parsed.x.toFixed(1)}s`,
+                                    label: tooltipLabel(metric),
+                                },
+                            },
+                        },
+                    },
+                    plugins: [marksPlugin, peakPlugin],
+                });
+            }
+
+            /** 汇总表：分界与时长是静态事实，均值/峰值跟随当前「指标 + 口径」。 */
+            function renderSummary() {
+                const metric = METRICS[state.metric];
+                const index = metric.index[state.scope];
+                const scopeName = state.scope === "tree" ? "进程树" : "主进程";
+                const columns = [
+                    "harness",
+                    "runId",
+                    "端到端",
+                    "启动→首个请求",
+                    "首个→末次请求",
+                    "末次→退出",
+                    "mock 请求数",
+                    "采样点",
+                    `${metric.axis}（${scopeName}）均值 / 峰值`,
+                ];
+
+                const rows = payload.runs.map((run, order) => {
+                    const values = run.samples.map((row) => metric.value(row, index));
+                    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+                    const peak = Math.max(...values);
+                    const tail = run.segments === null ? "—" : seconds(run.segments.tailMs);
+                    return [
+                        `<span class="swatch" style="background:${colorOf(run, order)}"></span>${run.name}`,
+                        run.runId,
+                        seconds(run.endToEndMs),
+                        run.segments === null ? "—" : seconds(run.segments.startupMs),
+                        run.segments === null ? "—" : seconds(run.segments.spanMs),
+                        tail + (run.segments !== null && run.segments.tailMs >= 1000 ? "（零请求）" : ""),
+                        run.requests ?? "—",
+                        String(run.samples.length),
+                        `${fmt(mean, state.metric)} / ${fmt(peak, state.metric)}${metric.unit}`,
+                    ];
+                });
+
+                const table = document.getElementById("summary");
+                table.querySelector("thead").innerHTML =
+                    `<tr>${columns.map((name) => `<th>${name}</th>`).join("")}</tr>`;
+                table.querySelector("tbody").innerHTML = rows
+                    .map((cells) => `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`)
+                    .join("");
+            }
+
+            function renderAll() {
+                renderChart();
+                renderSummary();
+            }
+
+            function wireControls() {
+                document.getElementById("metric-buttons").addEventListener("click", (event) => {
+                    const button = event.target.closest("button");
+                    if (button === null) return;
+                    state.metric = button.dataset.metric;
+                    for (const sibling of button.parentElement.children) {
+                        sibling.classList.toggle("active", sibling === button);
+                    }
+                    renderAll();
+                });
+                document.getElementById("scope-buttons").addEventListener("click", (event) => {
+                    const button = event.target.closest("button");
+                    if (button === null) return;
+                    state.scope = button.dataset.scope;
+                    for (const sibling of button.parentElement.children) {
+                        sibling.classList.toggle("active", sibling === button);
+                    }
+                    renderAll();
+                });
+                document.getElementById("marks").addEventListener("change", (event) => {
+                    state.marks = event.target.checked;
+                    if (chart !== null) chart.update();
+                });
+                document.getElementById("smooth-buttons").addEventListener("click", (event) => {
+                    const button = event.target.closest("button");
+                    if (button === null) return;
+                    state.smoothMs = Number(button.dataset.smooth);
+                    for (const sibling of button.parentElement.children) {
+                        sibling.classList.toggle("active", sibling === button);
+                    }
+                    // 只重画曲线：汇总表的均值 / 峰值始终按原始读数算，不随平滑变。
+                    renderChart();
+                });
+            }
+
+            function showError(title, why, command) {
+                document.getElementById("error-title").textContent = title;
+                document.getElementById("error-why").textContent = why;
+                document.getElementById("error-cmd").textContent = command;
+                document.getElementById("error").hidden = false;
+            }
+
+            /**
+             * 注入一个 <script> 并等它有结果（加载成功 / 报错 / 超时都算结果）。
+             *
+             * 必须有超时：本机浏览器走 PAC 代理，实测公共 CDN 不是报错而是**挂着不动**，
+             * 只挂 onerror 会一直等下去（页面白屏）。这也是不用静态 <script src> 的原因——
+             * 静态标签卡住时连后面的解析都停在原地。
+             */
+            function loadScript(src, timeoutMs) {
+                return new Promise((resolve) => {
+                    const tag = document.createElement("script");
+                    const settle = () => {
+                        tag.onload = null;
+                        tag.onerror = null;
+                        resolve(typeof Chart !== "undefined");
+                    };
+                    tag.src = src;
+                    tag.onload = settle;
+                    tag.onerror = settle;
+                    setTimeout(settle, timeoutMs);
+                    document.head.appendChild(tag);
+                });
+            }
+
+            /**
+             * 拿到 Chart 全局：先试 CDN（unpkg），2s 内没到就换仓库里的本地兜底
+             * （docs/vendor/chart.umd.min.js，同一份 v4.5.1；该目录已 gitignore，
+             * 所以换机器可能没有，那时只能如实报错）。
+             */
+            async function ensureLibrary() {
+                if (typeof Chart !== "undefined") return true;
+                if (await loadScript(CDN_URL, 2000)) return true;
+                return await loadScript(VENDOR_URL, 5000);
+            }
+
+            async function main() {
+                if (!(await ensureLibrary())) {
+                    showError(
+                        "图表库没加载出来",
+                        "CDN（unpkg）与本地兜底 docs/vendor/chart.umd.min.js 都没取到——" +
+                            "兜底文件可能缺失，或页面不是从仓库根起服务打开的（相对路径对不上）。",
+                        "ls docs/vendor/chart.umd.min.js   # 本地兜底在不在\n" +
+                            "curl -sI https://unpkg.com/chart.js@4/dist/chart.umd.min.js",
+                    );
+                    return;
+                }
+                let data;
+                try {
+                    const response = await fetch("../data/perf-chart.json", { cache: "no-store" });
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    data = await response.json();
+                } catch (error) {
+                    showError(
+                        "数据没加载出来",
+                        `读 ../data/perf-chart.json 失败（${error.message}）：要么文件还没生成，` +
+                            "要么页面是直接用 file:// 打开的（fetch 会被 CORS 挡住）。",
+                        "cd " +
+                            "<仓库根> && bun run scripts/perf/gen-chart-data.ts\n" +
+                            "cd <仓库根> && python3 -m http.server 8080\n" +
+                            "→ http://localhost:8080/docs/perf-chart.html",
+                    );
+                    return;
+                }
+                payload = data;
+                document.getElementById("pick-rule").textContent =
+                    `生成于 ${data.generatedAt}；${data.pickRule}；产物目录 ${data.sourceDir}。` +
+                    "换数据重跑：bun run scripts/perf/gen-chart-data.ts（可加 --pick <runId> 指定某一次运行）。";
+                document.getElementById("app").hidden = false;
+                wireControls();
+                renderAll();
+            }
+
+            main();
+        </script>
+    </body>
+</html>
