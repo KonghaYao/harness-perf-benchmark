@@ -14,7 +14,10 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { anthropic } from "./anthropic";
 import type { MockConfig } from "./config";
+import { streamResponse, type ProtocolAdapter } from "./protocol";
+import { responses } from "./responses";
 import type { ScriptPlayer, ScriptResponse } from "./script";
 import {
     messagesValue,
@@ -197,6 +200,81 @@ export function createApp(deps: AppDeps): Hono {
     app.post("/v1/chat/completions", chat);
     // 部分客户端的 base_url 不带 /v1。
     app.post("/chat/completions", chat);
+
+    /**
+     * 协议适配路由：与 chat 同构（取号 → 渲染 → 流式/非流式），
+     * 差别只在请求摘要、错误体与响应形状，全部由 adapter 决定。
+     */
+    const scripted =
+        (adapter: ProtocolAdapter) =>
+        async (c: Context): Promise<Response> => {
+            let body: unknown;
+            try {
+                body = await c.req.json();
+            } catch {
+                return c.json(
+                    adapter.error("请求体不是合法 JSON", "invalid_request_error"),
+                    400,
+                );
+            }
+            if (!isPlainObject(body)) {
+                return c.json(adapter.error("请求体必须是 JSON 对象", "invalid_request_error"), 400);
+            }
+
+            const entry = player.take();
+            if (entry === null) {
+                const status = player.status();
+                log(`[llm-mock] ${adapter.name} ${adapter.describe(body)} → 脚本已耗尽`);
+                return c.json(
+                    adapter.error(
+                        `脚本已耗尽（${status.size} 条全部消费，来源 ${status.source}）：` +
+                            "POST /__mock/reset 可重置游标，或用 --exhausted hold|loop 改变耗尽策略",
+                        "script_exhausted",
+                    ),
+                    500,
+                );
+            }
+
+            const meta: ResponseMeta = {
+                id: entry.id ?? nextId(),
+                created: entry.created ?? Math.floor(now() / 1000),
+                model: entry.model ?? (typeof body.model === "string" ? body.model : config.model),
+            };
+            log(
+                `[llm-mock] ${adapter.name} ${adapter.describe(body)} → 消费第 ${player.status().index} 条`,
+            );
+            const prompt = adapter.promptValue(body);
+            const ctx = { prompt, request: body };
+
+            if (!adapter.isStream(body)) {
+                await sleep(entry.delayMs, c.req.raw.signal);
+                return c.json(adapter.body(entry, meta, ctx) as Record<string, unknown>);
+            }
+            return new Response(
+                streamResponse(
+                    adapter.frames(entry, meta, {
+                        ...ctx,
+                        sleep,
+                        signal: c.req.raw.signal,
+                    }),
+                    c.req.raw.signal,
+                ),
+                {
+                    headers: {
+                        "content-type": "text/event-stream; charset=utf-8",
+                        "cache-control": "no-cache, no-transform",
+                        "x-accel-buffering": "no",
+                    },
+                },
+            );
+        };
+
+    // Claude Code：Anthropic Messages。
+    app.post("/v1/messages", scripted(anthropic));
+    app.post("/messages", scripted(anthropic));
+    // Codex：OpenAI Responses。
+    app.post("/v1/responses", scripted(responses));
+    app.post("/responses", scripted(responses));
 
     const models = (c: Context) =>
         c.json({

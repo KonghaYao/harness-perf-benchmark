@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { resolve } from "node:path";
-import { REPO_ROOT, formatRunId, loadPerfConfig } from "./config";
+import { REPO_ROOT, defaultHarnessPath, formatRunId, loadPerfConfig } from "./config";
 
 describe("loadPerfConfig", () => {
     it("内置默认值：100ms 采样、60s 兜底、loop 剧本、playground/peri 工作目录", () => {
@@ -17,7 +17,7 @@ describe("loadPerfConfig", () => {
             periArgs: [],
         });
         expect(config.scriptPath).toBe(resolve(REPO_ROOT, "scripts/perf-scenario.json"));
-        expect(config.periPath).toBe(resolve(REPO_ROOT, "../perihelion/target/debug/peri"));
+        expect(config.periPath).toBe(defaultHarnessPath());
         expect(config.workDir).toBe(resolve(REPO_ROOT, "playground/peri"));
         expect(config.outDir).toBe(resolve(REPO_ROOT, "data/claude-date"));
     });

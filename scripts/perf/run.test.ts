@@ -136,6 +136,54 @@ describe("runPerf 端到端", () => {
         expect(lines.some((line) => line.includes("-perf.log"))).toBe(true);
     });
 
+    it("harnessEnv 注入子进程，并写进 perf.log（凭据只留键名）", async () => {
+        const config = makeConfig({ timeoutMs: 20_000 });
+        const envFile = join(config.outDir, "harness-env.json");
+        const script = `
+            await Bun.write(${JSON.stringify(envFile)}, JSON.stringify({
+                injected: process.env.LLM_MOCK_INJECTED ?? null,
+                inherited: process.env.PATH === undefined ? null : "PATH",
+            }));
+            process.exit(0);
+        `;
+        const code = await runPerf(config, {
+            harnessCommand: () => [process.execPath, "-e", script],
+            harnessEnv: () => ({ LLM_MOCK_INJECTED: "hello", LLM_MOCK_API_KEY: "secret" }),
+        });
+
+        expect(code).toBe(0);
+        const seen = JSON.parse(readFileSync(envFile, "utf8")) as Record<string, string | null>;
+        expect(seen.injected).toBe("hello");
+        // 注入是「追加」：原有环境（PATH 等）照旧。
+        expect(seen.inherited).toBe("PATH");
+        const perf = readFileSync(artifact(config.outDir, "-perf.log"), "utf8");
+        expect(perf).toContain("LLM_MOCK_INJECTED=hello");
+        expect(perf).toContain("LLM_MOCK_API_KEY='***'");
+        expect(perf).not.toContain("secret");
+    });
+
+    it("不传 harnessEnv 时，运行时对 process.env 的赋值不会到达子进程", async () => {
+        // Bun 1.4 的 Bun.spawn 不传 env 时用的是**进程启动时的环境快照**，
+        // 这正是各 demo 必须走 harnessEnv 而不是 process.env.X = … 的原因。
+        const config = makeConfig({ timeoutMs: 20_000 });
+        const envFile = join(config.outDir, "harness-env.json");
+        const script = `
+            await Bun.write(${JSON.stringify(envFile)}, JSON.stringify({
+                leaked: process.env.LLM_MOCK_SHOULD_NOT_LEAK ?? null,
+            }));
+            process.exit(0);
+        `;
+        process.env.LLM_MOCK_SHOULD_NOT_LEAK = "leaked";
+        const code = await runPerf(config, {
+            harnessCommand: () => [process.execPath, "-e", script],
+        });
+        delete process.env.LLM_MOCK_SHOULD_NOT_LEAK;
+
+        expect(code).toBe(0);
+        const seen = JSON.parse(readFileSync(envFile, "utf8")) as Record<string, string | null>;
+        expect(seen.leaked).toBeNull();
+    });
+
     it("超时 → 3，harness 及其子进程按进程组回收", async () => {
         const config = makeConfig({ timeoutMs: 1_000 });
         const pidFile = join(config.outDir, "harness-pids.json");
@@ -224,6 +272,40 @@ describe("runPerf 端到端", () => {
             expect(message).toContain("已被占用");
         } finally {
             blocker.stop(true);
+        }
+    });
+
+    it("端口上蹲着上一轮残留的 mock（状态字段齐备）→ 1，不拿别人的数据出报告", async () => {
+        // 真实踩过：上一轮被中断的压测把旧 mock 留在端口上，它 /__mock/status 的字段齐备，
+        // 探活与字段校验都通过，我们自己的 mock 则因 EADDRINUSE 退出——整轮压测静默打到旧实例上
+        // （mock 请求数 0，harness 收到的是别人剧本的回复）。身份核对必须挡住这一路。
+        const port = nextPort++;
+        const stale = Bun.serve({
+            port,
+            fetch: (request) =>
+                new URL(request.url).pathname === "/__mock/status"
+                    ? Response.json({
+                          source: "/tmp/stale-script.json",
+                          policy: "hold",
+                          size: 1,
+                          index: 0,
+                      })
+                    : new Response("你好，我是脚本驱动的假模型。"),
+        });
+        try {
+            const config = makeConfig({ port, readyTimeoutMs: 8_000 });
+            const lines: string[] = [];
+            const code = await runPerf(config, { log: (line) => lines.push(line) });
+            expect(code).toBe(EXIT_SETUP);
+            const message = lines.join("\n");
+            expect(message).toContain("mock");
+            expect(message).toMatch(/已被占用|不是本次启动的 mock/);
+            // 退出发生在起 harness 之前：不该留下 harness.log（否则等于用别人的数据压了一轮）。
+            expect(listArtifacts(config.outDir).some((name) => name.endsWith("-harness.log"))).toBe(
+                false,
+            );
+        } finally {
+            stale.stop(true);
         }
     });
 });

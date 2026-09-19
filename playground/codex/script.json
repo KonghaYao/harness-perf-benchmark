@@ -1,0 +1,68 @@
+{
+    "note": "Codex 端到端演示剧本：前三条是 exec（codex 唯一的 custom 工具，arguments 是裸 JavaScript 源码而不是 JSON）调用，让 codex 连续跑三轮工具循环；最后一条是纯文本，codex 收到就收工并把这句话打印出来。所以本剧本要配 --exhausted hold 用：即使意料之外地多来一次请求，拿到的也是同一条收尾文本。压测请用 scripts/codex-scenario.json + --exhausted loop。Responses 协议里没有 stop_reason，收不收尾全看有没有 tool_calls（见 src/responses.ts）。",
+    "defaults": {
+        "delayMs": 10,
+        "chunkDelayMs": 1,
+        "chunkSize": 4
+    },
+    "responses": [
+        {
+            "message": {
+                "role": "assistant",
+                "content": "先看一眼当前目录里有什么。",
+                "tool_calls": [
+                    {
+                        "id": "call_codex_ls",
+                        "type": "function",
+                        "function": {
+                            "name": "exec",
+                            "arguments": "const r = await tools.exec_command({ cmd: \"ls\" });\ntext(r.output);"
+                        }
+                    }
+                ]
+            },
+            "finish_reason": "tool_calls"
+        },
+        {
+            "message": {
+                "role": "assistant",
+                "content": "再打印一行标记，确认工具链路是通的。",
+                "tool_calls": [
+                    {
+                        "id": "call_codex_echo",
+                        "type": "function",
+                        "function": {
+                            "name": "exec",
+                            "arguments": "const r = await tools.exec_command({ cmd: \"echo llm-mock-perf-tick\" });\ntext(r.output);"
+                        }
+                    }
+                ]
+            },
+            "finish_reason": "tool_calls"
+        },
+        {
+            "message": {
+                "role": "assistant",
+                "content": "接下来确认工作目录的绝对路径。",
+                "tool_calls": [
+                    {
+                        "id": "call_codex_pwd",
+                        "type": "function",
+                        "function": {
+                            "name": "exec",
+                            "arguments": "const r = await tools.exec_command({ cmd: \"pwd\" });\ntext(r.output);"
+                        }
+                    }
+                ]
+            },
+            "finish_reason": "tool_calls"
+        },
+        {
+            "message": {
+                "role": "assistant",
+                "content": "三轮工具调用都回来了：目录列表、标记回显与工作目录路径都正常，llm-mock 的 OpenAI Responses 链路验证结束。"
+            },
+            "finish_reason": "stop"
+        }
+    ]
+}

@@ -43,6 +43,14 @@ export interface PerfConfig {
 
 const DEFAULT_PORT = 3457;
 
+/**
+ * 默认 harness 二进制：**优先用 PATH 里的 peri**（用户可能装的是发布版），
+ * 找不到才退回同级的本地构建产物（`../perihelion/target/debug/peri`）。
+ */
+export function defaultHarnessPath(): string {
+    return Bun.which("peri") ?? resolve(REPO_ROOT, "../perihelion/target/debug/peri");
+}
+
 function integer(
     value: string | undefined,
     label: string,
@@ -106,7 +114,7 @@ export function loadPerfConfig(
         readyTimeoutMs: integer(values["ready-timeout-ms"], "ready-timeout-ms", 10_000, 100, 600_000),
         prompt,
         scriptPath: resolve(cwd, values.script ?? resolve(REPO_ROOT, "scripts/perf-scenario.json")),
-        periPath: resolve(cwd, values.peri ?? resolve(REPO_ROOT, "../perihelion/target/debug/peri")),
+        periPath: resolve(cwd, values.peri ?? defaultHarnessPath()),
         workDir: resolve(cwd, values["work-dir"] ?? resolve(REPO_ROOT, "playground/peri")),
         outDir: resolve(cwd, values["out-dir"] ?? resolve(REPO_ROOT, "data/claude-date")),
         port: integer(values.port, "port", DEFAULT_PORT, 1, 65535),

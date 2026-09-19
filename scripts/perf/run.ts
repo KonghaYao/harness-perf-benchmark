@@ -68,7 +68,7 @@ export const USAGE = `llm-mock 压测采样器 —— 起 mock、起 harness、�
   --ready-timeout-ms <n>  mock 就绪等待上限毫秒（默认 10000）
   --prompt <text>         harness 的提示词
   --script <path>         mock 剧本（默认 scripts/perf-scenario.json）
-  --peri <path>           harness 二进制（默认 ../perihelion/target/debug/peri）
+  --peri <path>           harness 二进制（默认取 PATH 里的 peri；找不到才退回 <仓库>/../perihelion/target/debug/peri）
   --work-dir <path>       harness 工作目录（默认 playground/peri）
   --out-dir <path>        产物目录（默认 data/claude-date）
   --port <n>              mock 端口（默认 3457）
@@ -107,6 +107,14 @@ interface ManagedProcess {
 export interface RunDeps {
     /** 构造 harness 命令行（测试注入假 harness）。 */
     harnessCommand?: (config: PerfConfig) => string[];
+    /**
+     * 追加到 harness 进程的环境变量。
+     *
+     * **必须走这里而不是 `process.env.X = …`**：Bun 1.4 下 `Bun.spawn` 不继承运行时对
+     * `process.env` 的赋值（实测子进程读到空值），只有显式传 `env` 才生效。
+     * harness 的沙盒隔离（HOME / XDG_* / CODEX_HOME 等）都依赖它。
+     */
+    harnessEnv?: (config: PerfConfig) => Record<string, string>;
     /** 构造 mock server 命令行（测试注入假 mock）。 */
     mockCommand?: (config: PerfConfig) => string[];
     /** mock 就绪探活（测试注入）。 */
@@ -149,16 +157,47 @@ function defaultMockCommand(config: PerfConfig): string[] {
 async function defaultProbeReady(url: string): Promise<boolean> {
     try {
         const response = await fetch(url, { signal: AbortSignal.timeout(2000) });
-        return response.ok;
+        if (!response.ok) return false;
+        // 只看 HTTP 200 不够：端口上可能蹲着别的 HTTP 服务（实测踩过——一个对任意路径都回 200 的
+        // 抓包服务器让探活误判成功，随后 mock 因 EADDRINUSE 退出，整轮压测静默打到别人身上）。
+        // 因此按 /__mock/status 的契约校验字段。
+        // 注意这仍拦不住「端口上蹲着**另一个 llm-mock 实例**」（字段当然齐备），那一路由
+        // 「我们起的 mock 进程是否还活着」来兜——见 waitMockReady 的注释。
+        const status = (await response.json()) as Record<string, unknown>;
+        return typeof status.size === "number" && typeof status.index === "number";
     } catch {
         return false;
     }
+}
+
+/**
+ * mock 启动失败的报错文案（退出码 + 日志末尾）。端口被占是最常见的一种，
+ * 单独点出来——要判断端口被占只能看 mock 自己的日志（`Failed to start server. Is port … in use?`）。
+ */
+function mockStartFailure(code: number, logFile: string, port: number): string {
+    const tail = tailOf(logFile);
+    const portTaken = /in use|EADDRINUSE|Failed to start server/i.test(tail);
+    return (
+        `mock 启动失败（退出码 ${code}），日志末尾: ${tail}` +
+        (portTaken ? `；端口 ${port} 已被占用，用 --port 换一个` : "")
+    );
 }
 
 /** 命令行的可读形式（含引号，方便直接复制重跑）。 */
 function quote(command: readonly string[]): string {
     return command
         .map((part) => (/^[\w./=:-]+$/.test(part) ? part : `'${part.replaceAll("'", "'\\''")}'`))
+        .join(" ");
+}
+
+/** 环境变量摘要：打印键名与值，但凭据类只留键名（避免把密钥写进日志）。 */
+function describeEnv(env: Record<string, string>): string {
+    const CREDENTIAL = /(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i;
+    return Object.entries(env)
+        .map(([key, value]) => {
+            const shown = CREDENTIAL.test(key) ? "***" : value;
+            return `${key}=${quote([shown])}`;
+        })
         .join(" ");
 }
 
@@ -351,19 +390,30 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         // 2. 等 mock 就绪
         const readyDeadline = clock() + config.readyTimeoutMs;
         let ready = false;
+        let status: Record<string, unknown> | null = null;
         while (clock() < readyDeadline) {
             if (mock.exitCode !== null) {
-                const tail = tailOf(files.mock);
-                const portTaken = /in use|EADDRINUSE|Failed to start server/i.test(tail);
-                fail(
-                    `mock 启动失败（退出码 ${mock.exitCode}），日志末尾: ${tail}` +
-                        (portTaken ? `；端口 ${config.port} 已被占用，用 --port 换一个` : ""),
-                );
+                fail(mockStartFailure(mock.exitCode, files.mock, config.port));
                 return EXIT_SETUP;
             }
             if (await probeReady(statusUrl)) {
-                ready = true;
-                break;
+                status = await fetchMockStatus(statusUrl);
+                // 探活成功 ≠ 端口上听着的就是**我们起的那个 mock**：可能蹲着上一轮残留的实例
+                // （实测踩过——旧的 mock 占着端口、/__mock/status 字段齐备，我们自己的 mock
+                // 已因 EADDRINUSE 退出，整轮压测于是静默打到旧实例上：请求数 0，harness 收到的
+                // 是别人剧本的回复）。用剧本路径做身份核对：它由本进程按绝对路径指定，
+                // 别人的实例对不上；对不上就直接失败，别拿别人的数据出报告。
+                if (status?.source === config.scriptPath) {
+                    ready = true;
+                    break;
+                }
+                fail(
+                    `端口 ${config.port} 上听着的不是本次启动的 mock：状态里的剧本是 ` +
+                        `${status === null ? "（读不到）" : String(status.source)}，` +
+                        `本次是 ${config.scriptPath}；多半是上一轮残留的 mock，` +
+                        `用 --port 换一个端口，或先把它杀掉`,
+                );
+                return EXIT_SETUP;
             }
             await Bun.sleep(READY_POLL_MS);
         }
@@ -374,7 +424,6 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
             );
             return EXIT_SETUP;
         }
-        const status = await fetchMockStatus(statusUrl);
         timeline(
             `mock 就绪: http://127.0.0.1:${config.port}（剧本 ${status?.size ?? "?"} 条，` +
                 `耗尽策略 ${status?.policy ?? "?"}）`,
@@ -382,7 +431,12 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
 
         // 3. 起 harness
         const command = harnessCommand(config);
-        timeline(`启动 harness: ${quote(command)}（cwd=${config.workDir}）`);
+        const extraEnv = deps.harnessEnv?.(config);
+        timeline(
+            `启动 harness: ${quote(command)}（cwd=${config.workDir}` +
+                (extraEnv === undefined ? "" : `，env +${describeEnv(extraEnv)}`) +
+                "）",
+        );
         harnessFd = openSync(files.harness, "a");
         harness = Bun.spawn(command, {
             cwd: config.workDir,
@@ -390,6 +444,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
             stdin: "ignore",
             stdout: harnessFd,
             stderr: harnessFd,
+            ...(extraEnv === undefined ? {} : { env: { ...process.env, ...extraEnv } }),
         });
         const harnessProc = harness;
         const harnessPid = harness.pid;

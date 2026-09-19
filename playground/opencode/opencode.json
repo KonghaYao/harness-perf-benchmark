@@ -6,7 +6,7 @@
       "npm": "@ai-sdk/openai-compatible",
       "name": "llm-mock",
       "options": {
-        "baseURL": "http://127.0.0.1:3457/v1",
+        "baseURL": "{env:LLM_MOCK_BASE_URL}",
         "apiKey": "mock-key"
       },
       "models": {

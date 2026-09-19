@@ -1,0 +1,23 @@
+# Codex 沙盒配置：由 playground/codex/perf-demo.ts 复制到 .codex/（CODEX_HOME）后加载，
+# 全程不碰 ~/.codex（用户全局配置里挂着 hooks 与别的 provider，一旦被读到就压不到本 mock）。
+#
+# 接入方式：自定义 model provider 走 Responses 协议，指向本 mock。
+#   codex → POST http://127.0.0.1:<本次端口>/v1/responses（stream: true）
+# 端口由 perf-demo 每次用 `-c model_providers.llm-mock.base_url="http://127.0.0.1:<port>/v1"`
+# 覆盖（-c 比这里的默认值优先级高），所以换端口不用改这个文件；下面写的是手工直跑时的默认值。
+model = "gpt-5.6-luna"
+model_provider = "llm-mock"
+
+[model_providers.llm-mock]
+name = "llm-mock"
+base_url = "http://127.0.0.1:3462/v1"
+# Codex 只认 chat 或 responses；本 mock 的 /v1/responses 是脚本化回放。
+wire_api = "responses"
+# 取 key 的环境变量名（perf-demo 注入 mock-key）。mock 不校验鉴权，但变量缺了 codex 会直接报错。
+env_key = "LLM_MOCK_API_KEY"
+# 本地 mock 没有 ChatGPT 登录态，必须关掉（默认就是 false，写出来省得被全局配置的 provider 影响）。
+requires_openai_auth = false
+# 压测/调试专用：不重试。默认重试 5 次会把一次协议错误拖成一分钟的等待，
+# 且掩盖真实的首个错误信息（codex 自己的错误文案里也会提示这是第几次重试）。
+request_max_retries = 0
+stream_max_retries = 0

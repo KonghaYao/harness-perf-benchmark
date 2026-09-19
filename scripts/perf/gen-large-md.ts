@@ -7,9 +7,13 @@
  *   bun run scripts/perf/gen-large-md.ts                    # 默认：4 条 × 64KB
  *   bun run scripts/perf/gen-large-md.ts --size-kb 256 --responses 2
  *
- * 每条响应 = 大 markdown 正文 + 一个 Bash 工具调用（让 harness 持续多轮、不回 stop），
+ * 每条响应 = 大 markdown 正文 + 一个工具调用（让 harness 持续多轮、不回 stop），
  * 配 `--exhausted loop` 使用。默认节奏 chunkSize=64 / chunkDelayMs=0：mock 尽快吐完，
  * 测到的 CPU 主要来自 harness 的流解析与渲染，而不是 mock 的等待。
+ *
+ * 工具名用 `--tool` 指定：默认 `Bash`（peri / opencode / Claude Code 都认），
+ * codex 没有这个工具、要用它自己的 `exec`（custom 形状，参数是裸 JS 源码不是 JSON），
+ * 所以 codex 跑大输出剧本时生成一份 `--tool exec --out …/large-md-codex.json`。
  *
  * 输出默认写到 data/scenarios/large-md.json（data/ 已 gitignore，生成物不占仓库）。
  */
@@ -29,6 +33,7 @@ const USAGE = `生成超大 markdown 输出的压测剧本
   --chunk-size <n>     流式 chunk 字符数（默认 64）
   --chunk-delay-ms <n> chunk 间隔毫秒（默认 0）
   --delay-ms <n>       首包前延迟毫秒（默认 0）
+  --tool <name>        工具调用的工具名（默认 Bash；exec 按 codex 的 custom 工具写成裸 JS）
   --out <path>         输出路径（默认 data/scenarios/large-md.json，相对仓库根）
   -h, --help           显示本帮助
 `;
@@ -41,6 +46,7 @@ const { values } = parseArgs({
         "chunk-size": { type: "string" },
         "chunk-delay-ms": { type: "string" },
         "delay-ms": { type: "string" },
+        tool: { type: "string" },
         out: { type: "string" },
         help: { type: "boolean", short: "h" },
     },
@@ -67,6 +73,7 @@ const responseCount = positiveInt(values.responses, "--responses", 4);
 const chunkSize = positiveInt(values["chunk-size"], "--chunk-size", 64);
 const chunkDelayMs = positiveInt(values["chunk-delay-ms"], "--chunk-delay-ms", 0);
 const delayMs = positiveInt(values["delay-ms"], "--delay-ms", 0);
+const toolName = values.tool ?? "Bash";
 const outPath = resolve(REPO_ROOT, values.out ?? "data/scenarios/large-md.json");
 
 /** 一段有代表性的 markdown：标题 / 中英混排段落 / 列表 / 代码块 / 表格 / 引用 / 强调。 */
@@ -118,6 +125,34 @@ function largeMarkdown(index: number, targetBytes: number): string {
     return parts.join("\n");
 }
 
+/**
+ * 一条工具调用。默认 Bash 形状（arguments 是 JSON 对象）；
+ * `--tool exec` 时按 codex 的 custom 工具写：参数是**裸 JavaScript 源码**（不是 JSON，
+ * 也不是被引号包起来的字符串），见 src/responses.ts 头注释里 exec 的声明形状。
+ */
+function toolCall(index: number): {
+    id: string;
+    type: "function";
+    function: { name: string; arguments: unknown };
+} {
+    const callId = `call_large_md_${index}`;
+    if (toolName === "exec") {
+        return {
+            id: callId,
+            type: "function",
+            function: {
+                name: "exec",
+                arguments: `const r = await tools.exec_command({ cmd: "echo large-md-tick-${index}" });\ntext(r.output);`,
+            },
+        };
+    }
+    return {
+        id: callId,
+        type: "function",
+        function: { name: toolName, arguments: { command: `echo large-md-tick-${index}` } },
+    };
+}
+
 const targetBytes = sizeKb * 1024;
 const responses = Array.from({ length: responseCount }, (_, i) => {
     const index = i + 1;
@@ -125,13 +160,7 @@ const responses = Array.from({ length: responseCount }, (_, i) => {
         message: {
             role: "assistant",
             content: largeMarkdown(index, targetBytes),
-            tool_calls: [
-                {
-                    id: `call_large_md_${index}`,
-                    type: "function",
-                    function: { name: "Bash", arguments: { command: `echo large-md-tick-${index}` } },
-                },
-            ],
+            tool_calls: [toolCall(index)],
         },
         finish_reason: "tool_calls",
     };
@@ -139,7 +168,7 @@ const responses = Array.from({ length: responseCount }, (_, i) => {
 
 const script = {
     note:
-        `由 scripts/perf/gen-large-md.ts 生成：每条响应约 ${sizeKb}KB markdown + 一个 Bash 工具调用；` +
+        `由 scripts/perf/gen-large-md.ts 生成：每条响应约 ${sizeKb}KB markdown + 一个 ${toolName} 工具调用；` +
         "配 --exhausted loop 持续供压。目标是压 markdown 渲染与大流量 SSE 解析，以及上下文随轮次的累积。",
     defaults: { delayMs, chunkDelayMs, chunkSize },
     responses,
@@ -154,5 +183,6 @@ console.log(`[gen-large-md] 已写入 ${outPath}`);
 console.log(
     `[gen-large-md] ${responseCount} 条 × 约 ${sizeKb}KB（实际 ${actual.map((b) => `${(b / 1024).toFixed(0)}KB`).join(" / ")}），` +
         `文件 ${(Buffer.byteLength(json, "utf8") / 1024).toFixed(0)}KB；` +
+        `工具 ${toolName}；` +
         `节奏 chunkSize=${chunkSize} chunkDelayMs=${chunkDelayMs} delayMs=${delayMs}`,
 );

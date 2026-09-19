@@ -12,7 +12,9 @@
  *   （`--pure` 跳过全局插件；模型指向本目录 opencode.json 里定义的 mock provider，
  *   该配置随 cwd 生效，所以压测也必须在这个目录启动 opencode）；
  * - 用 XDG_* 把 opencode 的数据/状态/缓存隔离到本目录下的 .data/.state/.cache，
- *   不碰 ~/.local/share/opencode（run.ts 的 spawn 会继承这里设置的 process.env）。
+ *   不碰 ~/.local/share/opencode；变量经 run.ts 的 `deps.harnessEnv` 注入
+ *   （**不要用 `process.env.X = …`**：Bun 1.4 的 `Bun.spawn` 不传 env 时用的是进程启动时的
+ *   环境快照，运行时改动不会传给子进程——这里曾经因此静默失效）。
  *
  * 产物：<仓库>/data/claude-date/<runId>-{perf.log,samples.csv,harness.log,mock.log}
  */
@@ -29,10 +31,17 @@ if (argv.includes("-h") || argv.includes("--help")) {
     process.exit(EXIT_OK);
 }
 
-// 隔离 opencode 的运行数据：run.ts 的 Bun.spawn 不传自定义 env，会继承这里。
-process.env.XDG_DATA_HOME = join(import.meta.dir, ".data");
-process.env.XDG_STATE_HOME = join(import.meta.dir, ".state");
-process.env.XDG_CACHE_HOME = join(import.meta.dir, ".cache");
+/** opencode 的沙盒目录（数据/状态/缓存）与 mock 地址，经 run.ts 的 harnessEnv 注入子进程。 */
+function sandboxEnv(port: number): Record<string, string> {
+    return {
+        XDG_DATA_HOME: join(import.meta.dir, ".data"),
+        XDG_STATE_HOME: join(import.meta.dir, ".state"),
+        XDG_CACHE_HOME: join(import.meta.dir, ".cache"),
+        // 本目录的 opencode.json 把 provider baseURL 写成 `{env:LLM_MOCK_BASE_URL}`，
+        // 这样换端口不用改配置文件（opencode 支持 {env:…} 变量替换）。
+        LLM_MOCK_BASE_URL: `http://127.0.0.1:${port}/v1`,
+    };
+}
 
 try {
     const config = loadPerfConfig(argv, REPO_ROOT);
@@ -50,6 +59,7 @@ try {
     }
 
     process.exitCode = await runPerf(config, {
+        harnessEnv: (cfg: PerfConfig) => sandboxEnv(cfg.port),
         harnessCommand: (cfg: PerfConfig) => [
             opencodeBin,
             "run",
