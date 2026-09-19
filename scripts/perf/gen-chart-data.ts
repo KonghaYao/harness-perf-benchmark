@@ -5,6 +5,11 @@
  * 只挑长剧本那一组（`data/scenarios/long-run*.json`，100 轮 × 4KB、跑到自然结束）：每个
  * harness 一条曲线，x 为相对时间（采样起点算 0），y 为 CPU 或 RSS。
  *
+ * 除了曲线，每个 harness 还给一个**统一计分**块：按阿里云 FC 的 CU 折算系数把「CPU × 时长」
+ * 与「内存 × 时长」混成一个标量，再折算成百分制（口径与系数只在 score.ts 一处，见那里）。
+ * 计分**在这里现算**而不是直接读 run.json 里的 `cost` 字段：老产物没有那个字段，而
+ * samples.csv 一律都在——现算就能让新老产物同口径可比（代价是老产物补不了尾部空档）。
+ *
  * 数据来源是**一次运行一个目录**的新布局：`<dir>/<harness>/<runId>/`，身份、时长、分段、
  * 摘要都从 `run.json` 读（不再拿正则扒中文日志）；曲线本体仍来自 `samples.csv`。
  * 顺带兼容老的平铺布局（`<runId>-perf.log` 那套，见 legacy-run.ts），迁完就该删掉那条分支。
@@ -26,7 +31,14 @@ import { parseArgs } from "node:util";
 import { REPO_ROOT } from "./config";
 import { displayName } from "./harness-id";
 import { parseLegacyPerfLog } from "./legacy-run";
-import { parseSamplesCsv } from "./sampler";
+import { csvHasColumn, parseSamplesCsv, type ProcessSample } from "./sampler";
+import {
+    CU_COEFFICIENTS,
+    relativeScores,
+    resourceCost,
+    segmentCosts,
+    type ResourceCost,
+} from "./score";
 
 const USAGE = `汇总长剧本压测产物 → 图表数据 JSON
 
@@ -95,7 +107,15 @@ export interface RunRecord {
     segments: { startupMs: number; spanMs: number; tailMs: number } | null;
     /** 「首个 / 末次请求」相对采样起点的毫秒数（画分界线用）。 */
     requestMarksMs: { first: number; last: number } | null;
-    samples: SampleRow[];
+    /** harness 退出的绝对时刻（末拍之后还剩多久没记进采样，计分时要补）；老布局为 null。 */
+    harnessExitedAtMs: number | null;
+    /** 原始采样点（全精度；出 payload 时才裁成图表行）。 */
+    samples: ProcessSample[];
+    /**
+     * samples.csv 是否带 `child_cpu_pct` 列（2026-09-19 才加）。
+     * 老产物没有它，进程树口径会偏低——这个事实要跟着数据走，不能悄悄按 0 处理。
+     */
+    childColumnPresent: boolean;
     label: string | null;
 }
 
@@ -106,7 +126,7 @@ export function isLongRunScript(path: string): boolean {
 }
 
 /** 采样点 → 图表行（KB 取整、百分数留一位小数，别把 JSON 撑大）。 */
-function toRows(samples: ReturnType<typeof parseSamplesCsv>): SampleRow[] {
+function toRows(samples: readonly ProcessSample[]): SampleRow[] {
     return samples.map((sample) => [
         Math.round(sample.elapsedMs),
         Math.round(sample.cpuPercent * 10) / 10,
@@ -136,8 +156,119 @@ function marksFrom(
     return { first, last: first + segments.spanMs };
 }
 
-function readCsvSamples(csvPath: string): SampleRow[] {
-    return toRows(parseSamplesCsv(readFileSync(csvPath, "utf8")));
+/** 读一次 samples.csv：原始采样点（全精度）与「表头带不带 child_cpu_pct」。 */
+function readCsvSamples(csvPath: string): { samples: ProcessSample[]; childColumnPresent: boolean } {
+    const text = readFileSync(csvPath, "utf8");
+    return {
+        samples: parseSamplesCsv(text),
+        childColumnPresent: csvHasColumn(text, "child_cpu_pct"),
+    };
+}
+
+/**
+ * 末拍到 harness 退出之间的空档（毫秒）——计分要按末尾几拍的速率把它补上。
+ *
+ * 采样循环在读到「进程已不在」时就停，最后一拍到真正退出之间固定还有约一个采样间隔
+ * （实测 ≈100ms）没记账；对 pi 这种 1.5s 就跑完的快 harness 相当于漏计 ~7%。
+ * 老结局（老布局、或 run.json 早于 2026-09-19）没记 `harnessExitedAtMs`，这里只能返回 0，
+ * **那一份 CU 是下界**——由 `tailAppliedMs: 0` + `tailGapKnown: false` 标出来。
+ */
+export function tailGapMs(run: RunRecord): number {
+    if (run.harnessExitedAtMs === null || run.samples.length === 0) return 0;
+    const last = run.samples[run.samples.length - 1] as ProcessSample;
+    return Math.max(0, run.harnessExitedAtMs - last.ts);
+}
+
+/** 一次运行的资源成本（进程树口径，含尾部补齐）。 */
+export function costOf(run: RunRecord): ResourceCost {
+    return resourceCost(run.samples, { tailMs: tailGapMs(run), requests: run.requests });
+}
+
+/** 保留 digits 位小数；-0 归一成 0，免得 JSON 里出现 `-0`。 */
+function round(value: number, digits: number): number {
+    const factor = 10 ** digits;
+    const rounded = Math.round(value * factor) / factor;
+    return rounded === 0 ? 0 : rounded;
+}
+
+/** 一段成本的紧凑形式（三段各一份，别把 payload 撑成三层对象嵌套）。 */
+function segmentRow(cost: ResourceCost): SegmentScore {
+    return {
+        cu: round(cost.cu, 6),
+        cpuSeconds: round(cost.cpuSeconds, 6),
+        gbSeconds: round(cost.gbSeconds, 6),
+        sampleCount: cost.sampleCount,
+    };
+}
+
+/**
+ * 计分块（payload 里每个 harness 一份）：公式的每一项都摊开写，图表页只负责显示，
+ * 不自己记公式也不自己算——口径只有 score.ts 一处。
+ */
+export function serializeCost(run: RunRecord, cost: ResourceCost, score: number): RunScore {
+    const marks = run.requestMarksMs;
+    const segments =
+        marks === null
+            ? null
+            : (() => {
+                  // 分段不做尾部外推（那是整个窗口的性质，塞进某一段会重复计），所以 tailMs 不传。
+                  const parts = segmentCosts(run.samples, marks, { requests: run.requests });
+                  return {
+                      startup: segmentRow(parts.startup),
+                      span: segmentRow(parts.span),
+                      tail: segmentRow(parts.tail),
+                  };
+              })();
+    return {
+        score: round(score, 1),
+        cu: round(cost.cu, 6),
+        cpuCu: round(cost.cpuCu, 6),
+        memoryCu: round(cost.memoryCu, 6),
+        callCu: round(cost.callCu, 6),
+        cpuSeconds: round(cost.cpuSeconds, 6),
+        gbSeconds: round(cost.gbSeconds, 6),
+        rootCpuSeconds: round(cost.rootCpuSeconds, 6),
+        childCpuSeconds: round(cost.childCpuSeconds, 6),
+        childCpuFrom: cost.childCpuFrom,
+        tailAppliedMs: round(cost.tailAppliedMs, 0),
+        tailGapKnown: run.harnessExitedAtMs !== null,
+        samplingMs: round(cost.samplingMs, 0),
+        sampleCount: cost.sampleCount,
+        childColumnPresent: run.childColumnPresent,
+        segments,
+    };
+}
+
+/** 一段（启动 / 运转 / 收尾）的成本摘要。 */
+export interface SegmentScore {
+    cu: number;
+    cpuSeconds: number;
+    gbSeconds: number;
+    sampleCount: number;
+}
+
+/** 计分块：`100 × 本批次最小 CU / 本次 CU`，最优 100 分。 */
+export interface RunScore {
+    score: number;
+    cu: number;
+    cpuCu: number;
+    memoryCu: number;
+    /** 调用次数折算的 CU，**不计入 cu**（请求数由剧本决定，不是 harness 的开销）。 */
+    callCu: number;
+    cpuSeconds: number;
+    gbSeconds: number;
+    rootCpuSeconds: number;
+    childCpuSeconds: number;
+    childCpuFrom: "counter" | "sampled";
+    /** 实际补进来的尾部时长；0 表示这一份是下界（老产物没记退出时刻）。 */
+    tailAppliedMs: number;
+    /** 是否知道「末拍 → 退出」的空档（老布局 / 旧 run.json 为 false）。 */
+    tailGapKnown: boolean;
+    samplingMs: number;
+    sampleCount: number;
+    /** samples.csv 是否带 child_cpu_pct 列；false 表示进程树口径偏低。 */
+    childColumnPresent: boolean;
+    segments: { startup: SegmentScore; span: SegmentScore; tail: SegmentScore } | null;
 }
 
 /** 新布局：`<dir>/<harness>/<runId>/run.json` + samples.csv。 */
@@ -184,6 +315,7 @@ export function collectFromRunsDir(dir: string): { runs: RunRecord[]; skipped: s
                 samplingStartedAtMs?: number | null;
                 firstRequestAtMs?: number | null;
                 lastRequestAtMs?: number | null;
+                harnessExitedAtMs?: number | null;
             };
             const rawSegments = (meta.segments ?? null) as
                 | { startupMs: number; spanMs: number; tailMs: number }
@@ -198,6 +330,7 @@ export function collectFromRunsDir(dir: string): { runs: RunRecord[]; skipped: s
                           tailMs: rawSegments.tailMs,
                       };
             const harnessId = typeof harness?.id === "string" ? harness.id : harnessDir;
+            const csv = readCsvSamples(csvPath);
             runs.push({
                 runId,
                 harnessId,
@@ -217,7 +350,9 @@ export function collectFromRunsDir(dir: string): { runs: RunRecord[]; skipped: s
                     },
                     segments,
                 ),
-                samples: readCsvSamples(csvPath),
+                harnessExitedAtMs: timing.harnessExitedAtMs ?? null,
+                samples: csv.samples,
+                childColumnPresent: csv.childColumnPresent,
                 label: typeof meta.label === "string" ? meta.label : null,
             });
         }
@@ -248,6 +383,7 @@ export function collectFromFlatDir(dir: string): { runs: RunRecord[]; skipped: s
             skipped.push(`${runId}（缺 samples.csv，老布局）`);
             continue;
         }
+        const csv = readCsvSamples(csvPath);
         runs.push({
             runId,
             harnessId: parsed.harnessId,
@@ -269,7 +405,10 @@ export function collectFromFlatDir(dir: string): { runs: RunRecord[]; skipped: s
                 },
                 parsed.segments,
             ),
-            samples: readCsvSamples(csvPath),
+            // 老布局的 perf.log 没记 harness 退出时刻，尾部空档补不了（计分时按 0 处理，标成下界）。
+            harnessExitedAtMs: null,
+            samples: csv.samples,
+            childColumnPresent: csv.childColumnPresent,
             label: null,
         });
     }
@@ -381,13 +520,33 @@ function main(): void {
     for (const [harnessId, list] of [...byHarness].sort(([a], [b]) => a.localeCompare(b))) {
         const candidates = [...list].sort((a, b) => a.runId.localeCompare(b.runId));
         // 指定了 --pick 就照单全收（同一 harness 被点了多次时取最早那次，规则写死免得含糊）。
-        const run = picks.length > 0 ? candidates[0]! : pickMedianOfLatest(list, window);
-        chosen.push(run);
-        const durations = candidates.map((item) => `${(item.endToEndMs / 1000).toFixed(1)}s`).join(" / ");
+        chosen.push(picks.length > 0 ? candidates[0]! : pickMedianOfLatest(list, window));
+    }
+
+    // 计分按 runId 索引（一个 harness 只留一条线，但 --pick 理论上能点同一家多次）。
+    const costs = new Map<string, ResourceCost>();
+    for (const run of chosen) costs.set(run.runId, costOf(run));
+    const scores = relativeScores(
+        chosen.map((run) => ({ id: run.runId, cu: costs.get(run.runId)?.cu ?? 0 })),
+    );
+
+    for (const run of chosen) {
+        const cost = costs.get(run.runId) as ResourceCost;
+        const candidates = byHarness.get(run.harnessId) ?? [run];
+        const durations = candidates
+            .map((item) => `${(item.endToEndMs / 1000).toFixed(1)}s`)
+            .join(" / ");
+        // 计分口径的坑要在人读的这一行里露出来，别让人自己回查 run.json。
+        const notes = [
+            cost.tailAppliedMs === 0 && run.harnessExitedAtMs === null ? "尾部未补（下界）" : "",
+            run.childColumnPresent ? "" : "无 child 列（进程树偏低）",
+        ].filter((note) => note !== "");
         console.log(
-            `[gen-chart-data] ${displayName(harnessId).padEnd(11)} ${run.runId}  ` +
-                `端到端 ${(run.endToEndMs / 1000).toFixed(1)}s · ${run.samples.length} 采样点` +
-                `（候选 ${candidates.length} 次：${durations}）`,
+            `[gen-chart-data] ${run.name.padEnd(11)} ${run.runId}  ` +
+                `端到端 ${(run.endToEndMs / 1000).toFixed(1)}s · ${run.samples.length} 采样点 · ` +
+                `${cost.cu.toFixed(3)} CU → ${((scores.get(run.runId) ?? 0)).toFixed(1)} 分` +
+                `（候选 ${candidates.length} 次：${durations}）` +
+                (notes.length > 0 ? `  ⚠ ${notes.join("；")}` : ""),
         );
     }
 
@@ -400,19 +559,36 @@ function main(): void {
                 ? `--pick 指定：${picks.join(", ")}`
                 : `每个 harness 取最近 ${window} 次长剧本运行中端到端时长居中的一次`,
         sampleColumns: [...SAMPLE_COLUMNS],
-        runs: chosen.map((run) => ({
-            id: run.harnessId,
-            name: run.name,
-            runId: run.runId,
-            command: run.commandLine,
-            script: run.script,
-            endToEndMs: run.endToEndMs,
-            samplingWindowMs: run.samplingWindowMs,
-            requests: run.requests,
-            segments: run.segments,
-            requestMarksMs: run.requestMarksMs,
-            samples: run.samples,
-        })),
+        // 计分口径写进 payload：图表页/报告都不该各自记一份公式。
+        scoreFormula: {
+            source: "阿里云函数计算（FC）CU 折算系数",
+            expression: "CU = 1.0 × 核·秒 + 0.15 × GB·秒",
+            coefficients: { ...CU_COEFFICIENTS },
+            scope: "进程树（含 harness 拉起的子进程）",
+            score: "100 × 本批次最小 CU / 本次 CU（最优 100 分）",
+            deviations: [
+                "内存用实测 RSS，不是 FC 的「申报规格 × 时长」",
+                "不含磁盘项（无数据）与 GPU 项（不采 GPU）",
+                "调用次数项按 0.0075 CU/次单列，不计入总分",
+            ],
+        },
+        runs: chosen.map((run) => {
+            const cost = costs.get(run.runId) as ResourceCost;
+            return {
+                id: run.harnessId,
+                name: run.name,
+                runId: run.runId,
+                command: run.commandLine,
+                script: run.script,
+                endToEndMs: run.endToEndMs,
+                samplingWindowMs: run.samplingWindowMs,
+                requests: run.requests,
+                segments: run.segments,
+                requestMarksMs: run.requestMarksMs,
+                score: serializeCost(run, cost, scores.get(run.runId) ?? 0),
+                samples: toRows(run.samples),
+            };
+        }),
     };
 
     const json = JSON.stringify(payload);

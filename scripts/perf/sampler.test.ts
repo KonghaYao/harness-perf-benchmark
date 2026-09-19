@@ -4,8 +4,10 @@ import {
     ProcessSampler,
     collectTree,
     cpuPercent,
+    csvHasColumn,
     formatCsvRow,
     parsePsTimeToMs,
+    parseSamplesCsv,
     summarize,
     ticksToNs,
     type CumulativeReading,
@@ -91,9 +93,9 @@ describe("ProcessSampler", () => {
                 [
                     42,
                     [
-                        { cpuNs: 1_000e6, rssBytes: 10 * MB }, // 基线
-                        { cpuNs: 1_050e6, rssBytes: 12 * MB }, // +50ms/100ms = 50%
-                        { cpuNs: 1_150e6, rssBytes: 20 * MB }, // +100ms/100ms = 100%
+                        { cpuNs: 1_000e6, childCpuNs: 0, rssBytes: 10 * MB }, // 基线
+                        { cpuNs: 1_050e6, childCpuNs: 0, rssBytes: 12 * MB }, // +50ms/100ms = 50%
+                        { cpuNs: 1_150e6, childCpuNs: 0, rssBytes: 20 * MB }, // +100ms/100ms = 100%
                     ],
                 ],
             ]),
@@ -118,8 +120,8 @@ describe("ProcessSampler", () => {
             new Map([[
                 42,
                 [
-                    { cpuNs: 0, rssBytes: MB },
-                    { cpuNs: 50e6, rssBytes: MB },
+                    { cpuNs: 0, childCpuNs: 0, rssBytes: MB },
+                    { cpuNs: 50e6, childCpuNs: 0, rssBytes: MB },
                 ],
             ]]),
         );
@@ -135,17 +137,17 @@ describe("ProcessSampler", () => {
                 [
                     42,
                     [
-                        { cpuNs: 0, rssBytes: 10 * MB },
-                        { cpuNs: 100e6, rssBytes: 11 * MB },
-                        { cpuNs: 200e6, rssBytes: 12 * MB },
+                        { cpuNs: 0, childCpuNs: 0, rssBytes: 10 * MB },
+                        { cpuNs: 100e6, childCpuNs: 0, rssBytes: 11 * MB },
+                        { cpuNs: 200e6, childCpuNs: 0, rssBytes: 12 * MB },
                     ],
                 ],
                 // 子进程第二拍才出现：首次读到 900ms 的累计值，不应算成本拍增量
                 [
                     43,
                     [
-                        { cpuNs: 900e6, rssBytes: 30 * MB },
-                        { cpuNs: 910e6, rssBytes: 31 * MB },
+                        { cpuNs: 900e6, childCpuNs: 0, rssBytes: 30 * MB },
+                        { cpuNs: 910e6, childCpuNs: 0, rssBytes: 31 * MB },
                     ],
                 ],
             ]),
@@ -173,13 +175,59 @@ describe("ProcessSampler", () => {
         expect(second?.treeCpuPercent).toBeCloseTo(110, 6); // 100 + 10ms
     });
 
+    it("已回收子进程计数器：差分出 child_cpu_pct，且不掺进 tree_cpu_pct", () => {
+        // 根进程自己一直在睡，CPU 全靠短命子进程 —— 正是进程表抓不到的那类。
+        const backend = fakeBackend(
+            new Map([
+                [
+                    42,
+                    [
+                        { cpuNs: 0, childCpuNs: 5e6, rssBytes: MB }, // prime 基线
+                        { cpuNs: 0, childCpuNs: 25e6, rssBytes: MB }, // 子进程 +20ms → 20%
+                        { cpuNs: 0, childCpuNs: 55e6, rssBytes: MB }, // 子进程 +30ms → 30%
+                        { cpuNs: 0, childCpuNs: 55e6, rssBytes: MB }, // 没新增 → 0%
+                    ],
+                ],
+            ]),
+        );
+        const sampler = new ProcessSampler({ pid: 42, backend, withTree: true });
+        sampler.prime();
+        expect(sampler.sample({ elapsedMs: 100, deltaMs: 100 })?.childCpuPercent).toBeCloseTo(20, 6);
+        expect(sampler.sample({ elapsedMs: 200, deltaMs: 100 })?.childCpuPercent).toBeCloseTo(30, 6);
+        const third = sampler.sample({ elapsedMs: 300, deltaMs: 100 });
+        expect(third?.childCpuPercent).toBe(0);
+        // 计数器是独立列：tree_cpu_pct 仍然只算「看得见的进程」，两者不能相加
+        // （被看见过的子进程之后被回收，同一段 CPU 会在计数器里再出现一次）。
+        expect(third?.treeCpuPercent).toBe(0);
+    });
+
+    it("--no-tree（withTree=false）时 child_cpu_pct 归零", () => {
+        const backend = fakeBackend(
+            new Map([
+                [
+                    42,
+                    [
+                        { cpuNs: 0, childCpuNs: 0, rssBytes: MB },
+                        { cpuNs: 10e6, childCpuNs: 50e6, rssBytes: MB },
+                    ],
+                ],
+            ]),
+        );
+        const sampler = new ProcessSampler({ pid: 42, backend });
+        sampler.prime();
+        const one = sampler.sample({ elapsedMs: 100, deltaMs: 100 });
+        expect(one?.cpuPercent).toBeCloseTo(10, 6);
+        expect(one?.childCpuPercent).toBe(0);
+        expect(one?.treeCpuPercent).toBeCloseTo(10, 6);
+    });
+
     it("根进程消失后返回 null（采样对象提前退出）", () => {
         const backend = fakeBackend(
             new Map([[
                 42,
                 [
-                    { cpuNs: 0, rssBytes: MB },
-                    { cpuNs: 10e6, rssBytes: MB },
+                    { cpuNs: 0, childCpuNs: 0, rssBytes: MB },
+                    { cpuNs: 10e6, childCpuNs: 0, rssBytes: MB },
                 ],
             ]]),
         );
@@ -204,6 +252,7 @@ describe("CSV 与摘要", () => {
         treeCpuPercent: cpu + 1,
         treeRssBytes: rss + MB,
         procs: 2,
+        childCpuPercent: 0,
     });
 
     it("CSV 表头与数据行列数一致、数值单位正确", () => {
@@ -215,11 +264,40 @@ describe("CSV 与摘要", () => {
             treeCpuPercent: 43.5,
             treeRssBytes: 150 * MB,
             procs: 2,
+            childCpuPercent: 7.25,
         });
         const fields = row.split(",");
         expect(fields.length).toBe(CSV_HEADER.split(",").length);
         expect(fields[0]).toBe("1970-01-01T00:00:00.000Z");
-        expect(fields.slice(1)).toEqual(["100", "42.13", "102400", "43.50", "153600", "2"]);
+        expect(fields.slice(1)).toEqual([
+            "100",
+            "42.13",
+            "102400",
+            "43.50",
+            "153600",
+            "2",
+            "7.25",
+        ]);
+    });
+
+    it("老产物缺 child_cpu_pct 列时按 0 读，不报错", () => {
+        const legacy = [
+            "ts,elapsed_ms,cpu_pct,rss_kb,tree_cpu_pct,tree_rss_kb,procs",
+            "2026-09-19T06:28:50.542Z,100,24.77,42752,24.77,42752,1",
+        ].join("\n");
+        expect(csvHasColumn(legacy, "child_cpu_pct")).toBe(false);
+        const [only] = parseSamplesCsv(legacy);
+        expect(only?.childCpuPercent).toBe(0);
+        expect(only?.cpuPercent).toBeCloseTo(24.77, 6);
+
+        const current = `${legacy.split("\n")[0]},child_cpu_pct\n2026-09-19T06:28:50.542Z,100,24.77,42752,24.77,42752,1,3.5`;
+        expect(csvHasColumn(current, "child_cpu_pct")).toBe(true);
+        expect(parseSamplesCsv(current)[0]?.childCpuPercent).toBeCloseTo(3.5, 6);
+    });
+
+    it("缺必需列必须报错（宁可炸也不画出错的图）", () => {
+        const broken = "ts,elapsed_ms,cpu_pct,rss_kb\nts,1,2,3";
+        expect(() => parseSamplesCsv(broken)).toThrow(/缺必需列/);
     });
 
     it("摘要给出样本数、时长与均值/峰值", () => {

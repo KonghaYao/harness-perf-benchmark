@@ -19,6 +19,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { REPO_ROOT, loadPerfConfig, type PerfConfig } from "./config";
 import { EXIT_HARNESS, EXIT_SETUP, EXIT_TIMEOUT, runPerf } from "./run";
+import { CSV_HEADER } from "./sampler";
 
 const tempDirs: string[] = [];
 /** 每个用例换端口，避免相互抢占（mock 会真的监听）。 */
@@ -164,7 +165,10 @@ describe("runPerf 端到端", () => {
         const csv = readFileSync(artifact(config.outDir, "samples.csv"), "utf8")
             .trim()
             .split("\n");
-        expect(csv[0]).toBe("ts,elapsed_ms,cpu_pct,rss_kb,tree_cpu_pct,tree_rss_kb,procs");
+        // 表头**逐字**钉死：老读取端按表头名取列，但图表那条线是按列序取值的，
+        // 所以新增列只能往后追加，绝不能插队（child_cpu_pct 就是 2026-09-19 追加的）。
+        expect(csv[0]).toBe(CSV_HEADER);
+        expect(csv[0]).toBe("ts,elapsed_ms,cpu_pct,rss_kb,tree_cpu_pct,tree_rss_kb,procs,child_cpu_pct");
         const rows = csv.slice(1);
         // 忙转 1.2s、间隔 100ms：样本数 8~14
         expect(rows.length).toBeGreaterThanOrEqual(6);
@@ -203,6 +207,13 @@ describe("runPerf 端到端", () => {
         expect((meta.mock as Record<string, unknown>).requestsSource).toBe("status");
         expect((meta.duration as Record<string, number>).endToEndMs).toBeGreaterThan(1_000);
         expect((meta.summary as Record<string, number>).count).toBeGreaterThanOrEqual(6);
+        // 统一计分随 run.json 落盘（FC 的 CU 口径），且各项自洽
+        const cost = meta.cost as Record<string, number>;
+        expect(cost.sampleCount).toBeGreaterThanOrEqual(6);
+        expect(cost.cu).toBeCloseTo(cost.cpuCu + cost.memoryCu, 9);
+        expect(cost.cu).toBeGreaterThan(0);
+        expect(cost.tailAppliedMs).toBeGreaterThanOrEqual(0);
+        expect(cost.tailAppliedMs).toBeLessThanOrEqual(500);
         // 假 harness 不打印任何东西，所以 harness.log 是 0 字节——但文件必须在（peri 被强杀时也是这个形状）
         const artifacts = meta.artifacts as Record<string, { file: string; bytes: number } | null>;
         expect(artifacts.harness?.file).toBe("harness.log");

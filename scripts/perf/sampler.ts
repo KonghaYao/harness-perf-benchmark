@@ -38,6 +38,17 @@ export interface MachTimebase {
 export interface CumulativeReading {
     cpuNs: number;
     rssBytes: number;
+    /**
+     * **本进程已回收的子进程**累计 CPU（纳秒）——来自 rusage 的 ri_child_* 字段。
+     *
+     * 为什么需要它：进程树口径靠「每隔 treeRefreshMs 刷一次 pid 集合」抓后代，而 harness
+     * 每轮工具调用拉起的 shell 只活几十毫秒，几乎不可能出现在 pid 集合里（实测：合成负载
+     * 下默认 2000ms 刷新只捕获到子进程真实 CPU 的 33%）。而这些 shell 都是被 harness **回收**
+     * 的，其 CPU 会累加进父进程的 ri_child_*，读一次就精确拿到，不受采样频率影响。
+     *
+     * ps 后端拿不到这个值，返回 0（该后端只用于 FFI 不可用的兜底）。
+     */
+    childCpuNs: number;
 }
 
 /** 一个采样点。 */
@@ -49,8 +60,17 @@ export interface ProcessSample {
     /** 根进程瞬时 CPU（单核为 100%）。 */
     cpuPercent: number;
     rssBytes: number;
-    /** 根进程 + 全部后代进程的瞬时 CPU 合计。 */
+    /** 根进程 + 采样窗口内可见后代的瞬时 CPU 合计（不含已回收子进程计数器）。 */
     treeCpuPercent: number;
+    /**
+     * 根进程**已回收子进程**的瞬时 CPU（单核为 100%），来自 rusage 计数器差分。
+     *
+     * 与父进程「可见后代」是两套互补的下界：这个覆盖短命子进程（进程表刷新来不及抓），
+     * 那个覆盖采样期间一直活着、尚未被回收的后代。两者可能重叠（被看见过的子进程之后
+     * 被回收，其全生命周期都会进计数器），**不能相加**——要更紧的下界就取两者较大者
+     * （见 score.ts 的 resourceCost）。
+     */
+    childCpuPercent: number;
     treeRssBytes: number;
     /** 进程树内成功读到读数的进程数（含根进程）。 */
     procs: number;
@@ -73,6 +93,8 @@ export const CSV_COLUMNS = [
     "tree_cpu_pct",
     "tree_rss_kb",
     "procs",
+    // 2026-09-19 追加（**只能往后加**：读取端按表头名取列，老产物缺这列时按 0 处理）
+    "child_cpu_pct",
 ] as const;
 
 export type CsvColumn = (typeof CSV_COLUMNS)[number];
@@ -143,7 +165,21 @@ export function formatCsvRow(sample: ProcessSample): string {
         sample.treeCpuPercent.toFixed(2),
         (sample.treeRssBytes / 1024).toFixed(0),
         String(sample.procs),
+        sample.childCpuPercent.toFixed(2),
     ].join(",");
+}
+
+/**
+ * 可选列：老产物没有它们，读取端按缺省值处理（不能因此报错）。
+ * `child_cpu_pct` 是 2026-09-19 追加的，之前的产物一律按 0 读——那批的进程树口径偏低，
+ * 由读取端（score.ts / gen-chart-data.ts）标注，不在这里猜。
+ */
+const OPTIONAL_COLUMNS = new Set<CsvColumn>(["child_cpu_pct"]);
+
+/** 该 CSV 是否带某一列（判断老产物口径用）。 */
+export function csvHasColumn(text: string, name: CsvColumn): boolean {
+    const header = (text.trim().split("\n")[0] ?? "").split(",").map((entry) => entry.trim());
+    return header.includes(name);
 }
 
 /**
@@ -155,13 +191,16 @@ export function parseSamplesCsv(text: string): ProcessSample[] {
     const lines = text.trim().split("\n");
     const header = (lines[0] ?? "").split(",").map((name) => name.trim());
     const columnIndex = new Map(header.map((name, index) => [name, index]));
-    const missing = CSV_COLUMNS.filter((name) => !columnIndex.has(name));
+    const missing = CSV_COLUMNS.filter(
+        (name) => !columnIndex.has(name) && !OPTIONAL_COLUMNS.has(name),
+    );
     if (missing.length > 0) {
         throw new Error(
             `采样 CSV 缺必需列 ${missing.join(", ")}（表头: ${header.join(",")}）`,
         );
     }
-    const cell = (cells: string[], name: CsvColumn): string => cells[columnIndex.get(name)!]!;
+    const cell = (cells: string[], name: CsvColumn): string =>
+        columnIndex.has(name) ? (cells[columnIndex.get(name)!] ?? "0") : "0";
 
     const samples: ProcessSample[] = [];
     for (const line of lines.slice(1)) {
@@ -176,6 +215,7 @@ export function parseSamplesCsv(text: string): ProcessSample[] {
             treeCpuPercent: Number(cell(cells, "tree_cpu_pct")),
             treeRssBytes: Number(cell(cells, "tree_rss_kb")) * 1024,
             procs: Number(cell(cells, "procs")),
+            childCpuPercent: Number(cell(cells, "child_cpu_pct")),
         });
     }
     return samples;
@@ -240,6 +280,14 @@ const RUSAGE_INFO_V4 = 4;
 const OFF_RI_USER_TIME = 16;
 const OFF_RI_SYSTEM_TIME = 24;
 const OFF_RI_RESIDENT_SIZE = 64;
+/**
+ * 已回收子进程的累计 CPU（rusage_info_v4 里 ri_child_user_time / ri_child_system_time）。
+ * 2026-09-19 实测钉死：让子进程用 Time::HiRes 精确烧 2s CPU 并被父进程回收，父进程
+ * 读 [96]+[104] = 1.995s，而 [32]/[40]（ri_pkg_idle_wkups / ri_interrupt_wkups）≈ 0。
+ * **单位同样是 Mach tick 而不是文档说的纳秒**，必须走 timebase 换算（同 [16]/[24]）。
+ */
+const OFF_RI_CHILD_USER_TIME = 96;
+const OFF_RI_CHILD_SYSTEM_TIME = 104;
 /** 结构体足够容纳 v4 的全部字段（v4 约 296 字节）。 */
 const RUSAGE_BUFFER_BYTES = 512;
 
@@ -293,8 +341,13 @@ export function createRusageBackend(): SamplerBackend | null {
                 view.getBigUint64(OFF_RI_USER_TIME, true) +
                     view.getBigUint64(OFF_RI_SYSTEM_TIME, true),
             );
+            const childTicks = Number(
+                view.getBigUint64(OFF_RI_CHILD_USER_TIME, true) +
+                    view.getBigUint64(OFF_RI_CHILD_SYSTEM_TIME, true),
+            );
             return {
                 cpuNs: ticksToNs(ticks, timebase),
+                childCpuNs: ticksToNs(childTicks, timebase),
                 rssBytes: Number(view.getBigUint64(OFF_RI_RESIDENT_SIZE, true)),
             };
         },
@@ -314,7 +367,9 @@ export function createPsBackend(): SamplerBackend {
             const cpuMs = parsePsTimeToMs(fields[0] as string);
             const rssKb = Number(fields[1]);
             if (cpuMs === null || !Number.isFinite(rssKb)) return null;
-            return { cpuNs: cpuMs * 1e6, rssBytes: rssKb * 1024 };
+            // ps 拿不到「已回收子进程」的累计量（那是 rusage 专有字段），记 0：
+            // 该后端只是 FFI 不可用时的兜底，此时 child_cpu_pct 列恒为 0。
+            return { cpuNs: cpuMs * 1e6, childCpuNs: 0, rssBytes: rssKb * 1024 };
         },
     };
 }
@@ -357,6 +412,8 @@ export class ProcessSampler {
     private readonly options: Required<Omit<SamplerOptions, "now">> & { now: () => number };
     private tree: number[] = [];
     private treeRefreshedAt = Number.NEGATIVE_INFINITY;
+    /** 根进程「已回收子进程」计数器的上一次读数（差分基线），prime 时建立。 */
+    private childCpuBaselineNs: number | null = null;
 
     constructor(options: SamplerOptions) {
         this.options = {
@@ -374,6 +431,7 @@ export class ProcessSampler {
         const reading = this.options.backend.read(this.options.pid);
         if (reading === null) return false;
         this.previous.set(this.options.pid, reading);
+        this.childCpuBaselineNs = reading.childCpuNs;
         return true;
     }
 
@@ -404,6 +462,7 @@ export class ProcessSampler {
         const current = new Map<number, CumulativeReading>();
         let root: CumulativeReading | null = null;
         let rootCpuNs = 0;
+        let childCpuNs = 0;
         let treeCpuNs = 0;
         let treeRssBytes = 0;
         let procs = 0;
@@ -421,6 +480,12 @@ export class ProcessSampler {
             if (pid === this.options.pid) {
                 root = reading;
                 rootCpuNs = delta;
+                // 已回收子进程：计数器是单调累计量，差分即本拍新增（含进程表没抓到的短命子进程）。
+                childCpuNs =
+                    this.childCpuBaselineNs === null
+                        ? 0
+                        : Math.max(0, reading.childCpuNs - this.childCpuBaselineNs);
+                this.childCpuBaselineNs = reading.childCpuNs;
             }
         }
         this.previous.clear();
@@ -433,6 +498,8 @@ export class ProcessSampler {
             cpuPercent: cpuPercent(rootCpuNs, timing.deltaMs),
             rssBytes: root.rssBytes,
             treeCpuPercent: cpuPercent(treeCpuNs, timing.deltaMs),
+            // --no-tree 的语义是「只看主进程」，那一列就不该有后代读数。
+            childCpuPercent: this.options.withTree ? cpuPercent(childCpuNs, timing.deltaMs) : 0,
             treeRssBytes,
             procs,
         };

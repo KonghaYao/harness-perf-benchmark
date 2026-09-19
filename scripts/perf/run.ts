@@ -60,6 +60,7 @@ import {
     type SampleSummary,
     type SamplerBackend,
 } from "./sampler";
+import { resourceCost, type ResourceCost } from "./score";
 
 export const EXIT_OK = 0;
 /** 配置 / mock / 环境错误。 */
@@ -274,6 +275,21 @@ function summaryLines(summary: SampleSummary, config: PerfConfig): string[] {
     ];
 }
 
+/** 统一计分那一行（人读日志用）：把公式的每一项都摊开，便于事后核对。 */
+function costLine(cost: ResourceCost | null): string {
+    if (cost === null || cost.sampleCount === 0) return "统一计分: 无样本";
+    const child =
+        cost.childCpuSeconds > 0
+            ? `，其中后代 ${cost.childCpuSeconds.toFixed(3)}（取自${cost.childCpuFrom === "counter" ? "已回收子进程计数器" : "采样到的后代"}）`
+            : "";
+    return (
+        `统一计分: ${cost.cu.toFixed(3)} CU = 1.0×${cost.cpuSeconds.toFixed(3)} 核·秒` +
+        ` + 0.15×${cost.gbSeconds.toFixed(3)} GB·秒` +
+        `（内存项占 ${cost.cu > 0 ? ((cost.memoryCu / cost.cu) * 100).toFixed(0) : "0"}%${child}；` +
+        `尾部补齐 ${cost.tailAppliedMs.toFixed(0)}ms）`
+    );
+}
+
 /** 按进程组发信号；进程组不可用（已退出等）时退回单进程。 */
 function signalProcess(pid: number, signal: "SIGTERM" | "SIGKILL"): void {
     try {
@@ -353,7 +369,8 @@ export function segmentsOf(
         startupMs: first - startEpoch,
         spanMs: last - first,
         tailMs,
-        // 收尾段一秒以上没有任何请求 = harness 在自己的宽限期里空等（peri 5s / Codex 10s）。
+        // 收尾段一秒以上没有任何请求 = harness 在自己的宽限期里空等（Codex 10s；peri 在预测请求
+        // 吃到非空文本时 5s——默认剧本尾部那条空白就是为消掉它，见 docs/perf-compare.md）。
         idleTail: tailMs >= 1000,
     };
 }
@@ -547,6 +564,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         segments: null,
         summary: null,
         summarySource: null,
+        cost: null,
         exit: null,
         artifacts: null,
     };
@@ -835,6 +853,15 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         meta.segments = segmentsOf(finalStatus, harnessStartEpoch, harnessExitEpoch);
         meta.summary = { ...summary };
         meta.summarySource = "runtime";
+        // 统一计分：末拍与 harness 退出之间还有约一个采样间隔的账没记，用实测空档补上
+        // （`harnessExitEpoch` 是 harness 真退出的时刻，末拍是最后一次成功读数）。
+        const lastSampleTs =
+            samples.length > 0 ? (samples[samples.length - 1] as ProcessSample).ts : null;
+        const tailMs =
+            lastSampleTs !== null && harnessExitEpoch !== null
+                ? Math.max(0, harnessExitEpoch - lastSampleTs)
+                : 0;
+        meta.cost = resourceCost(samples, { tailMs, requests });
         perfBuffer.push("", "=== 摘要 ===", ...summaryLines(summary, config));
         perfBuffer.push(
             `mock 请求数: ${requests}` +
@@ -844,6 +871,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
             `mock 游标: index=${finalStatus?.index ?? "?"} / ${finalStatus?.size ?? "?"}`,
             `端到端时长: ${(harnessElapsedMs / 1000).toFixed(1)}s（harness 启动 → 退出；` +
                 `采样窗口 ${(summary.durationMs / 1000).toFixed(1)}s）`,
+            costLine(meta.cost),
             ...segmentLines(finalStatus, harnessStartEpoch, harnessExitEpoch),
             `产物: ${runDir}（run.json · perf.log · samples.csv · harness.log · mock.log）`,
         );
@@ -852,6 +880,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         for (const line of summaryLines(summary, config)) stdout(`[perf] ${line}`);
         stdout(`[perf] mock 请求数: ${requests} · 产物: ${runDir}`);
         stdout(`[perf] 端到端时长: ${(harnessElapsedMs / 1000).toFixed(1)}s`);
+        stdout(`[perf] ${costLine(meta.cost)}`);
         for (const line of segmentLines(finalStatus, harnessStartEpoch, harnessExitEpoch)) {
             stdout(`[perf] ${line}`);
         }
