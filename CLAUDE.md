@@ -9,13 +9,13 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 
 | 端点 | 协议 | 谁在用 |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、脚本自测 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、pi、脚本自测 |
 | `POST /v1/messages` | Anthropic Messages | Claude Code |
 | `POST /v1/responses` | OpenAI Responses | Codex |
 
 两个用途：
 
-- **性能压测**：以脚本控制的节奏驱动 harness（peri / opencode / Claude Code / Codex），
+- **性能压测**：以脚本控制的节奏驱动 harness（peri / opencode / Claude Code / Codex / pi），
   测量 harness 进程自身的 CPU / 内存开销（不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
@@ -31,15 +31,18 @@ cd playground/peri        && bun perf-demo.ts --timeout-ms 60000   # peri 沙盒
 cd playground/opencode    && bun perf-demo.ts --timeout-ms 60000   # opencode 沙盒
 cd playground/claude-code && bun perf-demo.ts --timeout-ms 60000   # Claude Code 沙盒
 cd playground/codex       && bun perf-demo.ts --timeout-ms 60000   # Codex 沙盒
+cd playground/pi          && bun perf-demo.ts --timeout-ms 60000   # pi 沙盒
 ```
 
-四个 `perf-demo.ts` 都是复用同一套实现的薄入口（相对路径按仓库根解析），差别只在 harness 命令、
+五个 `perf-demo.ts` 都是复用同一套实现的薄入口（相对路径按仓库根解析），差别只在 harness 命令、
 沙盒与配置注入方式（详见「与 harness 集成」）：
 
 - `playground/peri`：默认注入 `--db-path`（沙盒会话库）与 `--settings`（运行时生成、指向本次端口的 JSON）；
 - `playground/opencode`：`XDG_*` 隔离 + `{env:LLM_MOCK_BASE_URL}` 变量替换（换端口不用改配置）；
 - `playground/claude-code`：`HOME` + `CLAUDE_CONFIG_DIR` 都指到沙盒（**只改后者挡不住用户级 settings**）；
-- `playground/codex`：`CODEX_HOME` 指向沙盒（用户全局配置里有 hooks 与别的 provider）。
+- `playground/codex`：`CODEX_HOME` 指向沙盒（用户全局配置里有 hooks 与别的 provider）；
+- `playground/pi`：`PI_CODING_AGENT_DIR` 指向沙盒，`models.json` 每次启动按本次端口重写
+  （pi 的 `baseUrl` 不吃 `$VAR` 插值，换端口只能改文件）。
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
 并打印两个候选后端的开销与分辨率）。
@@ -101,6 +104,8 @@ scripts/perf/verify.ts     采样口径验证实验（已知负载 + 开销 + �
 scripts/perf/gen-large-md.ts  生成「超大 markdown 输出」压测剧本（写入 data/scenarios/）
 scripts/perf/*.test.ts     bun:test：差分换算、参数解析、端到端（真 mock + 假 harness）
 scripts/perf-scenario.json 压测剧本：全是 Bash 工具调用，配 --exhausted loop 持续供压
+scripts/codex-scenario.json  Codex 版压测剧本（exec custom 工具）
+scripts/pi-scenario.json    pi 版压测剧本（bash 小写工具）
 script.json             默认演示脚本（工具调用 + 中文回答）
 scripts/peri-demo.json  按 peri 的消费规律编排的演示脚本
 playground/<harness>/   各自 harness 的运行沙盒 + perf-demo.ts 入口 + 剧本（按需）
@@ -122,7 +127,7 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 
 ## 与 harness 集成
 
-四家都是「让 harness 把 base URL 指向本 mock」，但接入点各不相同：
+五家都是「让 harness 把 base URL 指向本 mock」，但接入点各不相同：
 
 ### peri
 
@@ -184,12 +189,38 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - 大输出剧本要按 codex 的工具形状单独生成一份：
   `bun run scripts/perf/gen-large-md.ts --tool exec --out data/scenarios/large-md-codex.json`。
 
+### pi
+
+- 二进制从 PATH 找（`Bun.which("pi")`，实测 0.85.1，`npm i -g @earendil-works/pi-coding-agent`）；
+  harness 命令是 `pi -p '<prompt>' --model llm-mock/llm-mock --no-session --no-extensions`；
+- 走 **OpenAI Chat Completions**（`POST /v1/chat/completions`，`stream: true`），与 peri / opencode 同协议；
+- 隔离靠 **`PI_CODING_AGENT_DIR`** 指向沙盒（`playground/pi/.pi-agent/`）：配置、凭据、trust 记录、
+  extensions 全从它找，指到沙盒就不会读 `~/.pi/agent`（那里面有用户自己的扩展与登录态）；
+- 沙盒 `models.json` 每次启动由 demo 生成：读同目录的 `models.json`（人读的源文件，写的是默认端口），
+  只把 provider 的 `baseUrl` 换成本次端口。**pi 的配置只对 `apiKey` / `headers` 做 `$VAR` 插值**
+  （0.85.1 实测：`baseUrl` 写 `$LLM_MOCK_BASE_URL` 会被当成字面量静默用下去），所以换端口只能改文件，
+  没法照搬 opencode 的 `{env:…}` 写法；
+- `--model` 必须写 `provider/id`：pi 的默认 provider 是 google，只写模型名会落错 provider
+  （沙盒 `--list-models` 可自查，实测能列出 `llm-mock  llm-mock  128K`）；
+- 工具名**全小写**（read/bash/edit/write/grep/find/ls），默认剧本用不了 peri 那份 `Bash`：
+  实测遇到未知工具 pi 不崩，把 `Tool Bash not found` 当工具结果回传后继续下一轮（与 codex 同类行为，
+  能供压但没有真实 shell），所以默认剧本换成 `scripts/pi-scenario.json`；
+- 消费规律是几家 harness 里最简的：一次 prompt 只消费「工具轮次 + 一条收尾」，
+  **没有 peri 那样的预测请求、也没有 opencode 的标题生成请求**；
+- `PI_OFFLINE=1` / `PI_TELEMETRY=0` 关掉启动联网（更新检查、包更新）与遥测；
+- pi 没有权限确认弹窗（设计上就不含 permission popups），所以不需要 claude-code 的
+  `--dangerously-skip-permissions`；剧本得自觉只放只读命令；
+- 它会向上找到仓库根的 `CLAUDE.md` 当上下文文件，每次请求都带上（属预期，与 Claude Code 相同）；
+- CLI 是单个 node 进程（`dist/bundle/cli.js`，无子进程），启动快：自行收尾的整轮（3 轮工具调用）
+  实测约 0.5s 跑完；被强杀时与 peri 一样 `harness.log` 为空（自行退出才有输出）。
+
 ## 已知限制与坑（压测相关）
 
 - **`--max-turns` 在 peri 的 `-p` 模式下是空操作**，所以压测时长由 `--timeout-ms` 兜底，
   而不是轮数；`--turns` 只是原样透传给 harness；
 - **peri 在 `-p` 模式下只在退出时 flush 输出**：被超时强杀时 `<runId>-harness.log` 会是空文件
-  （工具会在 perf.log 里写明原因）；自行收敛时该文件有内容。opencode / Claude Code 是持续流式的，
+  （工具会在 perf.log 里写明原因）；自行收敛时该文件有内容。**pi 同样如此**（实测自行收尾时
+  harness.log 有完整回答，loop 剧本被强杀时为空）。opencode / Claude Code 是持续流式的，
   被强杀也留有输出；
 - 若 peri 报 `workspace identity changed; explicit relinking is required`，那是 `~/.peri/threads/threads.db`
   里该目录的 workspace 记录过期（注册时的 discovery 快照与现状不符），与本仓库无关；
@@ -203,8 +234,9 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - **Bun 1.4 的 `Bun.spawn` 不继承运行时对 `process.env` 的赋值**（实测子进程读到空值，只有显式传
   `env` 才生效）。所有沙盒变量必须走 `RunDeps.harnessEnv`；早期 demo 用 `process.env.X = …`
   写的隔离是静默失效的；
-- **harness 都会额外发请求消耗脚本条目**：peri 发「预测下一步输入」，opencode 发标题生成，
-  Claude Code / Codex 也会发辅助请求；脚本不足时先看 `*-mock.log` 里是谁在取号；
+- **多数 harness 会额外发请求消耗脚本条目**：peri 发「预测下一步输入」，opencode 发标题生成，
+  Claude Code / Codex 也会发辅助请求；脚本不足时先看 `*-mock.log` 里是谁在取号。
+  **pi 是例外**：实测一次 prompt 只消费「工具轮次 + 一条收尾」，没有辅助请求；
 - 各 harness 的 `-p` / `run` / `exec` 模式普遍没有轮数上限，loop 剧本不会自行收敛；
 - 压测期间 mock 自己也在烧 CPU（实测本机均值约 2% 单核），但它与 harness 不同进程、不参与采样。
 

@@ -1,0 +1,21 @@
+{
+    "providers": {
+        "llm-mock": {
+            "name": "llm-mock",
+            "baseUrl": "http://127.0.0.1:3457/v1",
+            "api": "openai-completions",
+            "apiKey": "mock-key",
+            "models": [
+                {
+                    "id": "llm-mock",
+                    "name": "llm-mock",
+                    "reasoning": false,
+                    "input": ["text"],
+                    "contextWindow": 128000,
+                    "maxTokens": 16384,
+                    "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+                }
+            ]
+        }
+    }
+}
