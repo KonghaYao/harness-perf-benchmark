@@ -1,5 +1,5 @@
 /**
- * 统一计分：把 CPU 与内存混成一个标量，且**系数不是我们拍的**。
+ * 统一计分：把 CPU 与内存混成一个标量，回答「跑完同一部剧本，谁的整段资源成本更小」。
  *
  * ## 状态：Beta（2026-09-19 起试行）
  *
@@ -8,37 +8,37 @@
  * 所以它是个**候选口径**，用来把「整段资源成本」摊开对比，不是对 harness 的裁决。
  * 改口径 = 换指标，先在下游文档里写明、重跑一个完整批次。
  *
- * ## 口径来源：阿里云函数计算的 CU（Compute Unit）
+ * ## 口径：CPU 与内存 1:1
  *
- * FC 把所有资源使用量按转换系数折成同一个单位再加总：
+ *     CU    = 1.0 × 核·秒 + 1.0 × GB·秒
+ *     核·秒 = ∫(cpu_pct/100) dt      GB·秒 = ∫(rss_kb/2^20) dt     ← 时间积分，含时长
+ *     分数  = 100 × 本批次最小 CU / 本次 CU    （最优 100 分；只在同一批次内可比）
  *
- *     CU使用量 = ∑(资源使用量 × CU转换系数)
+ * 公式结构借自阿里云函数计算（FC）的「CU使用量 = ∑(资源使用量 × CU转换系数)」——它把 CPU、
+ * 内存折成同一个单位再加总，正好对应我们要问的问题。FC 弹性实例（活跃）的系数表（2026-09-19
+ * 核对官方计费页）是：vCPU 1.0 CU/(vCPU·秒)、内存 0.15 CU/(GB·秒)、调用次数 75 CU/万次、
+ * 磁盘 0.05 CU/(GB·秒)。
  *
- * 弹性实例（活跃）的 CPU 业务系数（2026-09-19 核对，
- * https://help.aliyun.com/zh/functioncompute/billing-overview-of-fc）：
+ * **系数是本项目自己定的：CPU 与内存逐秒同价（1 核·秒 = 1 GB·秒），不是 FC 的 0.15。**
+ * FC 的 0.15 等于说「1 个核 ≈ 6.67 GB 内存」，那是云厂商的出价；照它算，内存项在总账里只占
+ * 1%~8%，「谁更省内存」几乎不参与计分（实测把内存权重压到 0，名次几乎不动）。本项目问的是
+ * **资源负担**，所以明说一次：单位时间内核与内存各算一份，谁也不比谁便宜。（行业参考：AWS
+ * Lambda 新版 vCPU 价折算 ≈7.6、Cloud Run ≈9，都在 FC 那条线上——想按某家的价重算，改
+ * `CU_COEFFICIENTS.gbSecond` 一个数即可，别在别处另写一套。）
  *
- *     vCPU 使用量     1.0  CU/(vCPU·秒)
- *     内存使用量      0.15 CU/(GB·秒)
- *     函数调用次数    75   CU/万次（= 0.0075 CU/次）
- *     磁盘使用量      0.05 CU/(GB·秒)
+ * ## 压力口径（峰值）不折算
  *
- * 它的计费口径是「规格 × 时长」，恰好对应我们关心的问题：同一份剧本跑完，谁的资源成本高。
+ * 面积答「总共烧多少」，峰值答「最坏一刻要占多少」——机器的内存水位与规格是照峰值配的，
+ * 两个问题都真实。峰值（`resourcePeaks`：MB、%）是**绝对量**，本来就能横比，再套一层批内
+ * 相对分只会多一个「我们拍的」数字，所以它不计分，只与 CU 并列显示。
  *
- * ## 映射到本项目的采样数据
+ * ## 与 FC 的四处刻意偏差
  *
- *     核·秒 = ∫(cpu_pct/100) dt     —— FC 的 vCPU·秒；采样本来就是「单核 100%」口径，天然同义
- *     GB·秒 = ∫(rss_kb/2^20) dt     —— FC 的内存使用量
- *     CU    = 1.0 × 核·秒 + 0.15 × GB·秒
- *
- * 这里的 `∫` 是**逐拍累加**：每拍按实测间隔差分（`Σ(资源率 × 该拍间隔)`），不是「均值 × 时长」——
- * 间隔不齐（调度抖动、最后半拍）时前者才是真值。
- *
- * ## 与 FC 的四处刻意偏差（都在 docs/perf-compare.md 里写明）
- *
- * 1. **内存用实测 RSS**，不是 FC 的「申报规格 × 时长」——我们只有实测值，实测也更公平；
- * 2. **不含磁盘项**（无数据）与 **GPU 项**（本项目不采 GPU）；
- * 3. **调用次数项单列**（`callCu`），不计入总分——请求数由剧本决定，不是 harness 的开销；
- * 4. 时长是**自然结束的端到端时长**，不是 FC 的可控执行时长。
+ * 1. **系数不是 FC 的 0.15**：本项目按「资源负担」读，CPU 与内存逐秒同价（理由见上）；
+ * 2. **内存用实测 RSS**，不是 FC 的「申报规格 × 时长」——我们只有实测值，实测也更公平；
+ * 3. **不含磁盘项**（无数据）与 **GPU 项**（本项目不采 GPU）；时长取**自然结束的端到端时长**，
+ *    不是 FC 那种「可控执行时长」；
+ * 4. **调用次数项一律不折算**：请求数由剧本决定，不是 harness 的开销。
  *
  * ## 后代 CPU 取哪一路（重要）
  *
@@ -51,16 +51,16 @@
 import type { ProcessSample } from "./sampler";
 
 /**
- * 阿里云 FC 弹性实例（活跃）的 CU 转换系数。**改这三个数等于换了一套计分口径**，
- * 不要为了「让排名好看」微调它们。
+ * CU 转换系数——**改这两个数等于换了一套计分口径**，不要为了「让排名好看」微调它们。
+ *
+ * 结构借自阿里云 FC，取值是本项目定的 **CPU 与内存 1:1**（理由见文件头）；FC 原表的内存项是
+ * 0.15 CU/(GB·秒)。要按别的价重算就改这里一处，并在 docs/perf-compare.md 里写明。
  */
 export const CU_COEFFICIENTS = {
-    /** CU/(vCPU·秒)：核·秒与 CU 是 1:1。 */
+    /** CU/(vCPU·秒)：核·秒与 CU 1:1。 */
     vCpuSecond: 1.0,
-    /** CU/(GB·秒)：1 GB 常驻 1 秒 = 0.15 CU，即 FC 眼里 1 核 ≈ 6.67 GB。 */
-    gbSecond: 0.15,
-    /** CU/次：只用于单列 `callCu`，不进总分。 */
-    callPerRequest: 0.0075,
+    /** CU/(GB·秒)：与 CPU 同价（1 核·秒 = 1 GB·秒）；FC 原表这里是 0.15。 */
+    gbSecond: 1.0,
 } as const;
 
 /** 尾部补齐的默认上限：采样循环停在进程消失前最后一拍，正常空档 ≈ 一个采样间隔。 */
@@ -75,8 +75,6 @@ export interface CostOptions {
     tailWindow?: number;
     /** 空档上限：超过就截断，免得被强杀/异常退出时把外推放大（默认 500ms）。 */
     maxTailMs?: number;
-    /** 请求数：只用来算单列的 `callCu`。 */
-    requests?: number | null;
     /**
      * 首拍之前那一拍的 elapsedMs —— 它决定首拍的 dt。
      * 整段计价时是 0；按段计价时传上一段末拍的时刻，否则首拍的 dt 会被算成「从 0 到它」。
@@ -93,8 +91,6 @@ export interface ResourceCost {
     cu: number;
     cpuCu: number;
     memoryCu: number;
-    /** 调用次数折算的 CU——**不计入 `cu`**，只作参考。 */
-    callCu: number;
     /** 主进程自身的核·秒。 */
     rootCpuSeconds: number;
     /** 后代核·秒（= max(采样到的, 已回收计数器)）。 */
@@ -144,7 +140,6 @@ export function resourceCost(
         cu: 0,
         cpuCu: 0,
         memoryCu: 0,
-        callCu: (options.requests ?? 0) * CU_COEFFICIENTS.callPerRequest,
         rootCpuSeconds: 0,
         childCpuSeconds: 0,
         childSampledSeconds: 0,
@@ -221,6 +216,64 @@ export function resourceCost(
         tailAppliedMs,
         sampleCount: samples.length,
     };
+}
+
+/**
+ * 压力口径：整个窗口里的峰值（「最坏一刻」），与成本口径的面积互补。
+ *
+ * 为什么单独给一份而不是让读取端各自 `Math.max`：峰值也是**口径**——取进程树还是主进程、
+ * 峰值那一拍要不要连进程数一起记下来（判「峰值是不是工具子进程顶出来的」），这些说法得和
+ * 积分一样只有一处。它**不折算成分数**：MB 与 % 本来是绝对量、可直接横比。
+ */
+export interface ResourcePeaks {
+    /** 进程树 RSS 峰值（字节）。 */
+    treeRssBytes: number;
+    /** 进程树 CPU 峰值（%，单核 100% 口径）。 */
+    treeCpuPercent: number;
+    /** 主进程 RSS 峰值（字节）。 */
+    rootRssBytes: number;
+    /** 主进程 CPU 峰值（%，单核 100% 口径）。 */
+    rootCpuPercent: number;
+    /** 进程树 RSS 峰值出现在第几毫秒（看它是运转中堆起来的还是收尾时定格的）。 */
+    treeRssAtMs: number;
+    /** 峰值那一拍的进程数（>1 说明当时有工具子进程在，峰值含它）。 */
+    treeRssProcs: number;
+    sampleCount: number;
+}
+
+/** 峰值口径的选项：只挑范围，别的都不参与（峰值与时长、尾部补齐都无关）。 */
+export interface PeakOptions {
+    /** 统计范围：`tree`（默认）还是 `root`。 */
+    scope?: "tree" | "root";
+}
+
+/** 采样序列 → 峰值（空样本集返回全 0）。 */
+export function resourcePeaks(
+    samples: readonly ProcessSample[],
+    options: PeakOptions = {},
+): ResourcePeaks {
+    const scope = options.scope ?? "tree";
+    const peaks: ResourcePeaks = {
+        treeRssBytes: 0,
+        treeCpuPercent: 0,
+        rootRssBytes: 0,
+        rootCpuPercent: 0,
+        treeRssAtMs: 0,
+        treeRssProcs: 0,
+        sampleCount: samples.length,
+    };
+    for (const sample of samples) {
+        peaks.rootRssBytes = Math.max(peaks.rootRssBytes, sample.rssBytes);
+        peaks.rootCpuPercent = Math.max(peaks.rootCpuPercent, sample.cpuPercent);
+        if (scope !== "tree") continue;
+        if (sample.treeRssBytes > peaks.treeRssBytes) {
+            peaks.treeRssBytes = sample.treeRssBytes;
+            peaks.treeRssAtMs = sample.elapsedMs;
+            peaks.treeRssProcs = sample.procs;
+        }
+        peaks.treeCpuPercent = Math.max(peaks.treeCpuPercent, sample.treeCpuPercent);
+    }
+    return peaks;
 }
 
 /** 三段成本：启动 → 首个请求、首个请求 → 末次请求、末次请求 → 结束。 */

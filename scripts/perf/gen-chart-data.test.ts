@@ -81,6 +81,7 @@ function writeRun(
         summary: null,
         summarySource: "runtime",
         cost: null,
+        peaks: null,
         exit: { code: 0, signal: null },
         artifacts: null,
         ...overrides,
@@ -281,13 +282,12 @@ describe("计分（score 块）", () => {
         ...overrides,
     });
 
-    it("核·秒与 GB·秒按实测间隔积分，再折成 CU", () => {
+    it("核·秒与 GB·秒按实测间隔积分，再按 CPU 与内存 1:1 折成 CU", () => {
         const cost = costOf(record());
         expect(cost.cpuSeconds).toBeCloseTo(0.3, 9);
         expect(cost.gbSeconds).toBeCloseTo(0.3, 9);
-        // 0.3 核·秒 × 1.0 + 0.3 GB·秒 × 0.15
-        expect(cost.cu).toBeCloseTo(0.3 + 0.15 * 0.3, 9);
-        expect(cost.callCu).toBeCloseTo(100 * 0.0075, 9);
+        // 0.3 核·秒 × 1.0 + 0.3 GB·秒 × 1.0
+        expect(cost.cu).toBeCloseTo(0.3 + 0.3, 9);
         expect(cost.tailAppliedMs).toBe(0);
     });
 
@@ -296,7 +296,7 @@ describe("计分（score 块）", () => {
         const cost = costOf(record({ harnessExitedAtMs: 1_250 }));
         expect(cost.tailAppliedMs).toBe(50);
         expect(cost.cpuSeconds).toBeCloseTo(0.35, 9);
-        expect(cost.cu).toBeCloseTo(0.35 + 0.15 * 0.35, 9);
+        expect(cost.cu).toBeCloseTo(0.35 + 0.35, 9);
     });
 
     it("序列化后能看出「这一份是下界」：tailAppliedMs=0 且 tailGapKnown=false", () => {
@@ -306,7 +306,7 @@ describe("计分（score 块）", () => {
         expect(score.tailAppliedMs).toBe(0);
         expect(score.tailGapKnown).toBe(false);
         expect(score.sampleCount).toBe(3);
-        expect(score.cu).toBeCloseTo(0.345, 6);
+        expect(score.cu).toBeCloseTo(0.6, 6);
 
         const known = serializeCost(record({ harnessExitedAtMs: 1_250 }), costOf(record({ harnessExitedAtMs: 1_250 })), 42);
         expect(known.tailGapKnown).toBe(true);

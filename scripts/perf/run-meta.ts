@@ -17,7 +17,7 @@
 
 import { renameSync, writeFileSync } from "node:fs";
 import { cpus, hostname, loadavg, platform, release, totalmem } from "node:os";
-import type { ResourceCost } from "./score";
+import type { ResourceCost, ResourcePeaks } from "./score";
 
 /** schema 版本：字段有破坏性变化时 +1（读取端据此判断能不能读）。 */
 export const RUN_META_SCHEMA_VERSION = 1;
@@ -126,10 +126,12 @@ export interface RunMeta {
     /** 摘要来自内存里的样本（本进程跑的）还是从 samples.csv 重算（迁移的老产物）。 */
     summarySource: "runtime" | "samples" | null;
     /**
-     * 统一计分（阿里云 FC 的 CU 口径，见 score.ts）：把 CPU 与内存折成一个标量。
+     * 统一计分（CU = 1.0 × 核·秒 + 1.0 × GB·秒，口径只在 score.ts）：把 CPU 与内存折成一个标量。
      * 2026-09-19 追加的字段；那之前的老产物没有，读取端认 null 并按 samples.csv 现算。
      */
     cost: ResourceCost | null;
+    /** 压力口径：整个窗口的峰值（RSS / CPU），不折算成分数。2026-09-19 追加。 */
+    peaks: ResourcePeaks | null;
     exit: { code: number | null; signal: string | null } | null;
     artifacts: Record<"perf" | "samples" | "harness" | "mock", { file: string; bytes: number } | null> | null;
 }

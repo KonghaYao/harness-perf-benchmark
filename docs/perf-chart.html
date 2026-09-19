@@ -215,9 +215,11 @@
         <h1>harness 压测 · 长剧本（统一计分 + 逐拍曲线）</h1>
         <p class="sub">
             长剧本：100 轮 × 约 4KB 正文 + 每轮一次工具调用，<code>--exhausted stop</code> 跑到自然结束。
-            <strong>开头是统一计分</strong><span class="beta">Beta</span>——按阿里云 FC 的 CU 系数
-            （1.0×核·秒 + 0.15×GB·秒）把 CPU 与内存混成一个数（口径与系数只在
-            <code>scripts/perf/score.ts</code> 一处）。<strong>它还在 Beta：口径没定稿</strong>，
+            <strong>开头是统一计分</strong><span class="beta">Beta</span>：把 CPU 与内存按
+            <strong>1:1</strong> 折成一个数——<code>CU = 1.0×核·秒 + 1.0×GB·秒</code>
+            （公式结构借自阿里云 FC 的「资源使用量 × 转换系数」，系数是本项目定的），再折成批内百分制；
+            另给一列不折算的<strong>峰值</strong>（最坏一刻要占多少）。口径与系数只在
+            <code>scripts/perf/score.ts</code> 一处。<strong>还在 Beta：口径没定稿</strong>，
             拿它看趋势可以，别把名次当结论——两处取舍（后代 CPU 算不算、时长怎么算）还没讨论完。
             下半部分是<strong>逐拍曲线</strong>：x 为相对时间（采样起点算 0），y 由按钮切换，曲线默认按
             1s 窗口平滑（可切回原始）；每条线的峰值标了 harness 名，<strong>内存的纵轴是反的</strong>
@@ -231,9 +233,9 @@
         </div>
 
         <div id="app" hidden>
-            <!-- 统一计分放在最前：把 CPU 与内存混成一个数（Beta，口径还在讨论），打开页面先看到它。 -->
+            <!-- 统一计分放在最前：面积（CU）+ 峰值，打开页面先看到它。 -->
             <div id="page-scores">
-                <h2>统一计分 <span class="beta">Beta</span>：把 CPU 与内存混成一个数</h2>
+                <h2>统一计分 <span class="beta">Beta</span>：CPU 与内存 1:1</h2>
                 <div class="panel">
                     <div id="formula" class="formula"></div>
                     <div class="scroll-x">
@@ -300,9 +302,9 @@
                     <li>
                         <strong>虚线是「首个请求」与「末次请求」</strong>（mock 侧记的时刻挪到采样时间轴上）。
                         虚线右边曲线还在、却几乎零 CPU，那就是<strong>收尾等待</strong>——本批次里只剩 Codex
-                        的 10.0s（退出时向 <code>chatgpt.com</code> 发请求、本机 DNS 污染导致超时），
+                        的 10.1s（退出时向 <code>chatgpt.com</code> 发请求、本机 DNS 污染导致超时），
                         与轮数无关；peri 那个固定 5.0s 的收尾等待已被剧本尾部的空白收尾条消掉（本批收尾
-                        0.09s，见 <code>docs/perf-compare.md</code>），其余各家的收尾都在 0.3s 以内。
+                        0.04s，见 <code>docs/perf-compare.md</code>），其余各家的收尾都在 0.3s 以内。
                     </li>
                     <li>
                         <strong>请求数 ≠ 轮数</strong>：mock 请求里混着各家自己的辅助请求——peri 的
@@ -313,7 +315,7 @@
                     </li>
                     <li>
                         <strong>pi 的曲线中途会「变轻」</strong>：压缩之后它回传的历史被压成摘要
-                        （本批消息数最多到 <code>messages=202</code>，压缩请求 34 条），所以请求体与内存
+                        （本批消息数最多到 <code>messages=200</code>，压缩请求 34 条），所以请求体与内存
                         不像别家那样一路涨——这是 pi 自己把上下文管掉了，不是漏跑。
                     </li>
                     <li>
@@ -329,7 +331,7 @@
                         <strong>曲线默认按 1s 窗口做滑动平均</strong>（上面可切原始 / 0.5s / 1s / 2s）。
                         100ms 采样下多线程 harness 的 CPU 本就是锯齿：一轮里「拼请求、解析上下文」突发几拍，
                         等 mock 回包时几乎归零——本批数据里相邻两拍跳 30 个百分点以上的有 MiniMax Code
-                        14 处、Claude Code 4 处、dsh 3 处、pi 1 处（peri / Codex 各 0 处），
+                        19 处、Claude Code 5 处、dsh 5 处、pi 1 处（peri / Codex 各 0 处），
                         <strong>那是真实读数，不是采样抖动</strong>；换 1s 窗口后这些跳变全部降到 0 处
                         （0.5s 窗口同样为 0）。所以平滑放在看图侧、不动原始数据：表格里的均值 / 峰值与
                         <code>samples.csv</code> 始终是原始值，想看毛刺切回「原始」。
@@ -343,6 +345,14 @@
                     <li>
                         <strong>内存的纵轴是反的</strong>（0 在顶、占用越大越靠下）：曲线往下走 = 内存变重，
                         方向与「负担加重」一致；CPU 轴仍是正常方向（越高越忙）。
+                    </li>
+                    <li>
+                        <strong>系数为什么是 1:1</strong>：FC 的 <code>0.15 CU/(GB·秒)</code> 等于说
+                        「1 个核 ≈ 6.67 GB」（AWS Lambda 新版价 ≈ 7.6、Cloud Run ≈ 9，行业都在这条线上），
+                        那是云厂商的出价。照它算，内存项在总账里只占 1%~8%，「谁更省内存」几乎不参与
+                        计分（实测把内存权重压到 0，名次几乎不动）。本项目问的是<strong>资源负担</strong>，
+                        就把这件事明说一次：<strong>1 核·秒 = 1 GB·秒</strong>，改系数只改
+                        <code>score.ts</code> 里 <code>CU_COEFFICIENTS</code> 那一处。
                     </li>
                     <li>
                         机器上同时有别的工作负载时绝对值会偏高，<strong>横向比形状比数值更稳</strong>；
@@ -726,26 +736,27 @@
                 }
                 table.hidden = false;
                 const c = formula.coefficients;
+                const pk = formula.peaks;
                 box.innerHTML = [
-                    `CU使用量 = ∑(资源使用量 × CU转换系数)     <span class="from">← ${formula.source}</span>`,
-                    `本图 CU  = ${c.vCpuSecond.toFixed(1)} × 核·秒 + ${c.gbSecond} × GB·秒     <span class="from">（范围：${formula.scope}）</span>`,
-                    `  核·秒 = ∫(CPU% / 100) dt    <span class="from">CPU 是「单核 100%」口径，多线程可 &gt;100%</span>`,
-                    `  GB·秒 = ∫(RSS / 1GB) dt     <span class="from">内存取实测 RSS；FC 用的是「申报规格 × 时长」</span>`,
+                    `CU使用量 = ∑(资源使用量 × CU转换系数)     <span class="from">← 公式结构借自 ${formula.source}</span>`,
+                    `统一计分  CU = ${c.vCpuSecond.toFixed(1)} × 核·秒 + ${c.gbSecond.toFixed(1)} × GB·秒     <span class="from">（CPU 与内存 1:1；范围：${formula.scope}）</span>`,
+                    `  核·秒 = ∫(CPU% / 100) dt      <span class="from">CPU 是「单核 100%」口径，多线程可 &gt;100%</span>`,
+                    `  GB·秒 = ∫(RSS / 1GB) dt       <span class="from">内存取实测 RSS，不是「申报规格 × 时长」</span>`,
                     `  分数  = ${formula.score}`,
-                    `不计入总分: 调用次数 × ${c.callPerRequest} CU/次     <span class="from">请求数由剧本决定，不是 harness 的开销</span>`,
-                    `与 FC 的偏差: ${formula.deviations.join("；")}`,
+                    `峰值（压力口径，不折算） = ${pk.note}`,
+                    `与 FC 的差别: ${formula.deviations.join("；")}`,
                 ].join("\n");
 
-                const columns = [
-                    "harness",
+                // 表头分两层：上层是**口径**（面积 / 构成 / 峰值 / 分段），下层是列名。
+                const columnNames = [
                     "CU",
                     "分数",
-                    "调用项 CU（不计入）",
                     "核·秒",
-                    "GB·秒",
+                    "MB·秒",
                     "内存项占 CU",
                     "后代 CPU",
-                    "尾部补齐",
+                    "峰值 RSS（MB）",
+                    "峰值 CPU（%）",
                     "启动 / 运转 / 收尾 CU（各自积分）",
                 ];
                 const num = (value, digits) => value.toFixed(digits);
@@ -767,10 +778,12 @@
                             ? `${num(s.childCpuSeconds, 3)}（${s.childCpuFrom === "counter" ? "已回收计数器" : "采样到"}）`
                             : "0";
                     const share = s.cu > 0 ? `${((s.memoryCu / s.cu) * 100).toFixed(0)}%` : "—";
-                    const tail =
-                        num(s.tailAppliedMs, 0) +
-                        "ms" +
-                        (s.tailGapKnown ? "" : ` <span class="warn">下界</span>`);
+                    // 峰值带 title：点上去能看到它出现在第几秒、当时几个进程（判「是不是工具子进程顶出来的」）。
+                    const peaks = s.peaks;
+                    const rssTitle =
+                        peaks === undefined
+                            ? ""
+                            : ` title="峰值出现在 ${(peaks.treeRssAtMs / 1000).toFixed(2)}s，当时 ${peaks.procs} 个进程"`;
                     return [
                         `<span class="swatch" style="background:${colors.get(run.id)}"></span>${run.name}` +
                             (EXCLUDED.has(run.id)
@@ -778,18 +791,26 @@
                                 : ""),
                         num(s.cu, 3),
                         `<span class="score-cell">${num(s.score, 1)}</span>`,
-                        num(s.callCu, 3),
                         num(s.cpuSeconds, 3),
-                        num(s.gbSeconds, 3),
+                        num(s.mbSeconds ?? s.gbSeconds * 1024, 0),
                         share,
                         child,
-                        tail,
+                        peaks === undefined ? "—" : `<span${rssTitle}>${num(peaks.treeRssMb, 1)}</span>`,
+                        peaks === undefined ? "—" : num(peaks.treeCpuPercent, 1),
                         segments,
                     ];
                 });
 
                 table.querySelector("thead").innerHTML =
-                    `<tr>${columns.map((name) => `<th>${name}</th>`).join("")}</tr>`;
+                    `<tr>` +
+                    `<th rowspan="2">harness</th>` +
+                    `<th colspan="2">统一计分（面积 · CPU 与内存 1:1）</th>` +
+                    `<th colspan="4">构成（积分出来）</th>` +
+                    `<th colspan="2">压力口径（峰值 · 进程树）</th>` +
+                    `<th rowspan="2">启动 / 运转 / 收尾 CU（各自积分）</th>` +
+                    `</tr><tr>${columnNames
+                        .map((name) => `<th>${name}</th>`)
+                        .join("")}</tr>`;
                 table.querySelector("tbody").innerHTML = rows
                     .map((cells) => `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`)
                     .join("");
@@ -811,15 +832,20 @@
                     );
                 }
                 note.innerHTML =
-                    "比「谁更省」先看这一列（统一计分 <strong>Beta</strong>：口径还没定稿，" +
-                    "拿它看趋势可以、别当结论；口径与系数只在 scripts/perf/score.ts 一处）。" +
-                    "分数 = 100 × 本批次最小 CU / 本次 CU（最优 100 分），<strong>只在同一批次内可比</strong>" +
-                    "——机器状态、后台负载、剧本都跟着批次走。计分固定用<strong>进程树</strong>口径" +
+                    "<strong>CU</strong> 答「跑完这部剧本总共烧掉多少」（面积，含时长），" +
+                    "<strong>峰值</strong>答「最坏一刻要占多少」（不折算——MB 与 % 本来就能横比）：" +
+                    "两个问题互补。系数是 <strong>CPU 与内存 1:1</strong>（1 核·秒 = 1 GB·秒）——" +
+                    "FC 原表的内存系数是 0.15（等于说「1 核 ≈ 6.67 GB」），照它算内存项只占总账 1%~8%，" +
+                    "「谁更省内存」几乎不参与计分；本项目按资源负担读，就在 <code>score.ts</code> 里明说这一条。" +
+                    "分数是 100 × 本批次最小者 / 本次，<strong>只在同一批次内可比</strong>" +
+                    "（机器状态、后台负载、剧本都跟着批次走）。口径固定用<strong>进程树</strong>" +
                     "（不受上面「主进程 / 进程树」按钮影响），也不含磁盘项与 GPU 项；" +
-                    "「调用项 CU」是请求数 × 0.0075（FC 的调用次数系数）折出来的，<strong>不计入总分</strong>" +
-                    "——请求数由剧本决定，不是 harness 的开销。" +
-                    "总分是<strong>逐拍累加</strong>（每拍资源率 × 该拍实测间隔），最后那列的三段是同一口径的" +
-                    "<strong>分段积分</strong>：三列之和 = 总分 − 尾部补齐（那 ~0.1s 只进总分），所以别把三段相加当总分。" +
+                    "请求数<strong>不折算</strong>——它由剧本决定，不是 harness 的开销。总分是<strong>逐拍累加</strong>" +
+                    "（每拍资源率 × 该拍实测间隔），末列三段是同一口径的<strong>分段积分</strong>：" +
+                    "三列之和 = 总分 − 尾部补齐（那 ~0.1s 只进总分），所以别把三段相加当总分；" +
+                    "MB·秒只是把 GB·秒换个分母显示（×1024）。" +
+                    "统一计分还在 <strong>Beta</strong>：口径没定稿（后代 CPU 算不算、时长怎么算仍在讨论），" +
+                    "拿它看趋势可以、别把名次当结论（口径与系数只在 <code>scripts/perf/score.ts</code> 一处）。" +
                     (warnings.length > 0
                         ? `<br><span class="warn">⚠ ${warnings.join("；")}</span>`
                         : "");

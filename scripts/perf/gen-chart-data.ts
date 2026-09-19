@@ -36,6 +36,7 @@ import {
     CU_COEFFICIENTS,
     relativeScores,
     resourceCost,
+    resourcePeaks,
     segmentCosts,
     type ResourceCost,
 } from "./score";
@@ -57,14 +58,16 @@ const USAGE = `汇总长剧本压测产物 → 图表数据 JSON
 产物 JSON 的 samples 行 = [elapsed_ms, cpu_pct, rss_kb, tree_cpu_pct, tree_rss_kb, procs]，
 对应 samples.csv 的列序（去掉了 ts 列）；主进程与进程树两套口径都在里面，页面按钮切着看。
 
-每个 harness 还带一个 score 块：按阿里云 FC 的 CU 折算系数把「进程树 CPU × 时长」与
-「内存 × 时长」混成一个标量（口径与系数见 scripts/perf/score.ts），再折算成
-「100 × 本批次最小 CU / 本次 CU」的百分制分数（最优 100 分）。分数**只在同一批次内可比**。
+每个 harness 还带一个 score 块（口径与系数只在 scripts/perf/score.ts 一处）：
+  - cu / score       把「进程树 CPU × 时长」与「内存 × 时长」按 **1:1**（1 核·秒 = 1 GB·秒）
+                     混成一个标量，再折成「100 × 本批次最小 CU / 本次 CU」的百分制（最优 100 分）；
+  - peaks            进程树 RSS / CPU 的整个窗口最大值，不折算成分数（绝对量可直接横比）；
+                     它答的是「最坏一刻要占多少」，与 cu 的「总共烧多少」互补。
+分数**只在同一批次内可比**。
 
 读到这些字段说明这一份要当心：
   tailAppliedMs=0 且 tailGapKnown=false   尾部空档补不了（老产物没记退出时刻）→ CU 是下界
   childColumnPresent=false                采样没有 child_cpu_pct 列 → 进程树口径偏低
-  callCu                                  调用次数折算来的，按约定不计入 cu
 `;
 
 /**
@@ -181,7 +184,7 @@ export function tailGapMs(run: RunRecord): number {
 
 /** 一次运行的资源成本（进程树口径，含尾部补齐）。 */
 export function costOf(run: RunRecord): ResourceCost {
-    return resourceCost(run.samples, { tailMs: tailGapMs(run), requests: run.requests });
+    return resourceCost(run.samples, { tailMs: tailGapMs(run) });
 }
 
 /** 保留 digits 位小数；-0 归一成 0，免得 JSON 里出现 `-0`。 */
@@ -204,15 +207,19 @@ function segmentRow(cost: ResourceCost): SegmentScore {
 /**
  * 计分块（payload 里每个 harness 一份）：公式的每一项都摊开写，图表页只负责显示，
  * 不自己记公式也不自己算——口径只有 score.ts 一处。
+ *
+ * 除了 CU（面积，含时长），再给一份**峰值**（压力口径，不折算）：它答的是「最坏一刻要占
+ * 多少」，与时长、比例都无关，直接从原始采样点取。
  */
 export function serializeCost(run: RunRecord, cost: ResourceCost, score: number): RunScore {
     const marks = run.requestMarksMs;
+    const peaks = resourcePeaks(run.samples);
     const segments =
         marks === null
             ? null
             : (() => {
                   // 分段不做尾部外推（那是整个窗口的性质，塞进某一段会重复计），所以 tailMs 不传。
-                  const parts = segmentCosts(run.samples, marks, { requests: run.requests });
+                  const parts = segmentCosts(run.samples, marks);
                   return {
                       startup: segmentRow(parts.startup),
                       span: segmentRow(parts.span),
@@ -224,9 +231,9 @@ export function serializeCost(run: RunRecord, cost: ResourceCost, score: number)
         cu: round(cost.cu, 6),
         cpuCu: round(cost.cpuCu, 6),
         memoryCu: round(cost.memoryCu, 6),
-        callCu: round(cost.callCu, 6),
         cpuSeconds: round(cost.cpuSeconds, 6),
         gbSeconds: round(cost.gbSeconds, 6),
+        mbSeconds: round(cost.gbSeconds * 1024, 3),
         rootCpuSeconds: round(cost.rootCpuSeconds, 6),
         childCpuSeconds: round(cost.childCpuSeconds, 6),
         childCpuFrom: cost.childCpuFrom,
@@ -235,6 +242,12 @@ export function serializeCost(run: RunRecord, cost: ResourceCost, score: number)
         samplingMs: round(cost.samplingMs, 0),
         sampleCount: cost.sampleCount,
         childColumnPresent: run.childColumnPresent,
+        peaks: {
+            treeRssMb: round(peaks.treeRssBytes / 1024 / 1024, 1),
+            treeCpuPercent: round(peaks.treeCpuPercent, 1),
+            treeRssAtMs: round(peaks.treeRssAtMs, 0),
+            procs: round(peaks.treeRssProcs, 0),
+        },
         segments,
     };
 }
@@ -253,10 +266,10 @@ export interface RunScore {
     cu: number;
     cpuCu: number;
     memoryCu: number;
-    /** 调用次数折算的 CU，**不计入 cu**（请求数由剧本决定，不是 harness 的开销）。 */
-    callCu: number;
     cpuSeconds: number;
     gbSeconds: number;
+    /** = `gbSeconds × 1024`：报告与页面按 MB·秒 显示（数值比 GB·秒 直观），口径不变。 */
+    mbSeconds: number;
     rootCpuSeconds: number;
     childCpuSeconds: number;
     childCpuFrom: "counter" | "sampled";
@@ -268,6 +281,8 @@ export interface RunScore {
     sampleCount: number;
     /** samples.csv 是否带 child_cpu_pct 列；false 表示进程树口径偏低。 */
     childColumnPresent: boolean;
+    /** **压力口径**（峰值）：整个窗口的最大值，不折算成分数（MB 与 % 本来就能横比）。 */
+    peaks: { treeRssMb: number; treeCpuPercent: number; treeRssAtMs: number; procs: number };
     segments: { startup: SegmentScore; span: SegmentScore; tail: SegmentScore } | null;
 }
 
@@ -544,7 +559,7 @@ function main(): void {
         console.log(
             `[gen-chart-data] ${run.name.padEnd(11)} ${run.runId}  ` +
                 `端到端 ${(run.endToEndMs / 1000).toFixed(1)}s · ${run.samples.length} 采样点 · ` +
-                `${cost.cu.toFixed(3)} CU → ${((scores.get(run.runId) ?? 0)).toFixed(1)} 分` +
+                `统一计分 ${cost.cu.toFixed(3)} CU → ${((scores.get(run.runId) ?? 0)).toFixed(1)} 分` +
                 `（候选 ${candidates.length} 次：${durations}）` +
                 (notes.length > 0 ? `  ⚠ ${notes.join("；")}` : ""),
         );
@@ -561,16 +576,25 @@ function main(): void {
         sampleColumns: [...SAMPLE_COLUMNS],
         // 计分口径写进 payload：图表页/报告都不该各自记一份公式。
         scoreFormula: {
-            source: "阿里云函数计算（FC）CU 折算系数",
-            expression: "CU = 1.0 × 核·秒 + 0.15 × GB·秒",
+            source: "公式结构借自阿里云函数计算（FC）的「资源使用量 × 转换系数」，系数是本项目定的 CPU 与内存 1:1",
+            expression: "CU = 1.0 × 核·秒 + 1.0 × GB·秒",
             coefficients: { ...CU_COEFFICIENTS },
             scope: "进程树（含 harness 拉起的子进程）",
             score: "100 × 本批次最小 CU / 本次 CU（最优 100 分）",
             deviations: [
                 "内存用实测 RSS，不是 FC 的「申报规格 × 时长」",
                 "不含磁盘项（无数据）与 GPU 项（不采 GPU）",
-                "调用次数项按 0.0075 CU/次单列，不计入总分",
+                "系数不是 FC 的 0.15：FC 眼里 1 核 ≈ 6.67 GB（内存项只占总账 1%~8%），" +
+                    "本项目按「资源负担」读，CPU 与内存逐秒同价",
+                "调用次数不折算（请求数由剧本决定，不是 harness 的开销）",
             ],
+            // 压力口径：峰值，不折算。
+            peaks: {
+                label: "峰值（压力口径）",
+                note:
+                    "取整个窗口的最大值（进程树 RSS / CPU），不折算成分数——峰值是绝对量，可直接横比；" +
+                    "它答的是「最坏一刻要占多少」，与 CU 的「总共烧多少」互补",
+            },
         },
         runs: chosen.map((run) => {
             const cost = costs.get(run.runId) as ResourceCost;

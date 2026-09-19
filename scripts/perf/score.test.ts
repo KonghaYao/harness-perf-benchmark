@@ -4,6 +4,7 @@ import {
     CU_COEFFICIENTS,
     relativeScores,
     resourceCost,
+    resourcePeaks,
     segmentCosts,
 } from "./score";
 
@@ -19,6 +20,7 @@ function at(
         child?: number;
         rssMb?: number;
         treeRssMb?: number;
+        procs?: number;
     } = {},
 ): ProcessSample {
     const cpu = fields.cpu ?? 0;
@@ -29,13 +31,13 @@ function at(
         rssBytes: (fields.rssMb ?? 100) * 1024 * 1024,
         treeCpuPercent: fields.tree ?? cpu,
         treeRssBytes: (fields.treeRssMb ?? fields.rssMb ?? 100) * 1024 * 1024,
-        procs: 1,
+        procs: fields.procs ?? 1,
         childCpuPercent: fields.child ?? 0,
     };
 }
 
 describe("resourceCost：解析解对拍", () => {
-    it("单核满转 2 秒 = 2 核·秒 + 内存项（系数 1.0 / 0.15）", () => {
+    it("单核满转 2 秒 = 2 核·秒 + 内存项（系数 1.0 / 1.0，CPU 与内存 1:1）", () => {
         // 10 拍 × 200ms，每拍 100%（= 满转一个核）
         const samples = [0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 1800].map((ms) =>
             at(ms, { cpu: 100, rssMb: 1024 }),
@@ -46,7 +48,7 @@ describe("resourceCost：解析解对拍", () => {
         expect(cost.cpuSeconds).toBeCloseTo(1.8, 6);
         // 内存：1GB × 1.8s = 1.8 GB·秒
         expect(cost.gbSeconds).toBeCloseTo(1.8, 6);
-        expect(cost.cu).toBeCloseTo(1.8 + 0.15 * 1.8, 6);
+        expect(cost.cu).toBeCloseTo(1.8 + 1.8, 6);
     });
 
     it("多线程超 100% 照加（400% = 4 个核在转）", () => {
@@ -61,7 +63,7 @@ describe("resourceCost：解析解对拍", () => {
         const cost = resourceCost(samples, { scope: "root" });
         // 首拍 dt=0，后两拍各 5s → 512MB × 10s = 5 GB·秒（512*10/1024）
         expect(cost.gbSeconds).toBeCloseTo((512 * 10) / 1024, 6);
-        expect(cost.memoryCu).toBeCloseTo(0.15 * ((512 * 10) / 1024), 6);
+        expect(cost.memoryCu).toBeCloseTo((512 * 10) / 1024, 6);
         expect(cost.cpuCu).toBe(0);
     });
 
@@ -123,14 +125,15 @@ describe("resourceCost：解析解对拍", () => {
         expect(cost.sampleCount).toBe(0);
     });
 
-    it("调用次数项单列，不计入总分", () => {
-        const cost = resourceCost([at(0, { cpu: 100 }), at(1000, { cpu: 100 })], {
-            scope: "root",
-            requests: 101,
-        });
-        expect(cost.callCu).toBeCloseTo(101 * CU_COEFFICIENTS.callPerRequest, 6);
-        expect(cost.cu).toBeCloseTo(cost.cpuCu + cost.memoryCu, 6);
-        expect(cost.cu).toBeLessThan(cost.cu + cost.callCu);
+    it("口径是 CPU 与内存 1:1：1 核·秒 与 1 GB·秒 同价", () => {
+        expect(CU_COEFFICIENTS.vCpuSecond).toBe(1);
+        expect(CU_COEFFICIENTS.gbSecond).toBe(1);
+        // 1s 满核 + 1s 1GB 常驻 = 2 CU（若按 FC 的 0.15 只有 1.15）
+        const samples = [at(0, { cpu: 100, rssMb: 1024 }), at(1000, { cpu: 100, rssMb: 1024 })];
+        const cost = resourceCost(samples, { scope: "root" });
+        expect(cost.cpuSeconds).toBeCloseTo(1, 6);
+        expect(cost.gbSeconds).toBeCloseTo(1, 6);
+        expect(cost.cu).toBeCloseTo(2, 6);
     });
 
     it("空档里的 CPU 为 0 时只补内存（peri 的收尾等待正是这样）", () => {
@@ -171,6 +174,35 @@ describe("segmentCosts：启动 / 运转 / 收尾", () => {
         const parts = segmentCosts(samples, { first: 1000, last: 3000 }, { scope: "root" });
         // 运转段两拍各 1s；若首拍按绝对 elapsed 算会变成 2s（+100%）
         expect(parts.span.cpuSeconds).toBeCloseTo(2, 6);
+    });
+});
+
+describe("resourcePeaks：峰值（压力口径）", () => {
+    it("取整个窗口的最大值，并记下峰值在哪一拍、当时几个进程", () => {
+        const samples = [
+            at(0, { cpu: 10, rssMb: 100, procs: 1 }),
+            at(1000, { cpu: 90, rssMb: 300, procs: 3 }),
+            at(2000, { cpu: 20, rssMb: 200, procs: 1 }),
+        ];
+        const peaks = resourcePeaks(samples);
+        expect(peaks.treeRssBytes).toBe(300 * 1024 * 1024);
+        expect(peaks.treeRssAtMs).toBe(1000);
+        expect(peaks.treeRssProcs).toBe(3);
+        expect(peaks.treeCpuPercent).toBe(90);
+        expect(peaks.sampleCount).toBe(3);
+    });
+
+    it("峰值不是面积：末拍才涨上去也一样取到", () => {
+        const samples = [at(0, { rssMb: 50 }), at(1000, { rssMb: 50 }), at(2000, { rssMb: 500, cpu: 130 })];
+        const peaks = resourcePeaks(samples);
+        expect(peaks.treeRssBytes).toBe(500 * 1024 * 1024);
+        expect(peaks.treeRssAtMs).toBe(2000);
+        // CPU peak 可以 >100%（多线程）
+        expect(peaks.treeCpuPercent).toBe(130);
+    });
+
+    it("空样本集返回全 0", () => {
+        expect(resourcePeaks([])).toMatchObject({ treeRssBytes: 0, treeCpuPercent: 0, sampleCount: 0 });
     });
 });
 

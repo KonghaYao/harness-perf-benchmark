@@ -45,7 +45,7 @@ import { harnessIdFromCommandLine, isValidHarnessId } from "./harness-id";
 import { parseLegacyPerfLog, type LegacyRunMeta } from "./legacy-run";
 import { RUN_META_SCHEMA_VERSION, writeJsonAtomic, type RunMeta, type RunStatus } from "./run-meta";
 import { parseSamplesCsv, summarize } from "./sampler";
-import { resourceCost } from "./score";
+import { resourceCost, resourcePeaks } from "./score";
 
 const USAGE = `把老布局（平铺的 <runId>-*.{log,csv}）迁成一次运行一个目录
 
@@ -117,14 +117,17 @@ export function buildMigratedMeta(
     let summary: RunMeta["summary"] = null;
     let summarySource: RunMeta["summarySource"] = null;
     let cost: RunMeta["cost"] = null;
+    let peaks: RunMeta["peaks"] = null;
     if (csvPath !== undefined) {
         try {
             const samples = parseSamplesCsv(readFileSync(csvPath, "utf8"));
             if (samples.length > 0) {
                 summary = { ...summarize(samples) };
                 summarySource = "samples";
-                // 老产物没有 harnessExitedAtMs，尾部空档补不了：这一份是下界。
+                // 老产物没有 harnessExitedAtMs，尾部空档补不了：这一份 CU 是下界。
                 cost = resourceCost(samples);
+                // 峰值与时长、尾部空档无关，老产物一样能算准。
+                peaks = resourcePeaks(samples);
             }
         } catch {
             // CSV 读不动（列不全/损坏）就当没有摘要，不因一个文件挡住整次迁移。
@@ -219,6 +222,7 @@ export function buildMigratedMeta(
         summary,
         summarySource,
         cost,
+        peaks,
         exit: legacy?.exit ?? null,
         artifacts,
     };

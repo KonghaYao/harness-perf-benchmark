@@ -60,7 +60,7 @@ import {
     type SampleSummary,
     type SamplerBackend,
 } from "./sampler";
-import { resourceCost, type ResourceCost } from "./score";
+import { resourceCost, resourcePeaks, type ResourceCost, type ResourcePeaks } from "./score";
 
 export const EXIT_OK = 0;
 /** 配置 / mock / 环境错误。 */
@@ -287,10 +287,23 @@ function costLine(cost: ResourceCost | null): string {
             : "";
     return (
         `统一计分(Beta): ${cost.cu.toFixed(3)} CU = 1.0×${cost.cpuSeconds.toFixed(3)} 核·秒` +
-        ` + 0.15×${cost.gbSeconds.toFixed(3)} GB·秒` +
+        ` + 1.0×${cost.gbSeconds.toFixed(3)} GB·秒（CPU 与内存 1:1）` +
         `（内存项占 ${cost.cu > 0 ? ((cost.memoryCu / cost.cu) * 100).toFixed(0) : "0"}%${child}；` +
         `尾部补齐 ${cost.tailAppliedMs.toFixed(0)}ms）`
     );
+}
+
+/**
+ * 另一行给**峰值**（压力口径）：最坏一刻占多少。
+ * 与 `costLine` 的积分互补——面积答「总共烧多少」，峰值答「要多少资源才跑得起来」。
+ */
+function peakLine(peaks: ResourcePeaks | null): string[] {
+    if (peaks === null || peaks.sampleCount === 0) return [];
+    return [
+        `峰值(压力口径): RSS ${mb(peaks.treeRssBytes)}（t=${(peaks.treeRssAtMs / 1000).toFixed(2)}s，` +
+            `当时 ${peaks.treeRssProcs} 个进程） · CPU ${peaks.treeCpuPercent.toFixed(1)}%` +
+            `（进程树，不折算成分数）`,
+    ];
 }
 
 /** 按进程组发信号；进程组不可用（已退出等）时退回单进程。 */
@@ -568,6 +581,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         summary: null,
         summarySource: null,
         cost: null,
+        peaks: null,
         exit: null,
         artifacts: null,
     };
@@ -864,7 +878,9 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
             lastSampleTs !== null && harnessExitEpoch !== null
                 ? Math.max(0, harnessExitEpoch - lastSampleTs)
                 : 0;
-        meta.cost = resourceCost(samples, { tailMs, requests });
+        meta.cost = resourceCost(samples, { tailMs });
+        // 峰值是另一码事：它是最大值，与时长、尾部空档都无关，直接用原始采样点。
+        meta.peaks = resourcePeaks(samples);
         perfBuffer.push("", "=== 摘要 ===", ...summaryLines(summary, config));
         perfBuffer.push(
             `mock 请求数: ${requests}` +
@@ -875,6 +891,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
             `端到端时长: ${(harnessElapsedMs / 1000).toFixed(1)}s（harness 启动 → 退出；` +
                 `采样窗口 ${(summary.durationMs / 1000).toFixed(1)}s）`,
             costLine(meta.cost),
+            ...peakLine(meta.peaks),
             ...segmentLines(finalStatus, harnessStartEpoch, harnessExitEpoch),
             `产物: ${runDir}（run.json · perf.log · samples.csv · harness.log · mock.log）`,
         );
@@ -884,6 +901,9 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         stdout(`[perf] mock 请求数: ${requests} · 产物: ${runDir}`);
         stdout(`[perf] 端到端时长: ${(harnessElapsedMs / 1000).toFixed(1)}s`);
         stdout(`[perf] ${costLine(meta.cost)}`);
+        for (const line of peakLine(meta.peaks)) {
+            stdout(`[perf] ${line}`);
+        }
         for (const line of segmentLines(finalStatus, harnessStartEpoch, harnessExitEpoch)) {
             stdout(`[perf] ${line}`);
         }
