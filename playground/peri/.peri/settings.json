@@ -1,0 +1,25 @@
+{
+    "config": {
+        "active_alias": "sonnet",
+        "providers": [
+            {
+                "id": "llm-mock",
+                "type": "openai",
+                "apiKey": "mock-key",
+                "baseUrl": "http://127.0.0.1:3457/v1",
+                "models": {
+                    "fable": "llm-mock",
+                    "opus": "llm-mock",
+                    "sonnet": "llm-mock",
+                    "haiku": "llm-mock"
+                }
+            }
+        ],
+        "profiles": {
+            "fable": { "provider": "llm-mock", "model": "llm-mock", "effort": "low" },
+            "opus": { "provider": "llm-mock", "model": "llm-mock", "effort": "low" },
+            "sonnet": { "provider": "llm-mock", "model": "llm-mock", "effort": "low" },
+            "haiku": { "provider": "llm-mock", "model": "llm-mock", "effort": "low" }
+        }
+    }
+}

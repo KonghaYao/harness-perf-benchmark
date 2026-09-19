@@ -1,0 +1,50 @@
+{
+    "defaults": {
+        "delayMs": 200,
+        "chunkDelayMs": 20,
+        "chunkSize": 1
+    },
+    "responses": [
+        {
+            "message": {
+                "role": "assistant",
+                "content": "我先看一下项目结构。",
+                "tool_calls": [
+                    {
+                        "id": "call_mock_1",
+                        "type": "function",
+                        "function": {
+                            "name": "list_files",
+                            "arguments": { "path": "." }
+                        }
+                    }
+                ]
+            },
+            "finish_reason": "tool_calls"
+        },
+        {
+            "message": {
+                "role": "assistant",
+                "content": "目录里有 README.md 和 src/，我读一下 README。",
+                "tool_calls": [
+                    {
+                        "id": "call_mock_2",
+                        "type": "function",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": { "path": "README.md" }
+                        }
+                    }
+                ]
+            },
+            "finish_reason": "tool_calls"
+        },
+        {
+            "message": {
+                "role": "assistant",
+                "content": "这个项目是一个演示用的 CLI 工具，入口在 src/index.ts。\n\n- 运行时依赖：无\n- 测试命令：`bun test`\n\n需要我继续看别的文件吗？"
+            },
+            "finish_reason": "stop"
+        }
+    ]
+}
