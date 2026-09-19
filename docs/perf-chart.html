@@ -227,6 +227,16 @@
             <div class="panel">
                 <ul class="notes">
                     <li>
+                        <strong>opencode 已退出排名</strong>（曲线默认收起，点图例可展开）：它是本批次里唯一在
+                        各项指标上都远落后的一家——端到端 38.6s（其余五家 1.5~19.9s，是最快的 pi 1.5s 的
+                        25 倍多）、进程树 CPU 均值 69.9% / 峰值 229.3%（两项都最高）、进程树 RSS 均值
+                        798.9MB / 峰值 943.0MB（第二高的 Claude Code 才 274.9 / 321.9MB，差 2.9 倍）；按
+                        「端到端 × CPU 均值」估整段消耗约 27 核·秒，其余五家 1.0~5.0 核·秒。继续混在榜单里
+                        只会拉长横轴、把其余五家压成一堆，故<strong>后续批次不再跑它、不计入排名</strong>；代码
+                        与沙盒保留在 <code>playground/opencode/</code>，历史读数也照旧留在图里（虚线那条）。
+                        详见 <code>docs/perf-compare.md</code>。
+                    </li>
+                    <li>
                         <strong>一个 harness 一条线</strong>：线的右端就是它退出的时刻；各家的端到端
                         时长能差一个数量级，所以横向长度本身就是结论之一。
                     </li>
@@ -327,6 +337,14 @@
             };
             const PALETTE = Object.values(COLORS);
 
+            /**
+             * 已退出排名的 harness：曲线默认收起（点图例可展开看历史读数）、画成虚线、汇总表里
+             * 标注、X 轴也不再按它们的时长定标。opencode 是第一个——它在各项指标上都远落后于
+             * 其余各家（理由与数据见下面「读数怎么读」的第一条），继续混在榜单里只会把横轴拉长、
+             * 把其余五家压成一堆。代码与沙盒仍在 playground/opencode/，想复测随时可以单跑。
+             */
+            const EXCLUDED = new Set(["opencode"]);
+
             const state = { metric: "rss", scope: "tree", marks: true, smoothMs: 1000 };
             let payload = null;
             let chart = null;
@@ -346,8 +364,9 @@
                     ctx.setLineDash([5, 4]);
                     ctx.lineWidth = 1;
                     ctx.globalAlpha = 0.5;
-                    canvas.data.datasets.forEach((dataset) => {
+                    canvas.data.datasets.forEach((dataset, index) => {
                         if (!dataset.marks) return;
+                        if (!canvas.isDatasetVisible(index)) return;
                         ctx.strokeStyle = dataset.borderColor;
                         for (const ms of [dataset.marks.first, dataset.marks.last]) {
                             const x = scales.x.getPixelForValue(ms / 1000);
@@ -379,13 +398,16 @@
                     ctx.textBaseline = "middle";
 
                     // 先把所有峰值点换算成像素，顺手算好名字框的横向范围。
+                    // 隐藏的线（已退出排名那家，或图例里被点掉的）不标峰值：它的 dataset 仍在
+                    // data.datasets 里，不判可见性就会画出一个没有线的孤零零的点。
                     const labels = [];
-                    for (const dataset of canvas.data.datasets) {
-                        if (!dataset.peak) continue;
+                    canvas.data.datasets.forEach((dataset, index) => {
+                        if (!dataset.peak) return;
+                        if (!canvas.isDatasetVisible(index)) return;
                         const x = scales.x.getPixelForValue(dataset.peak.x);
                         const y = scales.y.getPixelForValue(dataset.peak.y);
-                        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-                        if (x < chartArea.left || x > chartArea.right) continue;
+                        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+                        if (x < chartArea.left || x > chartArea.right) return;
                         const width = ctx.measureText(dataset.label).width;
                         // 名字先试右侧，右边放不下就翻到左侧（内存峰值多半落在收尾处，贴着右边界）
                         const toRight = x + 8 + width <= chartArea.right;
@@ -397,7 +419,7 @@
                             left: toRight ? x + 8 : x - 8 - width,
                             right: toRight ? x + 8 + width : x - 8,
                         });
-                    }
+                    });
 
                     // 两个峰值挨得近时（内存图里 dsh 与 Codex 的 y 只差 10px）名字会叠在一起，
                     // 按 y 排一遍、给前者让位——只挪字不挪点，点始终在曲线上。
@@ -491,6 +513,9 @@
                     }
                     return {
                         label: run.name,
+                        hidden: EXCLUDED.has(run.id),
+                        // 退场的画虚线：万一被点开，也一眼看得出它不在榜单里
+                        borderDash: EXCLUDED.has(run.id) ? [5, 3] : [],
                         data: smoothed.map((point) => ({
                             x: point.t / 1000,
                             y: round(point.y, metric.digits),
@@ -516,8 +541,11 @@
             function renderChart() {
                 const metric = METRICS[state.metric];
                 const datasets = buildDatasets();
+                // X 轴按**参与排名**的那几家定：退场者的长尾会把其余五家压成一堆。suggestedMax
+                // 只是建议——把它的线从图例点开时，轴会自己伸到它的时长上。
+                const ranked = payload.runs.filter((run) => !EXCLUDED.has(run.id));
                 const maxSeconds = Math.ceil(
-                    Math.max(...payload.runs.map((run) => run.endToEndMs)) / 1000,
+                    Math.max(...(ranked.length > 0 ? ranked : payload.runs).map((run) => run.endToEndMs)) / 1000,
                 );
 
                 if (chart !== null) {
@@ -596,7 +624,10 @@
                     const peak = Math.max(...values);
                     const tail = run.segments === null ? "—" : seconds(run.segments.tailMs);
                     return [
-                        `<span class="swatch" style="background:${colorOf(run, order)}"></span>${run.name}`,
+                        `<span class="swatch" style="background:${colorOf(run, order)}"></span>${run.name}` +
+                            (EXCLUDED.has(run.id)
+                                ? `<span style="color:var(--muted)"> · 已退出排名</span>`
+                                : ""),
                         run.runId,
                         seconds(run.endToEndMs),
                         run.segments === null ? "—" : seconds(run.segments.startupMs),

@@ -15,8 +15,8 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 
 两个用途：
 
-- **性能压测**：以脚本控制的节奏驱动 harness（peri / opencode / Claude Code / Codex / pi / dsh），
-  测量 harness 进程自身的 CPU / 内存开销（不采 GPU）；
+- **性能压测**：以脚本控制的节奏驱动 harness（peri / Claude Code / Codex / pi / dsh；opencode
+  **已退出排名、不再跑**，见「与 harness 集成」开头），测量 harness 进程自身的 CPU / 内存开销（不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
 ## 压测工作流（已实现）
@@ -28,14 +28,14 @@ bun run scripts/perf/run.ts --script data/scenarios/long-run.json --exhausted st
 bun run scripts/perf/run.ts --help                      # 全部选项（--script 必填，没有默认剧本）
 
 cd playground/peri        && bun perf-demo.ts --timeout-ms 600000   # peri 沙盒（默认长剧本 + stop）
-cd playground/opencode    && bun perf-demo.ts --timeout-ms 600000   # opencode 沙盒
 cd playground/claude-code && bun perf-demo.ts --timeout-ms 600000   # Claude Code 沙盒
 cd playground/codex       && bun perf-demo.ts --timeout-ms 600000   # Codex 沙盒
 cd playground/pi          && bun perf-demo.ts --timeout-ms 600000   # pi 沙盒
 cd playground/deepseek    && bun perf-demo.ts --timeout-ms 600000   # dsh 沙盒
+# cd playground/opencode  && bun perf-demo.ts --timeout-ms 600000   # 已退出排名：代码保留，常规批次不再跑
 ```
 
-六个 `perf-demo.ts` 都是复用同一套实现的薄入口（相对路径按仓库根解析），差别只在 harness 命令、
+`perf-demo.ts` 都是复用同一套实现的薄入口（相对路径按仓库根解析），差别只在 harness 命令、
 沙盒与配置注入方式（详见「与 harness 集成」）。**默认剧本是各家的长剧本**
 （`data/scenarios/long-run*.json`，由 `gen-long-run.ts` 按自家工具形状生成），`--exhausted` 默认
 `stop`；`run.ts` 的 `--script` 是必填（见「关键约定与陷阱」），那份默认值因此由各家 demo 自己带：
@@ -176,7 +176,13 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - peri 每次 prompt 结束还会发一次「预测下一步输入」请求，同样消费一条脚本——编排脚本时必须算进去；
   `scripts/peri-demo.json` 就是按「主回答 → 预测 → …」的规律排的。
 
-### opencode
+### opencode（**已退出排名，常规批次不再跑**）
+
+**退出原因**：它在各项指标上都远落后于其余五家（端到端 38.6s vs 1.5~19.9s、进程树 CPU 均值
+69.9% / 峰值 229.3%、RSS 均值 798.9MB / 峰值 943.0MB，整段消耗约 27 核·秒 vs 其余 1.0~5.0），
+故不计入排名，`docs/perf-compare.md` 与 `docs/perf-chart.html` 上都已标注。**代码、沙盒与下面的
+接入说明全部保留**：要复测就按下面的方式单跑，跑完用 `--exclude opencode` 生成图表数据即可
+（`gen-chart-data.ts` 的选项：某家退出常规批次后，留在 `data/runs` 里的历史产物不会自己爬回图表）。
 
 - 二进制从 PATH 找（`Bun.which("opencode")`，实测 1.17.12）；
 - `playground/opencode/opencode.json` 定义 provider（`npm: "@ai-sdk/openai-compatible"`），
