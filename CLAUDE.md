@@ -9,13 +9,13 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 
 | 端点 | 协议 | 谁在用 |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、pi、脚本自测 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、pi、grok、脚本自测 |
 | `POST /v1/messages` | Anthropic Messages | Claude Code |
 | `POST /v1/responses` | OpenAI Responses | Codex |
 
 两个用途：
 
-- **性能压测**：以脚本控制的节奏驱动 harness（peri / opencode / Claude Code / Codex / pi），
+- **性能压测**：以脚本控制的节奏驱动 harness（peri / opencode / Claude Code / Codex / pi / grok），
   测量 harness 进程自身的 CPU / 内存开销（不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
@@ -32,9 +32,10 @@ cd playground/opencode    && bun perf-demo.ts --timeout-ms 60000   # opencode �
 cd playground/claude-code && bun perf-demo.ts --timeout-ms 60000   # Claude Code 沙盒
 cd playground/codex       && bun perf-demo.ts --timeout-ms 60000   # Codex 沙盒
 cd playground/pi          && bun perf-demo.ts --timeout-ms 60000   # pi 沙盒
+cd playground/grok        && bun perf-demo.ts --timeout-ms 60000   # grok 沙盒
 ```
 
-五个 `perf-demo.ts` 都是复用同一套实现的薄入口（相对路径按仓库根解析），差别只在 harness 命令、
+六个 `perf-demo.ts` 都是复用同一套实现的薄入口（相对路径按仓库根解析），差别只在 harness 命令、
 沙盒与配置注入方式（详见「与 harness 集成」）：
 
 - `playground/peri`：默认注入 `--db-path`（沙盒会话库）与 `--settings`（运行时生成、指向本次端口的 JSON）；
@@ -42,7 +43,9 @@ cd playground/pi          && bun perf-demo.ts --timeout-ms 60000   # pi 沙盒
 - `playground/claude-code`：`HOME` + `CLAUDE_CONFIG_DIR` 都指到沙盒（**只改后者挡不住用户级 settings**）；
 - `playground/codex`：`CODEX_HOME` 指向沙盒（用户全局配置里有 hooks 与别的 provider）；
 - `playground/pi`：`PI_CODING_AGENT_DIR` 指向沙盒，`models.json` 每次启动按本次端口重写
-  （pi 的 `baseUrl` 不吃 `$VAR` 插值，换端口只能改文件）。
+  （pi 的 `baseUrl` 不吃 `$VAR` 插值，换端口只能改文件）；
+- `playground/grok`：`GROK_HOME` 指向沙盒，`XAI_API_KEY` 注入假值过登录检查，
+  `config.toml` 的 `base_url` 行每次启动按本次端口重写。
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
 并打印两个候选后端的开销与分辨率）。
@@ -106,6 +109,7 @@ scripts/perf/*.test.ts     bun:test：差分换算、参数解析、端到端（
 scripts/perf-scenario.json 压测剧本：全是 Bash 工具调用，配 --exhausted loop 持续供压
 scripts/codex-scenario.json  Codex 版压测剧本（exec custom 工具）
 scripts/pi-scenario.json    pi 版压测剧本（bash 小写工具）
+scripts/grok-scenario.json  grok 版压测剧本（run_terminal_command 工具）
 script.json             默认演示脚本（工具调用 + 中文回答）
 scripts/peri-demo.json  按 peri 的消费规律编排的演示脚本
 playground/<harness>/   各自 harness 的运行沙盒 + perf-demo.ts 入口 + 剧本（按需）
@@ -214,13 +218,47 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - CLI 是单个 node 进程（`dist/bundle/cli.js`，无子进程），启动快：自行收尾的整轮（3 轮工具调用）
   实测约 0.5s 跑完；被强杀时与 peri 一样 `harness.log` 为空（自行退出才有输出）。
 
+### grok
+
+- 二进制从 PATH 找（`Bun.which("grok")`），再退回官方布局 `~/.grok/bin/grok`；harness 命令是
+  `grok -p '<prompt>' -m llm-mock --yolo --no-auto-update`；
+- **本机两者都没有**：官方安装脚本在 `x.ai/cli/install.sh`，而这台机器连不上 x.ai（GitHub /
+  npm 正常），所以实测用的是源码编译的 `grok-build/target/debug/xai-grok-pager`
+  （`--version` 报 `grok 0.2.120`）：该 crate 的注释写明「artifact is still named
+  `xai-grok-pager`」，它就是主程序。**debug 构建启动慢——实测 25s 只跑完 13 个请求，
+  读数不能与 release 版横向比**，要显式传 `--peri <path>` 指过去；
+- 走 **OpenAI Chat Completions**（`POST /v1/chat/completions`，`stream: true`）。它的
+  `config.toml` 还支持 `api_backend = "responses" / "messages"`，**三种协议都能指向本 mock**，
+  是唯一能做三协议对照的 harness（本次只接了 chat_completions）；
+- 隔离靠 **`GROK_HOME`** 指向沙盒（`playground/grok/.grok-home/`）：配置、sessions、hooks、
+  marketplace 全从它找，指到沙盒就不会读 `~/.grok`（那里有用户自己的 model 段与凭据）；
+- **`XAI_API_KEY` 必须注入**（值任意，demo 给的是 `mock-key`）：grok 启动时先做登录检查，
+  即便 model 段自己带 `api_key` 也照样拦（实测报 "Not signed in"）——mock 不校验
+  Authorization，这个值纯粹是给 grok 看的；
+- 沙盒 `config.toml` 每次启动由 demo 生成：读同目录的 `config.toml`（人读的源文件，`base_url`
+  写的是默认端口），只把 `base_url` 替换成本次端口。**判断有没有命中要用正则自身，不能拿
+  「替换后是否变化」当判据**——源文件默认端口恰好等于本次端口时字符串不变，会误报「没找到
+  base_url 行」（已踩过）；
+- 工具名是**全称 `run_terminal_command`**，且 `required = ["command", "description"]`
+  （description 必填）。源码里 `"run_terminal_command" | "run_terminal_cmd" | "bash" | "shell"`
+  那组只是渲染用的别名，照它写成 `run_terminal_cmd` 会被当成未知工具（tool result:
+  `Tool not found: run_terminal_cmd`，然后 grok 把参数解析失败写回模型），所以默认剧本是
+  `scripts/grok-scenario.json`；
+- 消费规律与 pi 一样简洁：一次 prompt 只消费「工具轮次 + 一条收尾」，**没有辅助请求**；
+- `--yolo` 放行工具执行（headless 下没有交互确认）、`--no-auto-update` 关更新检查、
+  `GROK_TELEMETRY_ENABLED=0` 关遥测；
+- **它是流式写 stdout 的**：被强杀时 `harness.log` 也有内容（与 peri / pi 相反），自行收尾时
+  退出码 0、不用强杀；
+- 进程树口径要留意：它执行 shell 命令时会拉子进程，`samples.csv` 的 `procs` 列在 1~6 之间跳，
+  于是「进程树 RSS」远高于主进程（实测峰值 603MB vs 主进程 135MB）。
+
 ## 已知限制与坑（压测相关）
 
 - **`--max-turns` 在 peri 的 `-p` 模式下是空操作**，所以压测时长由 `--timeout-ms` 兜底，
   而不是轮数；`--turns` 只是原样透传给 harness；
 - **peri 在 `-p` 模式下只在退出时 flush 输出**：被超时强杀时 `<runId>-harness.log` 会是空文件
   （工具会在 perf.log 里写明原因）；自行收敛时该文件有内容。**pi 同样如此**（实测自行收尾时
-  harness.log 有完整回答，loop 剧本被强杀时为空）。opencode / Claude Code 是持续流式的，
+  harness.log 有完整回答，loop 剧本被强杀时为空）。**grok / opencode / Claude Code 是持续流式的**，
   被强杀也留有输出；
 - 若 peri 报 `workspace identity changed; explicit relinking is required`，那是 `~/.peri/threads/threads.db`
   里该目录的 workspace 记录过期（注册时的 discovery 快照与现状不符），与本仓库无关；
@@ -236,7 +274,7 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
   写的隔离是静默失效的；
 - **多数 harness 会额外发请求消耗脚本条目**：peri 发「预测下一步输入」，opencode 发标题生成，
   Claude Code / Codex 也会发辅助请求；脚本不足时先看 `*-mock.log` 里是谁在取号。
-  **pi 是例外**：实测一次 prompt 只消费「工具轮次 + 一条收尾」，没有辅助请求；
+  **pi 与 grok 是例外**：实测一次 prompt 只消费「工具轮次 + 一条收尾」，没有辅助请求；
 - 各 harness 的 `-p` / `run` / `exec` 模式普遍没有轮数上限，loop 剧本不会自行收敛；
 - 压测期间 mock 自己也在烧 CPU（实测本机均值约 2% 单核），但它与 harness 不同进程、不参与采样。
 
