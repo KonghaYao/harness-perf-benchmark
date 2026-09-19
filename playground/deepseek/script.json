@@ -1,0 +1,84 @@
+{
+    "note": "dsh 端到端演示剧本：让 dsh 连续跑三轮 bash 工具循环（真实执行 ls / echo / pwd），最后打印收尾文本自行退出。**注意第 2 条是给「会话标题生成」请求准备的**：dsh 0.1.5-rc.2 在首条主请求之后会额外发一条标题请求（同 provider、messages=2），它在脚本里同样要占一条——实测的到达顺序是 主请求 → 标题请求 → 主请求 ……，所以第 2 条写成一句纯文本当标题，工具轮次从第 3 条继续。配 --exhausted hold 用：即使意料之外地多来一次请求，拿到的也是同一条收尾文本。压测请用 scripts/dsh-scenario.json + --exhausted loop。工具名与形状按实测：bash 小写，参数 {command, description} 两个都必填。",
+    "defaults": {
+        "delayMs": 10,
+        "chunkDelayMs": 1,
+        "chunkSize": 4
+    },
+    "responses": [
+        {
+            "message": {
+                "role": "assistant",
+                "content": "先看一眼当前目录里有什么。",
+                "tool_calls": [
+                    {
+                        "id": "call_dsh_ls",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": {
+                                "command": "ls",
+                                "description": "List files in current directory"
+                            }
+                        }
+                    }
+                ]
+            },
+            "finish_reason": "tool_calls"
+        },
+        {
+            "message": {
+                "role": "assistant",
+                "content": "llm-mock 演示"
+            },
+            "finish_reason": "stop"
+        },
+        {
+            "message": {
+                "role": "assistant",
+                "content": "再打印一行标记，确认工具链路是通的。",
+                "tool_calls": [
+                    {
+                        "id": "call_dsh_echo",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": {
+                                "command": "echo llm-mock-perf-tick",
+                                "description": "Print a marker line"
+                            }
+                        }
+                    }
+                ]
+            },
+            "finish_reason": "tool_calls"
+        },
+        {
+            "message": {
+                "role": "assistant",
+                "content": "接下来确认工作目录的绝对路径。",
+                "tool_calls": [
+                    {
+                        "id": "call_dsh_pwd",
+                        "type": "function",
+                        "function": {
+                            "name": "bash",
+                            "arguments": {
+                                "command": "pwd",
+                                "description": "Show the working directory path"
+                            }
+                        }
+                    }
+                ]
+            },
+            "finish_reason": "tool_calls"
+        },
+        {
+            "message": {
+                "role": "assistant",
+                "content": "三轮工具调用都回来了：目录列表、标记回显与工作目录路径都正常，llm-mock 的 Chat Completions 链路验证结束。"
+            },
+            "finish_reason": "stop"
+        }
+    ]
+}

@@ -9,13 +9,13 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 
 | 端点 | 协议 | 谁在用 |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、pi、grok、脚本自测 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、pi、grok、dsh、脚本自测 |
 | `POST /v1/messages` | Anthropic Messages | Claude Code |
 | `POST /v1/responses` | OpenAI Responses | Codex |
 
 两个用途：
 
-- **性能压测**：以脚本控制的节奏驱动 harness（peri / opencode / Claude Code / Codex / pi / grok），
+- **性能压测**：以脚本控制的节奏驱动 harness（peri / opencode / Claude Code / Codex / pi / grok / dsh），
   测量 harness 进程自身的 CPU / 内存开销（不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
@@ -33,9 +33,10 @@ cd playground/claude-code && bun perf-demo.ts --timeout-ms 60000   # Claude Code
 cd playground/codex       && bun perf-demo.ts --timeout-ms 60000   # Codex 沙盒
 cd playground/pi          && bun perf-demo.ts --timeout-ms 60000   # pi 沙盒
 cd playground/grok        && bun perf-demo.ts --timeout-ms 60000   # grok 沙盒
+cd playground/deepseek    && bun perf-demo.ts --timeout-ms 60000   # dsh 沙盒
 ```
 
-六个 `perf-demo.ts` 都是复用同一套实现的薄入口（相对路径按仓库根解析），差别只在 harness 命令、
+七个 `perf-demo.ts` 都是复用同一套实现的薄入口（相对路径按仓库根解析），差别只在 harness 命令、
 沙盒与配置注入方式（详见「与 harness 集成」）：
 
 - `playground/peri`：默认注入 `--db-path`（沙盒会话库）与 `--settings`（运行时生成、指向本次端口的 JSON）；
@@ -45,7 +46,9 @@ cd playground/grok        && bun perf-demo.ts --timeout-ms 60000   # grok 沙盒
 - `playground/pi`：`PI_CODING_AGENT_DIR` 指向沙盒，`models.json` 每次启动按本次端口重写
   （pi 的 `baseUrl` 不吃 `$VAR` 插值，换端口只能改文件）；
 - `playground/grok`：`GROK_HOME` 指向沙盒，`XAI_API_KEY` 注入假值过登录检查，
-  `config.toml` 的 `base_url` 行每次启动按本次端口重写。
+  `config.toml` 的 `base_url` 行每次启动按本次端口重写；
+- `playground/deepseek`：`DSH_HOME` 指向沙盒，provider 全走环境变量
+  （`$DEEPSEEK_BASE_URL` / `$DEEPSEEK_API_KEY`），**不用生成配置文件**。
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
 并打印两个候选后端的开销与分辨率）。
@@ -110,6 +113,7 @@ scripts/perf-scenario.json 压测剧本：全是 Bash 工具调用，配 --exhau
 scripts/codex-scenario.json  Codex 版压测剧本（exec custom 工具）
 scripts/pi-scenario.json    pi 版压测剧本（bash 小写工具）
 scripts/grok-scenario.json  grok 版压测剧本（run_terminal_command 工具）
+scripts/dsh-scenario.json   dsh 版压测剧本（bash 工具，command 与 description 都必填）
 script.json             默认演示脚本（工具调用 + 中文回答）
 scripts/peri-demo.json  按 peri 的消费规律编排的演示脚本
 playground/<harness>/   各自 harness 的运行沙盒 + perf-demo.ts 入口 + 剧本（按需）
@@ -252,13 +256,45 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - 进程树口径要留意：它执行 shell 命令时会拉子进程，`samples.csv` 的 `procs` 列在 1~6 之间跳，
   于是「进程树 RSS」远高于主进程（实测峰值 603MB vs 主进程 135MB）。
 
+### dsh（DeepSeek Harness）
+
+- 二进制从 PATH 找（`Bun.which("dsh")`，实测 0.1.5-rc.2，`npm i -g @deepseek-ai/dsh`）；harness 命令是
+  `dsh --profile headless '<prompt>'`；
+- **入口就是 profile**：`dsh --profile <name>` 启动 `$DSH_HOME/profiles/<name>`，`headless` 是官方的
+  一次性模式——跑一个任务、最终回答写 stdout（推理增量写 stderr）、完成退出码 0 / 出错 1，**不起端口、
+  不留后台进程**；`dsh web`（浏览器 UI，默认 127.0.0.1:3080）只是 `--profile web` 的别名；
+- 走 **OpenAI Chat Completions**（`POST /v1/chat/completions`，`stream: true`）：内置的
+  `dsh-llm-deepseek` 适配器按 `POST {baseURL}/chat/completions` 发请求，所以 baseURL 要带 `/v1`；
+  模型 id 是默认配置里的 `deepseek-flash`（provider `deepseek-official`），命令行不用指定；
+- 隔离靠 **`DSH_HOME`** 指向沙盒（`playground/deepseek/.dsh-home/`）：profile 树（各 profile 的
+  `cordis.patch.yml` 与 patch 层）、`sessions/`、`storages/`、匿名用户 id 全从它找，指到沙盒就不会
+  读用户默认的 `~/.dsh`；首次启动按内置模板初始化 profile（组合包从**安装目录**解析，不联网装依赖）；
+- **provider 配置全走环境变量，不用生成配置文件**（这点比 pi / grok 省事）：适配器的 `baseURL` 认
+  `$DEEPSEEK_BASE_URL`（优先于默认的 https://api.deepseek.com），凭据引用名就是 `$DEEPSEEK_API_KEY`
+  ——给个假值即可（mock 不校验 Authorization；引用解析为空才会以 `MISSING_CREDENTIAL` 失败）；
+- `DSH_TELEMETRY_DISABLED` 关遥测（启动器认这个开关，**任何非空值**都算关）；
+- 权限矩阵在 `dsh-base` 的 patch 里：`DSH_PERMISSION_MODE` 未设即 `workspace-write` + 审批 `ask`
+  （`danger-full-access` 才把审批改成 `never`）。实测**工作区内的只读命令直接执行、不问审批**；
+  需要升权（`sandbox_permissions` + `justification`）的命令在 headless 下无人可批，所以剧本自觉只放
+  只读命令——比 claude-code 的 `--dangerously-skip-permissions` 收得更紧，demo 因此不设这个变量；
+- 工具名是 **`bash`**（小写，同 pi），但参数是 `{command, description}` **两个都必填**：缺 description
+  会被工具自己拒掉（tool result: `Error: invalid arguments: missing required property "description"`，
+  agent 拿着这个错误继续跑），所以默认剧本是 `scripts/dsh-scenario.json`；
+- **消费规律**：一次 prompt 先发主请求（`messages=5`，末条是带 system-reminder 的 user），紧接着发一条
+  **「会话标题生成」**请求（`messages=2`、同 provider 同模型，插件 `dsh-session-title-first-prompt-llm`），
+  之后每轮工具调用各一条主请求——编排剧本必须把标题那条算进去；
+- **它是流式写 stdout 的**：被强杀时 `harness.log` 也有内容（与 grok / opencode / Claude Code 同类，
+  与 peri / pi 相反）；自行收尾时退出码 0、不用强杀；
+- 进程树口径与 grok 相反：`samples.csv` 的 `procs` 列实测**恒为 1**（30s / 300 拍），它执行 shell 命令
+  时拉的子进程太短命、采样打不到，所以「进程树」读数与主进程一致（grok 是 1~6）。
+
 ## 已知限制与坑（压测相关）
 
 - **`--max-turns` 在 peri 的 `-p` 模式下是空操作**，所以压测时长由 `--timeout-ms` 兜底，
   而不是轮数；`--turns` 只是原样透传给 harness；
 - **peri 在 `-p` 模式下只在退出时 flush 输出**：被超时强杀时 `<runId>-harness.log` 会是空文件
   （工具会在 perf.log 里写明原因）；自行收敛时该文件有内容。**pi 同样如此**（实测自行收尾时
-  harness.log 有完整回答，loop 剧本被强杀时为空）。**grok / opencode / Claude Code 是持续流式的**，
+  harness.log 有完整回答，loop 剧本被强杀时为空）。**grok / opencode / Claude Code / dsh 是持续流式的**，
   被强杀也留有输出；
 - 若 peri 报 `workspace identity changed; explicit relinking is required`，那是 `~/.peri/threads/threads.db`
   里该目录的 workspace 记录过期（注册时的 discovery 快照与现状不符），与本仓库无关；
@@ -272,7 +308,8 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - **Bun 1.4 的 `Bun.spawn` 不继承运行时对 `process.env` 的赋值**（实测子进程读到空值，只有显式传
   `env` 才生效）。所有沙盒变量必须走 `RunDeps.harnessEnv`；早期 demo 用 `process.env.X = …`
   写的隔离是静默失效的；
-- **多数 harness 会额外发请求消耗脚本条目**：peri 发「预测下一步输入」，opencode 发标题生成，
+- **多数 harness 会额外发请求消耗脚本条目**：peri 发「预测下一步输入」，opencode 与 dsh 发
+  「会话标题生成」（dsh 那条来自 `dsh-session-title-first-prompt-llm`，只看首条 prompt，一次会话一条），
   Claude Code / Codex 也会发辅助请求；脚本不足时先看 `*-mock.log` 里是谁在取号。
   **pi 与 grok 是例外**：实测一次 prompt 只消费「工具轮次 + 一条收尾」，没有辅助请求；
 - 各 harness 的 `-p` / `run` / `exec` 模式普遍没有轮数上限，loop 剧本不会自行收敛；
