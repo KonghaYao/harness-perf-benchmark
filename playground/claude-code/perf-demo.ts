@@ -24,7 +24,7 @@
  *
  * 产物：<仓库>/data/runs/<harness>/<runId>/{run.json,perf.log,samples.csv,harness.log,mock.log}
  */
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { REPO_ROOT, loadPerfConfig, type PerfConfig } from "../../scripts/perf/config";
 import { EXIT_OK, EXIT_SETUP, USAGE, runPerf } from "../../scripts/perf/run";
 
@@ -78,7 +78,11 @@ function sandboxEnv(port: number): Record<string, string> {
 }
 
 try {
-    const config = loadPerfConfig(argv, REPO_ROOT);
+    const config = loadPerfConfig(argv, REPO_ROOT, {
+        // 默认剧本：长剧本生成器用 Bash 形状造的那份（Claude Code 认 Bash，与 peri / opencode 共用）。
+        // 必须在**解析时**交出去：--script 的必填校验发生在解析里（见 PerfConfigDefaults）。
+        scriptPath: "data/scenarios/long-run.json",
+    });
 
     // 产物目录的身份：`data/runs/<harness>/<runId>/`。不给也能从启动命令推断，
     // 但 demo 明确写出来更稳（命令被包装、换路径都不会影响落点）。
@@ -86,9 +90,6 @@ try {
         config.harnessId = "claude-code";
     }
 
-    // 默认剧本：长剧本生成器用 Bash 形状造的那份（Claude Code 认 Bash，与 peri / opencode 共用）。
-    // run.ts 的 --script 是必填，默认值因此得由各家 demo 自己带。
-    if (!given("--script")) config.scriptPath = resolve(REPO_ROOT, "data/scenarios/long-run.json");
     // 耗尽策略跟着默认剧本走：`-p` 模式自己不会收敛，靠 stop 让它在剧本走完后收尾退出，
     // 端到端时长才完整；loop 会一直供压到兜底超时，那是已经废弃的固定窗口口径。
     if (!given("--exhausted")) config.exhausted = "stop";

@@ -34,6 +34,23 @@ describe("loadPerfConfig", () => {
         expect(() => loadPerfConfig(["--script", "  "], REPO_ROOT)).toThrow(/--script/);
     });
 
+    it("defaults.scriptPath：demo 带自家默认剧本，用户显式传的 --script 优先", () => {
+        const defaults = { scriptPath: "data/scenarios/long-run.json" };
+        // 各家 demo 的用法：没传 --script 时用 defaults（相对 cwd 解析）
+        expect(loadPerfConfig([], REPO_ROOT, defaults).scriptPath).toBe(
+            resolve(REPO_ROOT, "data/scenarios/long-run.json"),
+        );
+        expect(loadPerfConfig(["--script", "mine.json"], REPO_ROOT, defaults).scriptPath).toBe(
+            resolve(REPO_ROOT, "mine.json"),
+        );
+        // 空串等同于没给，在 demo 里落到 defaults 上（run.ts 不传 defaults，仍是必填报错）
+        expect(loadPerfConfig(["--script", " "], REPO_ROOT, defaults).scriptPath).toBe(
+            resolve(REPO_ROOT, "data/scenarios/long-run.json"),
+        );
+        // defaults 本身是空串也当没给
+        expect(() => loadPerfConfig([], REPO_ROOT, { scriptPath: "  " })).toThrow(/--script/);
+    });
+
     it("可覆盖各项参数；相对路径按传入的 cwd 解析", () => {
         const config = loadPerfConfig(
             [

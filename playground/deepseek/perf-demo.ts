@@ -32,7 +32,7 @@
  * 产物：<仓库>/data/runs/<harness>/<runId>/{run.json,perf.log,samples.csv,harness.log,mock.log}
  */
 import { mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { REPO_ROOT, loadPerfConfig, type PerfConfig } from "../../scripts/perf/config";
 import { EXIT_OK, EXIT_SETUP, USAGE, runPerf } from "../../scripts/perf/run";
 
@@ -69,7 +69,11 @@ function sandboxEnv(config: PerfConfig): Record<string, string> {
 }
 
 try {
-    const config = loadPerfConfig(argv, REPO_ROOT);
+    const config = loadPerfConfig(argv, REPO_ROOT, {
+        // 默认剧本：dsh 的 bash 工具要 description，别家那几份都不能直接用。
+        // 必须在**解析时**交出去：--script 的必填校验发生在解析里（见 PerfConfigDefaults）。
+        scriptPath: "data/scenarios/long-run-dsh.json",
+    });
 
     // harness 工作目录默认是 playground/peri（peri 沙盒），这里固定为 dsh 沙盒。
     if (!argv.some((arg) => arg === "--work-dir" || arg.startsWith("--work-dir="))) {
@@ -81,11 +85,6 @@ try {
         config.harnessId = "dsh";
     }
 
-    // 默认剧本：dsh 的 bash 工具要 description，别家那几份都不能直接用。
-    // run.ts 的 --script 是必填，默认值因此得由各家 demo 自己带。
-    if (!argv.some((arg) => arg === "--script" || arg.startsWith("--script="))) {
-        config.scriptPath = resolve(REPO_ROOT, "data/scenarios/long-run-dsh.json");
-    }
     // 耗尽策略跟着默认剧本走：长剧本要跑到自然结束才测得到端到端时长；loop 会一直供压
     // 到兜底超时，那是已经废弃的固定窗口口径。
     if (!argv.some((arg) => arg === "--exhausted" || arg.startsWith("--exhausted="))) {

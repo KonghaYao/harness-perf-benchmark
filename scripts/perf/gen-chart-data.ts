@@ -44,13 +44,23 @@ const USAGE = `汇总长剧本压测产物 → 图表数据 JSON
 
 产物 JSON 的 samples 行 = [elapsed_ms, cpu_pct, rss_kb, tree_cpu_pct, tree_rss_kb, procs]，
 对应 samples.csv 的列序（去掉了 ts 列）；主进程与进程树两套口径都在里面，页面按钮切着看。
+
+每个 harness 还带一个 score 块：按阿里云 FC 的 CU 折算系数把「进程树 CPU × 时长」与
+「内存 × 时长」混成一个标量（口径与系数见 scripts/perf/score.ts），再折算成
+「100 × 本批次最小 CU / 本次 CU」的百分制分数（最优 100 分）。分数**只在同一批次内可比**。
+
+读到这些字段说明这一份要当心：
+  tailAppliedMs=0 且 tailGapKnown=false   尾部空档补不了（老产物没记退出时刻）→ CU 是下界
+  childColumnPresent=false                采样没有 child_cpu_pct 列 → 进程树口径偏低
+  callCu                                  调用次数折算来的，按约定不计入 cu
 `;
 
 /**
  * 只认长剧本那组：`long-run.json`（peri / opencode / Claude Code）与各家的
- * `long-run-<harness>.json`（codex / pi / dsh，工具形状各家不同）。
+ * `long-run-<harness>.json`（codex / pi / dsh / minimax-code，工具形状各家不同）。
+ * harness 名里可以带 `-`（`minimax-code`），所以后缀不是「一串小写字母」而是「小写与连字符」。
  */
-const LONG_RUN_SCRIPT = /^long-run(-[a-z]+)?\.json$/;
+const LONG_RUN_SCRIPT = /^long-run(-[a-z][a-z-]*)?\.json$/;
 
 /**
  * 显式挡掉的剧本名：`long-run-startup.json` 是「固定成本探针」（1 轮 / 0KB），

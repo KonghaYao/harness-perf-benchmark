@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /**
  * 生成「长剧本」压测剧本 —— 一个有限长、能跑到自然结束的多轮任务：
- * N 轮「中等正文 + 一次工具调用」，配 `--exhausted stop` 使用：剧本走完后 mock 返回
- * 一条「任务结束」纯文本，harness 自行收尾退出，于是能测到**端到端时长**（跑完整个
- * 剧本要多久）与整段的资源消耗。
+ * N 轮「中等正文 + 一次工具调用」，配 `--exhausted stop` 使用：主流程吃到尾部的
+ * 「任务结束」纯文本即自行收尾退出，于是能测到**端到端时长**（跑完整个剧本要多久）
+ * 与整段的资源消耗。
  *
  * 每轮把历史随 messages 回传，上下文逐轮累积（第 N 轮的请求体里躺着前 N-1 轮的正文），
  * 时长与内存曲线都由此产生。
@@ -12,15 +12,24 @@
  *   bun run scripts/perf/gen-long-run.ts --turns 100 --body-kb 8
  *   bun run scripts/perf/gen-long-run.ts --turns 100 --args exec --out data/scenarios/long-run-codex.json
  *
- * 工具形状用 `--tool`（工具名）+ `--args`（参数形状）指定，六家各一份的生成命令见 USAGE。
+ * 工具形状用 `--tool`（工具名）+ `--args`（参数形状）指定，七家各一份的生成命令见 USAGE。
  *
- * 剧本**不带**收尾条：收尾是 mock 的 stop 策略负责的（这样各 harness 多发的那几个
- * 辅助请求——peri 的「预测下一步输入」、dsh 的「会话标题生成」——也会拿到收尾响应，
- * 不会被卡住）。输出默认写到 data/scenarios/long-run.json（data/ 已 gitignore）。
+ * 剧本尾部固定带**两条**收尾条（正文轮数之外）：
+ *   1. 与 mock 的 stop 策略同文的「任务结束」纯文本——主流程吃到它才收敛（文本取自
+ *      src/script.ts 的 STOP_MESSAGE，两边不会各自漂移）；
+ *   2. 一条空白响应——给 peri 的「预测下一步输入」留的。
+ * 第 2 条是把 peri 的 5.0s 收尾等待消掉的关键：预测请求在**主流程结束之后**才发，若它
+ * 也吃到非空文本，预测分支会回落成 Placeholder 动作、一路走到写 session 标题，与 host
+ * 关闭流程互锁到 cooperative_grace 超时（实测固定多 5.0s，机制见 docs/perf-compare.md）；
+ * 拿到空白（trim 后为空）则在拿锁之前就返回空动作。顺序不可反：主流程得先吃到文本收尾。
+ * 其余各家的辅助请求大多在途中取号（dsh 的会话标题生成、pi 的压缩摘要）；收尾之后还会再发
+ * 一条的也有——pi 实测末条 `messages=2` 的总结请求就落在空白上，对它同样无害。
+ * 输出默认写到 data/scenarios/long-run.json（data/ 已 gitignore）。
  */
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { STOP_MESSAGE } from "../../src/script";
 import { REPO_ROOT } from "./config";
 import { largeMarkdown } from "./markdown";
 
@@ -30,20 +39,20 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
   bun run scripts/perf/gen-long-run.ts [选项]
 
 选项:
-  --turns <n>           轮数：每轮 = 一段正文 + 一次工具调用（默认 50）
+  --turns <n>           轮数：每轮 = 一段正文 + 一次工具调用（默认 50；实际条目数 = 轮数 + 2 条收尾）
   --body-kb <n>         每轮正文目标大小，单位 KB（默认 4；0 = 只留一行标题）
   --chunk-size <n>      流式 chunk 字符数（默认 64）
   --chunk-delay-ms <n>  chunk 间隔毫秒（默认 0）
   --delay-ms <n>        首包前延迟毫秒（默认 0）
   --tool <name>         工具名（默认 Bash；--args exec 时固定为 exec，本项被忽略）
   --args <shape>        工具参数形状（默认 command）:
-                          command              {command}                peri / opencode / Claude Code
+                          command              {command}                peri / opencode / Claude Code / MiniMax Code
                           command+description  {command, description}   pi / dsh
                           exec                 裸 JavaScript 源码        codex（custom 工具）
   --out <path>          输出路径（默认 data/scenarios/long-run.json，相对仓库根）
   -h, --help            显示本帮助
 
-六家的生成命令（统一 100 轮主循环；正文大小用 --body-kb 调，默认 4KB）:
+七家的生成命令（统一 100 轮主循环；正文大小用 --body-kb 调，默认 4KB）:
   bun run scripts/perf/gen-long-run.ts --turns 100 --out data/scenarios/long-run.json
     # peri / opencode / Claude Code：工具名 Bash，参数 {command}，三家共用这一份
   bun run scripts/perf/gen-long-run.ts --turns 100 --args exec \\
@@ -54,9 +63,15 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     # 同样取号——100 条下主循环只能跑到 84 轮（实测）
   bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --args command+description \\
     --out data/scenarios/long-run-dsh.json
+  bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash \\
+    --out data/scenarios/long-run-minimax-code.json
+    # MiniMax Code CLI（mcode）的 shell 工具也叫 bash + {command}；消费最干净：
+    # 100 轮剧本实收 101 条（100 轮 + 尾部那条收尾），没有标题生成也没有压缩请求
 
   各家自己的辅助请求都会消费条目（opencode / dsh 的标题生成、pi 的压缩摘要），
   所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看 mock.log 里是谁在取号。
+  剧本尾部固定两条收尾（轮数之外）：主流程的「任务结束」文本 + 给 peri 预测请求的空白
+  响应（后者消掉 peri 固定 5.0s 的收尾等待，机制见 docs/perf-compare.md）。
 
 配套运行（各 playground 的 perf-demo.ts 默认剧本已指向自家那份；timeout 只作兜底，
 正常应看到 harness 自行退出。--script 的相对路径按**进程 cwd** 解析，别照抄仓库根的写法）:
@@ -66,6 +81,8 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     --exhausted stop --timeout-ms 1800000
   cd playground/codex && bun perf-demo.ts --script ../../data/scenarios/long-run-codex.json \\
     --exhausted stop --timeout-ms 1800000
+  cd playground/minimax-code && bun perf-demo.ts --exhausted stop --timeout-ms 1800000
+    # 默认剧本 data/scenarios/long-run-minimax-code.json；沙盒 MINIMAX_DATA_DIR=playground/minimax-code/.minimax
 `;
 
 const { values } = parseArgs({
@@ -190,7 +207,8 @@ function toolCall(round: number): {
 }
 
 const targetBytes = bodyKb * 1024;
-const responses = Array.from({ length: turns }, (_, i) => {
+/** N 轮正文 + 工具调用（正文合计与上下文估算都只数这部分）。 */
+const roundEntries = Array.from({ length: turns }, (_, i) => {
     const round = i + 1;
     return {
         message: {
@@ -206,11 +224,24 @@ const responses = Array.from({ length: turns }, (_, i) => {
     };
 });
 
+/**
+ * 尾部两条（顺序不可换，理由见文件头）：
+ * - 收尾文本：与 mock 的 stop 策略同文，主流程吃到即收敛；
+ * - 空白响应：peri 的预测请求拿到它 → execute_prediction 判定空文本、拿锁前返回空动作。
+ *   给一个空格而不是空串：实测空格足以让预测分支判空；空串没验过，有的桥接会当异常响应。
+ */
+const tailEntries = [
+    { message: { role: "assistant", content: STOP_MESSAGE }, finish_reason: "stop" },
+    { message: { role: "assistant", content: " " }, finish_reason: "stop" },
+];
+
+const responses = [...roundEntries, ...tailEntries];
+
 const script = {
     note:
         `由 scripts/perf/gen-long-run.ts 生成：${turns} 轮，每轮约 ${bodyKb}KB 正文 + 一个 ` +
-        `${toolName} 工具调用（参数形状 ${argShape}）；配 --exhausted stop 使用——剧本走完后 mock 返回` +
-        "「任务结束」纯文本，harness 自行收尾退出，从而测到端到端时长与整段资源消耗。" +
+        `${toolName} 工具调用（参数形状 ${argShape}）；尾部另有两条收尾——「任务结束」纯文本` +
+        "（主流程吃到即收敛）+ 空白响应（给 peri 的预测请求，消掉它固定 5.0s 的收尾等待）。" +
         "注：每轮把历史随 messages 回传，第 N 轮的请求体里含前 N-1 轮正文，上下文逐轮累积。",
     defaults: { delayMs, chunkDelayMs, chunkSize },
     responses,
@@ -220,15 +251,15 @@ mkdirSync(dirname(outPath), { recursive: true });
 const json = JSON.stringify(script, null, 2);
 writeFileSync(outPath, json + "\n");
 
-const bodyBytes = responses.reduce(
+const bodyBytes = roundEntries.reduce(
     (total, entry) => total + Buffer.byteLength(entry.message.content, "utf8"),
     0,
 );
 console.log(`[gen-long-run] 已写入 ${outPath}`);
 console.log(
     `[gen-long-run] ${turns} 轮 × 约 ${bodyKb}KB 正文（正文合计 ${(bodyBytes / 1024).toFixed(0)}KB，` +
-        `文件 ${(Buffer.byteLength(json, "utf8") / 1024).toFixed(0)}KB）；工具 ${toolName}（${argShape}）；` +
-        `节奏 chunkSize=${chunkSize} chunkDelayMs=${chunkDelayMs} delayMs=${delayMs}`,
+        `文件 ${(Buffer.byteLength(json, "utf8") / 1024).toFixed(0)}KB，共 ${responses.length} 条 = ${turns} 轮 + 2 条收尾）；` +
+        `工具 ${toolName}（${argShape}）；节奏 chunkSize=${chunkSize} chunkDelayMs=${chunkDelayMs} delayMs=${delayMs}`,
 );
 console.log(
     `[gen-long-run] 上下文累积估算：最后一轮请求体 ≈ ${((bodyBytes * (turns - 1)) / turns / 1024).toFixed(0)}KB` +

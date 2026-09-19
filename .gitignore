@@ -8,4 +8,5 @@ playground/claude-code/.home/
 playground/codex/.codex/
 playground/pi/.pi-agent/
 playground/deepseek/.dsh-home/
+playground/minimax-code/.minimax/
 vendor

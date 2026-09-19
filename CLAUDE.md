@@ -9,14 +9,15 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 
 | 端点 | 协议 | 谁在用 |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、pi、dsh、脚本自测 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、pi、dsh、MiniMax Code、脚本自测 |
 | `POST /v1/messages` | Anthropic Messages | Claude Code |
 | `POST /v1/responses` | OpenAI Responses | Codex |
 
 两个用途：
 
-- **性能压测**：以脚本控制的节奏驱动 harness（peri / Claude Code / Codex / pi / dsh；opencode
-  **已退出排名、不再跑**，见「与 harness 集成」开头），测量 harness 进程自身的 CPU / 内存开销（不采 GPU）；
+- **性能压测**：以脚本控制的节奏驱动 harness（peri / Claude Code / Codex / pi / dsh / MiniMax Code；
+  opencode **已退出排名、不再跑**，见「与 harness 集成」开头），测量 harness 进程自身的 CPU / 内存开销
+  （不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
 ## 压测工作流（已实现）
@@ -32,6 +33,7 @@ cd playground/claude-code && bun perf-demo.ts --timeout-ms 600000   # Claude Cod
 cd playground/codex       && bun perf-demo.ts --timeout-ms 600000   # Codex 沙盒
 cd playground/pi          && bun perf-demo.ts --timeout-ms 600000   # pi 沙盒
 cd playground/deepseek    && bun perf-demo.ts --timeout-ms 600000   # dsh 沙盒
+cd playground/minimax-code && bun perf-demo.ts --timeout-ms 600000  # MiniMax Code（mcode）沙盒
 # cd playground/opencode  && bun perf-demo.ts --timeout-ms 600000   # 已退出排名：代码保留，常规批次不再跑
 ```
 
@@ -47,7 +49,9 @@ cd playground/deepseek    && bun perf-demo.ts --timeout-ms 600000   # dsh 沙盒
 - `playground/pi`：`PI_CODING_AGENT_DIR` 指向沙盒，`models.json` 每次启动按本次端口重写
   （pi 的 `baseUrl` 不吃 `$VAR` 插值，换端口只能改文件）；
 - `playground/deepseek`：`DSH_HOME` 指向沙盒，provider 全走环境变量
-  （`$DEEPSEEK_BASE_URL` / `$DEEPSEEK_API_KEY`），**不用生成配置文件**。
+  （`$DEEPSEEK_BASE_URL` / `$DEEPSEEK_API_KEY`），**不用生成配置文件**；
+- `playground/minimax-code`：`MINIMAX_DATA_DIR` 指向沙盒，provider 按本次端口写进沙盒的
+  `config.yaml`（mcode 的 `baseURL` 不吃环境变量插值，与 pi 同理）。
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
 并打印两个候选后端的开销与分辨率）。
@@ -56,15 +60,18 @@ cd playground/deepseek    && bun perf-demo.ts --timeout-ms 600000   # dsh 沙盒
 
 `--exhausted stop` 让 mock 在剧本走完后返回一条「任务结束」纯文本（`finish_reason=stop`），
 harness 收到即自行收尾退出——于是能测**端到端时长**（含启动，`perf.log` 里的「端到端时长」）
-与整段资源消耗，而不是某段固定时间窗内的资源写照。剧本由生成器现造（仓库里不放剧本文件）：
+与整段资源消耗，而不是某段固定时间窗内的资源写照。剧本由生成器现造（仓库里不放剧本文件），
+生成器**固定带两条收尾条**（轮数之外）：一条同文的「任务结束」文本 + 一条空白响应——后者是给
+peri 的「预测下一步输入」的，能消掉它固定 5.0s 的收尾等待（理由见「已知限制与坑」）：
 
 ```sh
-# 六家各一份（工具名/参数形状按各家实测，见 gen-long-run.ts 的 ArgShape）
+# 七家各一份（工具名/参数形状按各家实测，见 gen-long-run.ts 的 ArgShape）
 bun run scripts/perf/gen-long-run.ts --turns 100 --out data/scenarios/long-run.json           # peri / opencode / Claude Code（Bash + command）
 bun run scripts/perf/gen-long-run.ts --turns 100 --args exec --out data/scenarios/long-run-codex.json
 bun run scripts/perf/gen-long-run.ts --turns 130 --tool bash --out data/scenarios/long-run-pi.json  # pi 要 130：压缩请求每轮多吃一条
 bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --args command+description \
   --out data/scenarios/long-run-dsh.json
+bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --out data/scenarios/long-run-minimax-code.json  # mcode：bash + command，轮数 + 1 条就够
 
 cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 ```
@@ -76,12 +83,14 @@ cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 两边各占多少看摘要里的「时长分段」）。本次六家的分段读数差异极大——启动 0.2~2.3s、收尾 0.0~10.1s，
 见 `docs/perf-compare.md`。
 摘要里的**「时长分段」**把它拆成三段——启动（起进程 → 首个请求）、运转（首 → 末次请求）、
-收尾（末次请求 → 退出）——实测很值钱：**peri / Codex 的固定成本九成是收尾**（peri 固定等
-5.0s，Codex 10.1s 卡在退出时向 `chatgpt.com` 发的一个请求上，本机 DNS 污染导致 10s 超时；
-把 HTTPS 出口指向死端口后掉到 0.4s）。实测数据与验证过程见 `docs/perf-compare.md`。
+收尾（末次请求 → 退出）——实测很值钱：**peri / Codex 的固定成本九成是收尾**（Codex 10.1s 卡在
+退出时向 `chatgpt.com` 发的一个请求上，本机 DNS 污染导致 10s 超时；把 HTTPS 出口指向死端口后
+掉到 0.4s。peri 曾是固定 5.0s，根因是等一个 Prediction 后台任务，默认剧本的空白收尾条已把它
+消到 ~0.05s，见「已知限制与坑」）。实测数据与验证过程见 `docs/perf-compare.md`。
 注意**「剧本轮数」与「harness 实际执行的轮数」可能不等**：各家自己的辅助请求（标题生成、上下文
 压缩）也消费剧本条目，100 条剧本下 opencode / dsh 实测只跑到 99 轮、pi 要 130 条才够
-跑满 100 轮（数法：`mock.log` 里带工具结果的请求有几条）。
+跑满 100 轮（数法：`mock.log` 里带工具结果的请求有几条）。生成器写的条目数是 `轮数 + 2`
+（两条收尾，见上），peri 那条「预测下一步输入」就落在最后那条空白上。
 
 产物落在**一次运行一个目录**里：`data/runs/<harness>/<runId>/`（`--out-dir` 可改，`data/` 已在
 .gitignore 里），`<harness>` 是 `peri` / `opencode` / `claude-code` / `codex` / `pi` / `dsh`
@@ -161,7 +170,7 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 
 ## 与 harness 集成
 
-六家都是「让 harness 把 base URL 指向本 mock」，但接入点各不相同：
+七家都是「让 harness 把 base URL 指向本 mock」，但接入点各不相同：
 
 ### peri
 
@@ -174,7 +183,8 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - 默认还注入 `--db-path playground/peri/.peri/perf-threads.db`，隔离会话库（原因见「已知限制与坑」，
   想换库就自己传 `--peri-arg=--db-path --peri-arg=<path>`）；
 - peri 每次 prompt 结束还会发一次「预测下一步输入」请求，同样消费一条脚本——编排脚本时必须算进去；
-  `scripts/peri-demo.json` 就是按「主回答 → 预测 → …」的规律排的。
+  `scripts/peri-demo.json` 就是按「主回答 → 预测 → …」的规律排的。它的位置在**主流程结束之后**，
+  长剧本尾部那条空白就是给它的（预测拿到非空文本会拖出 5.0s 收尾等待，见「已知限制与坑」）。
 
 ### opencode（**已退出排名，常规批次不再跑**）
 
@@ -287,6 +297,33 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - 进程树口径：`samples.csv` 的 `procs` 列实测**恒为 1**——它执行 shell 命令时拉的子进程太短命、
   采样打不到，所以「进程树」读数与主进程一致。
 
+### MiniMax Code（`mcode`）
+
+- 二进制从 PATH 找（`Bun.which("mcode")`，实测 0.4.12，`npm i -g @minimax-ai/code`）；harness 命令是
+  `mcode exec --permission off --cwd <沙盒> --model custom_provider:llm-mock/llm-mock '<prompt>'`：
+  `exec` 是官方的**无头模式**（跑一个任务、最终回答写 stdout、成功退 0），不依赖 Electron——
+  上游仓库 MiniMax-AI/minimax-code 是桌面 App 的 issue 收集页，能进压测的只有这条 CLI；
+- 走 **OpenAI Chat Completions**（`POST /v1/chat/completions`，`stream: true`），与 peri / opencode /
+  pi / dsh 同协议；实测请求体带 18 个工具（`read` / `write` / `edit` / **`bash`** / `grep` / `glob` /
+  `todowrite` / `skill` / `web_fetch` / `task*` …），`reasoning_effort: medium`、`store: false`；
+- 隔离靠 **`MINIMAX_DATA_DIR`** 指向沙盒（`playground/minimax-code/.minimax/`）：`config.yaml` 与
+  `v2/` 运行时状态（会话库、background-tasks、日志、shims）全从它找，指到沙盒就不碰 `~/.minimax`；
+- **provider 只能靠配置文件**：`custom_provider.<id>.options.baseURL` 不吃环境变量插值，所以 demo
+  每次按本次端口重写 `$MINIMAX_DATA_DIR/config.yaml`（形状按 0.4.12 实测，就是 `mcode provider add`
+  写出来的那份；`apiKey` 直接写文件——mock 不校验 Authorization）。`--model` 必须写
+  `custom_provider:<id>/<model>` 这种**带类型前缀的全名**，只写模型名会落到官方模型、打不到 mock；
+- 权限：headless **不支持 `ask`**，demo 固定 `--permission off`——一次性任务，剧本自觉只放只读命令；
+- 工具名 **`bash`**（小写，同 pi）且参数只要 `{command}`（`timeout` 可选），所以剧本用
+  `gen-long-run.ts --tool bash`（默认 `--args command`）生成；实测 `bash` 工具**没有**
+  `description` 那种必填参数，也没有 dsh 的审批等待；
+- **消费规律是七家里最干净的**：100 轮剧本实收 **101 条 = 100 轮 + 尾部收尾**，没有标题生成、
+  没有上下文压缩、没有预测请求（对比：pi 要 130 条、dsh 的标题请求会吃第 2 条）——实测 3 次
+  端到端 19.3~19.5s（启动 1.2~1.3s · 运转 17.9~18.0s · 收尾 0.2~0.3s）、CU 21.1~21.3；
+- 启动时会刷新模型目录（`models.dev/api.json` → `filecdn.minimax.chat`），落成沙盒里
+  4.7MB 的 `cache/models-dev-catalog.json`（`updatedAt` 每次运行都变）——它不经过 mock，
+  但会给启动段带一点外部网络成分，跨机器比时长时要留意；
+- `harness.log` 有内容（自行收尾时 stdout 里是最终回答，本次即收尾文本）。
+
 ## 已知限制与坑（压测相关）
 
 - **`--max-turns` 在 peri 的 `-p` 模式下是空操作**，所以压测时长由 `--timeout-ms` 兜底，
@@ -307,8 +344,8 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - **Bun 1.4 的 `Bun.spawn` 不继承运行时对 `process.env` 的赋值**（实测子进程读到空值，只有显式传
   `env` 才生效）。所有沙盒变量必须走 `RunDeps.harnessEnv`；早期 demo 用 `process.env.X = …`
   写的隔离是静默失效的；
-- **多数 harness 会额外发请求消耗脚本条目**：peri 发「预测下一步输入」（在剧本耗尽之后才发，
-  不吃条目），opencode 与 dsh 发「会话标题生成」（dsh 那条来自 `dsh-session-title-first-prompt-llm`，
+- **多数 harness 会额外发请求消耗脚本条目**：peri 发「预测下一步输入」（在**主流程收尾之后**才发，
+  长剧本里吃的是尾部那条空白），opencode 与 dsh 发「会话标题生成」（dsh 那条来自 `dsh-session-title-first-prompt-llm`，
   只看首条 prompt，一次会话一条；opencode 那条出现在启动期，`messages=2`）；**pi 的
   上下文压缩也会发请求**——pi 默认开压缩（`compaction.enabled=true`，`reserveTokens` 16384 /
   `keepRecentTokens` 20000），从约 140 条消息起每轮追加一条 `messages=2` 的总结；
@@ -317,10 +354,19 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
   却提前收到收尾文本」；
 - 各 harness 的 `-p` / `run` / `exec` 模式普遍没有轮数上限，loop 剧本不会自行收敛
   （要收敛就配有限长的剧本 + `--exhausted stop`）；
-- **两家的「退出慢」是固定成本，别当启动开销读**（长剧本摘要的「时长分段」第三段）：
-  peri `-p` 退出前固定等 ~5.0s（进程内宽限期，与轮数/连接都无关，`--bare` 与杀 mock 都不消），
-  Codex 固定等 ~10.1s（退出时向 `https://chatgpt.com/backend-api/plugins/featured` 发请求，
-  本机 DNS 污染 → 连接停在 SYN_SENT → 10s 超时；`HTTPS_PROXY` 指死端口可把这 10s 消掉）；
+- **peri `-p` 退出前固定等 ~5.0s：根因已查明，默认剧本已把它消掉**（长剧本摘要的「时长分段」
+  第三段）。退出时 host 用硬编码 5s 的 cooperative_grace 等 host-owned 任务收尾，卡住的正是
+  `HostTaskKind::Prediction`：「预测下一步输入」拿到**非空**文本后回落成 Placeholder 动作、
+  走到写 session 标题那步停住（大概率是与关闭流程争 session 锁；日志停在 prediction.rs 的
+  「Prediction ready, sending notification」之前），直到超时被 abort——日志里 `aborting
+  host-owned task kind=Prediction` 与预测完成的间隔 5.0015s。与网络/连接无关（`--bare` 不消、
+  杀掉 mock 也不消、静默期 `lsof` 无任何对外连接），**peri 侧说的「langfuse 环境变量」不成立**：
+  本机没有 `LANGFUSE_*`，代码也要双 key 同时存在才启用（`from_env()`）。给预测请求一条**空白**
+  响应则 `execute_prediction` 在拿锁前就返回空动作，5s 立刻消失（实测收尾 5.0s → 0.05s、端到端
+  7.7s → 2.6s）——长剧本生成器据此固定带两条收尾条（见上）；要复现旧读数就把尾部那条空白删掉。
+  根治得靠 peri 侧（给那把锁加超时，或关闭时拒绝 prediction 写 session）；
+- **Codex 退出固定等 ~10.1s**：退出时向 `https://chatgpt.com/backend-api/plugins/featured` 发请求，
+  本机 DNS 污染 → 连接停在 SYN_SENT → 10s 超时；`HTTPS_PROXY` 指死端口可把这 10s 消掉；
 - Codex 每次启动会起一条 `git fetch https://github.com/openai/plugins.git`（curated 插件同步），
   本机传不完，Codex 退出后**变孤儿进程继续挂着**并往 `$CODEX_HOME/.tmp/` 攒目录；
   压测后 `ps | grep plugins-clone` 清理一下，免得干扰后续读数；
@@ -333,7 +379,8 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
   默认剧本由各 playground 的 `perf-demo.ts` 按自家的工具形状填（`data/scenarios/long-run*.json`）；
 - 游标是**进程级全局单游标**：并发客户端共享同一序列；取号发生在响应开始之前，流式响应被中途取消也已消费；
 - 耗尽策略默认 `error`（500 + `script_exhausted`），可选 `hold` / `loop` / `stop`——`stop` 在剧本
-  走完后返回收尾文本（`finish_reason=stop`）让 harness 自然退出，长剧本端到端计时靠它；默认不静默兜底；
+  走完后返回收尾文本（`finish_reason=stop`）让 harness 自然退出（长剧本把这条收尾直接写进尾部，
+  `stop` 是更后面的兜底，见「场景：长剧本端到端」）；默认不静默兜底；
 - 脚本条目是**协议中立**的（`message.content` + `message.tool_calls`），各协议适配器负责渲染：
   chat 的 `tool_calls` → Messages 的 `tool_use` 块（`arguments` 解析成 `input` 对象）→
   Responses 的 function_call / custom_tool_call；

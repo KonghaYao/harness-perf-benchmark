@@ -95,9 +95,22 @@ function exhaustedPolicy(value: string | undefined): ExhaustedPolicy {
     throw new Error(`exhausted 必须是 error | hold | loop | stop，收到: ${JSON.stringify(value)}`);
 }
 
+/**
+ * 调用方（各 playground 的 perf-demo.ts）补的默认值。**必须在解析时就得拿到**，不能等
+ * `loadPerfConfig` 返回后再往 config 上写——那样赶不上 --script 的必填校验（校验在解析里）。
+ */
+export interface PerfConfigDefaults {
+    /**
+     * 用户没传 `--script` 时用的剧本（相对路径按 cwd 解析）。各家 demo 填自家工具形状的那份；
+     * run.ts 不传，因此 `--script` 对它仍是必填。
+     */
+    scriptPath?: string;
+}
+
 export function loadPerfConfig(
     argv: string[] = process.argv.slice(2),
     cwd: string = process.cwd(),
+    defaults: PerfConfigDefaults = {},
 ): PerfConfig {
     const { values } = parseArgs({
         args: argv,
@@ -127,8 +140,11 @@ export function loadPerfConfig(
     if (prompt.trim() === "") throw new Error("prompt 不能为空");
 
     // 剧本必填（与 src/config.ts 同一条约定）：mock 的行为完全由剧本决定，给个隐式默认路径
-    // 会让「忘了传 --script」静默跑到别的剧本上。各家 playground 的 perf-demo.ts 自己带默认值。
-    if (values.script === undefined || values.script.trim() === "") {
+    // 会让「忘了传 --script」静默跑到别的剧本上。各家 playground 的 perf-demo.ts 通过
+    // defaults 参数带自家默认剧本，run.ts 不传 —— 对它而言就是必填。
+    const scriptArg = values.script?.trim() ?? "";
+    const script = scriptArg !== "" ? scriptArg : (defaults.scriptPath?.trim() ?? "");
+    if (script === "") {
         throw new Error(
             "必须用 --script 指定 mock 剧本（例：--script data/scenarios/long-run.json）；" +
                 "剧本没有默认路径，避免误加载别的剧本",
@@ -149,7 +165,7 @@ export function loadPerfConfig(
         timeoutMs: integer(values["timeout-ms"], "timeout-ms", 60_000, 1_000, 86_400_000),
         readyTimeoutMs: integer(values["ready-timeout-ms"], "ready-timeout-ms", 10_000, 100, 600_000),
         prompt,
-        scriptPath: resolve(cwd, values.script),
+        scriptPath: resolve(cwd, script),
         periPath: values.peri === undefined ? defaultHarnessPath() : resolve(cwd, values.peri),
         workDir: resolve(cwd, values["work-dir"] ?? resolve(REPO_ROOT, "playground/peri")),
         outDir: resolve(cwd, values["out-dir"] ?? resolve(REPO_ROOT, "data/runs")),

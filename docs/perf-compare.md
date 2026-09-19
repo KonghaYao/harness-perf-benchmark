@@ -31,6 +31,7 @@ harness 走完剧本、收到收尾响应后**自行退出**——回答的是�
 | Codex | 0.155.1 | OpenAI Responses | `CODEX_HOME/config.toml` 的 provider | `CODEX_HOME` |
 | pi | 0.85.1 | OpenAI Chat Completions | 沙盒 `models.json` 换 baseUrl + `--model llm-mock/llm-mock` | `PI_CODING_AGENT_DIR` |
 | dsh | 0.1.5-rc.2 | OpenAI Chat Completions | `$DEEPSEEK_BASE_URL` / `$DEEPSEEK_API_KEY` 环境变量 | `DSH_HOME` |
+| MiniMax Code（`mcode`） | 0.4.12 | OpenAI Chat Completions | 沙盒 `config.yaml` 的 `custom_provider.*.options.baseURL` + `--model custom_provider:llm-mock/llm-mock` | `MINIMAX_DATA_DIR` |
 
 约定：每个 harness 都在自己的 playground 沙盒里、用同一份剧本跑
 （`cd playground/<名> && bun perf-demo.ts …`），剧本由同一个生成器现造、工具形状按各家实测；
@@ -41,8 +42,10 @@ harness 走完剧本、收到收尾响应后**自行退出**——回答的是�
 
 ### 长剧本端到端（100 轮 × 4KB，跑到自然结束）
 
-剧本由生成器造：100 轮「约 4KB 正文 + 一次工具调用」，**不带收尾条**——剧本走完后由
-mock 的 `--exhausted stop` 返回「任务结束」纯文本（`finish_reason=stop`），harness 自行收尾退出。
+剧本由生成器造：100 轮「约 4KB 正文 + 一次工具调用」，**尾部另带两条收尾条**——一条「任务结束」纯文本
+（`finish_reason=stop`，harness 收到即自行收尾退出）+ 一条空白响应（给 peri 的「预测下一步输入」，
+消掉它固定 5.0s 的收尾等待，机制见「逐家的收尾与辅助请求」）。本批读数还是在没有这两条时取的
+（当时靠 mock 的 `--exhausted stop` 兜最后一条，peri 因此吃到非空预测文本、白等 5s）。
 于是端到端时长就是「启动 → 跑完 100 轮 → 退出」，`--timeout-ms` 只是兜底（正常不该触发）。
 
 摘要里会把这段时长**拆成三段**（靠 mock 侧记的请求时刻，与 harness 起止同机同时钟）：
@@ -61,6 +64,8 @@ bun run scripts/perf/gen-long-run.ts --turns 100 --args exec --out data/scenario
 bun run scripts/perf/gen-long-run.ts --turns 130 --tool bash --out data/scenarios/long-run-pi.json
 bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --args command+description \
   --out data/scenarios/long-run-dsh.json
+bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash \
+  --out data/scenarios/long-run-minimax-code.json   # mcode：bash + {command}，100 条够跑满 100 轮
 
 cd playground/peri        && bun perf-demo.ts --port 3480 --script data/scenarios/long-run.json \
   --exhausted stop --timeout-ms 1800000 --turns 100
@@ -74,6 +79,8 @@ cd playground/pi          && bun perf-demo.ts --port 3480 --script data/scenario
   --exhausted stop --timeout-ms 1800000
 cd playground/deepseek    && bun perf-demo.ts --port 3480 --script data/scenarios/long-run-dsh.json \
   --exhausted stop --timeout-ms 1800000
+cd playground/minimax-code && bun perf-demo.ts --port 3480 \
+  --exhausted stop --timeout-ms 1800000             # 默认剧本就是 long-run-minimax-code.json
 ```
 
 - `--script` 要传**绝对路径**（或从仓库根跑）：`run.ts` 按进程 cwd 解析相对路径，而在
@@ -107,9 +114,9 @@ pi 20260919-142311   · dsh 20260919-140424
 - **pi 的 1.5s 是真跑满 100 轮**（mock 侧主循环 100 次请求、末次请求 `messages=200`），
   12.8ms/轮是六家里最便宜的；它额外付出的代价是**自动压缩**：多发了 30 条总结请求（见上）。
 - **那笔「固定成本」多半是「退出慢」不是「启动慢」**（`perf.log` 的「时长分段」）：peri 13.2s 里
-  5.1s 是收尾等待（进程内固定宽限期，与轮数、连接都无关），Codex 19.9s 里 10.1s 是退出时等一个
-  到 `chatgpt.com` 的请求超时（本机 DNS 污染所致，换干净网络会小得多）。**启动本身六家都在
-  0.2~2.3s**。
+  5.1s 是收尾等待（等一个 Prediction 后台任务，与轮数、连接都无关；根因与消除办法见「逐家的收尾」），
+  Codex 19.9s 里 10.1s 是退出时等一个到 `chatgpt.com` 的请求超时（本机 DNS 污染所致，换干净网络
+  会小得多）。**启动本身六家都在 0.2~2.3s**。
 - **opencode 最贵在每轮**（它因此退出了排名）：364ms/轮的运转成本是 Claude Code（46ms/轮）的 8 倍、
   pi（12.8ms/轮）的 28 倍，CPU 峰值 229%、RSS 峰值 943MB（整段涨了 919MB）也是六家里最高的。
 - 内存随轮次上涨是**预期**：每轮都把历史（上一轮的正文 + 工具结果）随请求回传，RSS 里既有渲染
@@ -162,27 +169,43 @@ pi 20260919-142311   · dsh 20260919-140424
 - **opencode 的贵在每轮**：364ms/轮的边际成本是 Claude Code 的 8 倍，CPU 峰值 229%（多核并发）、
   RSS 峰值 943MB；它的瓶颈不在启动，而在每轮的处理链路。
 - **peri / Codex 的成本在「收尾」而非「启动」**：这两家的收尾段占了各自总时长的 39% / 51%，
-  且收尾期间**零请求、CPU 归零**——是纯粹的退出前等待（peri 是进程内宽限期，Codex 是等
-  `chatgpt.com` 超时）。要把「一次会话跑很多轮」和「反复短会话」分开看：后者的成本几乎全在这笔
-  收尾上。跑 100 轮本身 peri 只要 6.1s、Codex 9.4s。
+  且收尾期间**零请求、CPU 归零**——是纯粹的退出前等待（peri 是等一个 Prediction 后台任务，
+  根因见下；Codex 是等 `chatgpt.com` 超时）。要把「一次会话跑很多轮」和「反复短会话」分开看：
+  后者的成本几乎全在这笔收尾上。跑 100 轮本身 peri 只要 6.1s、Codex 9.4s。
 - **dsh 的启动 1.9s** 在六家里排第三（仅次于 opencode 2.3s / peri 2.0s），但端到端只有 9.8s——
   它没有 peri / Codex 那样的收尾等待，运转段也便宜（79ms/轮）。
+
+### 新接入：MiniMax Code（`mcode`）——上方批次之后单独连跑 3 次
+
+`mcode exec`（`@minimax-ai/code` 0.4.12 的无头模式，走 OpenAI Chat Completions）是本批次**之后**
+新接的一家，**没有和上方批次串在一起跑**，所以下面单列；接入细节见 `CLAUDE.md` 的「与 harness 集成」：
+
+| 运行 | 端到端 | 启动 → 首个请求 | 首个请求 → 末次请求 | 末次请求 → 退出 | 请求数 | CPU 均值 / 峰值 | RSS 均值 / 峰值 | CU |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 20260919-182058 | 19.5s | 1.3s | 18.0s | 0.2s | 101 | 97.9% / 191.9% | 588.8MB / 706.4MB | 21.20 |
+| 20260919-182157 | 19.5s | 1.3s | 18.0s | 0.3s | 101 | 97.6% / 174.5% | 628.1MB / 911.1MB | 21.27 |
+| 20260919-182219 | 19.3s | 1.2s | 17.9s | 0.2s | 101 | 98.1% / 167.9% | 623.3MB / 896.7MB | 21.13 |
+
+- **端到端 19.3~19.5s，与 Codex（19.9s）同档**：启动 1.2~1.3s、运转 17.9~18.0s（≈180ms/轮）、
+  收尾 0.2~0.3s——没有 peri / Codex 那种固定收尾等待；三次读数几乎重合（受控条件下可复现）；
+- **消费规律是各家最干净的**：100 轮剧本实收 **101 条 = 100 轮 + 尾部那条收尾**，没有标题生成、
+  没有上下文压缩、没有预测请求（pi 为此要 130 条剧本，dsh / opencode 的标题请求各吃掉 1 条）；
+- **它是这份名单里最费资源的**：进程树 CPU 均值 **97.9%**（几乎全程占满一个核）、RSS 峰值 ~900MB，
+  CU **21.1~21.3**——作为对照，`data/runs` 里 opencode 最近那次（端到端 17.5s）是 12.8 CU、
+  pi 是 1.0 CU。端到端不比 opencode 慢，但每一轮都在满速吞吐：**它不省，只是快**。
+- 启动时会刷新模型目录（`models.dev/api.json` → `filecdn.minimax.chat`，落沙盒 `cache/` 下 4.7MB），
+  不经过 mock，但给启动段带了一点外部网络成分——跨机器比启动时长时要留意。
 
 ## 逐家的收尾与辅助请求（本批次实测）
 
 | harness | 收尾段 | 收尾段里有请求吗 | 辅助请求（本批次实测） |
 | --- | --- | --- | --- |
-| peri | 5.1s | 无（纯等） | 1 条「预测下一步输入」（剧本耗尽后才发，不吃剧本） |
 | Codex | 10.1s | 无（等 `chatgpt.com` 超时） | 无 |
 | opencode | 0.2s | — | 1 条（启动期 `messages=2` 的请求，吃掉第 1 条剧本） |
 | Claude Code | 0.1s | — | 无 |
 | dsh | 0.2s | — | 1 条「会话标题生成」（`messages=2`，吃掉第 2 条剧本） |
 | pi | 0.0s | — | 30 条压缩总结（第 70 轮起每轮一条，吃掉 30 条剧本） |
 
-- **peri 的 5s 是进程内写死的收尾宽限期**：收尾段此前多次实测都是 5.0~5.1s，与轮数无关
-  （1 轮探针同样是 5.0s）。静默期 CPU 0%、无子进程、主线程停在 `pthread_cond_wait`、没有任何
-  对外 socket；`--bare` 不消，**把 mock 杀掉也不消**——纯等，不依赖网络或连接。
-  想知道它为什么这么设计，得问 peri 侧（二进制里有 `grace period elapsed, aborted task` 这类字串）。
 - **Codex 的 10s 是退出时在等一个网络请求超时**：`RUST_LOG=debug` 显示 turn 结束（`shutdown`）后
   10.0s 整，日志才打出
   `WARN codex_core_plugins::manager: failed to warm featured plugin ids cache error=failed to send
@@ -205,13 +228,14 @@ pi 20260919-142311   · dsh 20260919-140424
 - **长剧本的「时长」含启动与收尾**，这是刻意的：端到端就该含。但要拆开看——`run.json` 的
   `segments` 把 启动 / 运转 / 收尾 三段分开，**peri 与 Codex 的成本九成在收尾**，别按总时长
   除以 100 去算「每轮成本」（那会同时冤枉 Codex 并高估 Claude Code）。
-- **收尾段读数的两个坑**：一是它可能包含 harness 自己的固定等待（peri 5.1s、Codex 10.1s，
-  与轮数无关），二是其中可能有**本机网络环境的成分**（Codex 那 10s 就是在等 `chatgpt.com` 超时，
-  换台干净网络会掉到 0.4s 量级——验证见上节）。跨机器比较时长前先确认这两件事。
+- **收尾段读数的两个坑**：一是它可能包含 harness 自己的固定等待（peri 5.1s，默认剧本已消掉；
+  Codex 10.1s，与轮数无关），二是其中可能有**本机网络环境的成分**（Codex 那 10s 就是在等
+  `chatgpt.com` 超时，换台干净网络会掉到 0.4s 量级——验证见上节）。跨机器比较时长前先确认这两件事。
 - **收尾必须靠 `--exhausted stop`**：harness 不会因为剧本耗尽就自己退出——`hold` 会卡到兜底超时
   （时长读数全是超时值，白测），`error` 会让它看到 500 而不是「任务完成」。stop 让 mock 在剧本
-  走完后返回一条纯文本结束语，各 harness 收尾路径与真实任务结束一致；peri 多发的「预测下一步输入」
-  请求也会被同一个收尾兜住。
+  走完后返回一条纯文本结束语，各 harness 收尾路径与真实任务结束一致（生成器现在把这条直接写进
+  剧本尾部，stop 仍是更后面的兜底）；peri 多发的「预测下一步输入」由尾部那条空白兜住——**别让它
+  吃到非空文本**，否则白等 5s。
 - **请求数 ≠ 轮数**：先数「带工具结果的请求」再看 `消费第 N 条` 取到几号，能分辨是主循环在跑
   还是辅助请求在取号（`mock.log` 每行都写了 `messages=` / `input=` 与最后一条消息的角色）。
   脚本不够用时症状是「harness 明明在正常工作，却提前收到收尾文本」。
