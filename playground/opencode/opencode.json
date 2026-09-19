@@ -1,0 +1,26 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "llm-mock/llm-mock",
+  "provider": {
+    "llm-mock": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "llm-mock",
+      "options": {
+        "baseURL": "http://127.0.0.1:3457/v1",
+        "apiKey": "mock-key"
+      },
+      "models": {
+        "llm-mock": {
+          "name": "llm-mock"
+        }
+      }
+    }
+  },
+  "permission": {
+    "bash": "allow"
+  },
+  "plugin": [],
+  "experimental": {
+    "openTelemetry": false
+  }
+}

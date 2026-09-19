@@ -1,1 +1,6 @@
 node_modules
+data/
+playground/peri/.peri/*.db*
+playground/opencode/.data/
+playground/opencode/.state/
+playground/opencode/.cache/
