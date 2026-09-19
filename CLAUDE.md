@@ -55,8 +55,8 @@ cd playground/minimax-code && bun perf-demo.ts --timeout-ms 600000  # MiniMax Co
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
 并打印两个候选后端的开销与分辨率）。想把「CPU 与内存」混成一个可比的数（谁跑完同一部剧本烧的资源
-更少）看**统一计分**——那是本项目 2026-09-19 起采用的**标准口径**，见下面的
-「统一计分：harness 横向对比的标准口径」。
+更少）看**统一计分**——**Beta：口径还在讨论中，先用来看趋势、别当结论**，见下面的
+「统一计分（Beta）：把 CPU 与内存混成一个数的试行口径」。
 
 ### 场景：长剧本端到端（跑完整个剧本，测时长）
 
@@ -130,10 +130,16 @@ cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
   它与 `tree_cpu_pct` 是两套互补的下界、**可能重叠，不能相加**，计分时取两者较大者；
 - 采样数据先进内存、每 1s 落盘一次，避免每拍同步 I/O 干扰被测对象。
 
-### 统一计分：harness 横向对比的**标准口径**（2026-09-19 起采用）
+### 统一计分（Beta）：把 CPU 与内存混成一个数的试行口径
 
-**以后比「谁更省」一律看 CU，不再拿单个 CPU 均值或 RSS 峰值说事**——那两个数答不了
-「跑完同一部剧本烧掉多少资源」。系数借阿里云函数计算（FC）的 CU（Compute Unit）折算表
+**状态：Beta**（2026-09-19 起试行）。系数是借来的、实现是稳的，但**这套口径本身还没定稿**——
+「后代 CPU 算不算 harness 的开销」「时长该按端到端还是按可控执行时长」这些还没想清楚，
+所以它现在的定位是**一个可讨论的候选口径**，不是裁决：排名与结论可以引它，但别把它的名次
+当成对 harness 的最终评价，也别据此改动被测对象。口径要改就先在 `docs/perf-compare.md` 写明、
+重跑一个完整批次再更新读数。
+
+它回答的问题很具体：「跑完同一部剧本，谁的整段资源成本更小」——单个 CPU 均值或 RSS 峰值答不了
+这个（那要看**面积**，不是峰值）。系数借阿里云函数计算（FC）的 CU（Compute Unit）折算表
 （2026-09-19 核对官方计费页；FC 的口径是「资源使用量 × 转换系数」再求和）：
 
 ```
@@ -149,7 +155,8 @@ CU    = 1.0 × 核·秒 + 0.15 × GB·秒      （FC 弹性实例：vCPU 1.0 CU/
 只用来回答「钱花在哪一段」：三列之和 = 总分 − 尾部补齐（那 ~0.1s 只进总分，六家实测逐笔成立），
 **不是三段相加**；后代 CPU 的取大也只在整段上取一次，逐段取会在段边界重复计。
 
-**必须守住的几条**（改任何一条都等于换口径，要在 `docs/perf-compare.md` 里写明并重跑全批次）：
+**Beta 期间先守住的几条**（它们保证的是口径**内部自洽与可比**，不是「这么算就对了」；
+要改任何一条，先在 `docs/perf-compare.md` 里写明理由并重跑全批次）：
 
 - **系数不许微调**，尤其不许为了「让排名好看」动那三个数（`CU_COEFFICIENTS`）；
 - **口径固定进程树**（含 harness 拉起的后代），不用主进程——Codex 主进程 CPU 近 0，
@@ -194,7 +201,7 @@ src/*.test.ts   bun:test：脚本解析、游标、SSE 序列、各协议渲染�
 scripts/perf/run.ts        压测入口：起 mock、起 harness、采样、写记录、出摘要
 scripts/perf/config.ts     压测参数解析（parseArgs）；默认 harness 取 PATH 里的 peri
 scripts/perf/sampler.ts    采样：rusage/ps 后端、差分换算、进程树、已回收子进程计数器、CSV 与摘要
-scripts/perf/score.ts      统一计分：阿里云 FC 的 CU 口径（核·秒 / GB·秒 → CU → 百分制相对分）
+scripts/perf/score.ts      统一计分（**Beta**）：阿里云 FC 的 CU 口径（核·秒 / GB·秒 → CU → 百分制相对分）
 scripts/perf/verify.ts     采样口径验证实验（已知负载 + 开销 + 后端对比）
 scripts/perf/gen-long-run.ts  生成「长剧本」压测剧本（N 轮正文 + 工具调用，按各家的工具形状）
 scripts/perf/gen-chart-data.ts 汇总长剧本产物 → docs/perf-chart.html 用的图表数据
@@ -445,6 +452,7 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 - `usage` 未声明时按字符估算（CJK 1 token/字，其余 4 字符 1 token），要精确值就在条目里显式写；
 - 不校验 `Authorization`；`/v1/models` 返回配置的模型名；`choices` 恒为 1；
 - 脚本消耗比预期快时，先看 mock 的访问日志确认是哪类请求在取号；
-- **harness 的「谁更省」以 CU 为准**（统一计分，标准口径见上）：写报告、出图表、做排名一律引用
-  CU 与它的下界标记，不要另起一套指标；口径只在 `scripts/perf/score.ts` 一处；
+- **harness 的「谁更省」先看 CU**（统一计分 **Beta**，口径见上）：写报告、出图表、做排名引用
+  CU 与它的下界标记，别另起一套指标；口径只在 `scripts/perf/score.ts` 一处。因为还是 Beta，
+  给结论时把「CU 这么算」一并说清（含后代 CPU 与尾部补齐两处取舍），别只报一个名次；
 - 改动后跑 `bun test` + `bun run typecheck`；中文注释与文档。

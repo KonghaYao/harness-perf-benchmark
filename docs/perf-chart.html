@@ -171,6 +171,17 @@
             .warn {
                 color: #a4531a;
             }
+            /* Beta 徽标：口径还没定稿的指标，别让读者把它当结论。 */
+            .beta {
+                padding: 1px 7px;
+                border: 1px solid #e6cfa8;
+                border-radius: 999px;
+                background: #fdf6ec;
+                color: #a4531a;
+                font-size: 11px;
+                font-weight: 600;
+                vertical-align: 2px;
+            }
             .panel {
                 padding: 14px 16px;
                 border: 1px solid var(--line);
@@ -204,8 +215,10 @@
         <h1>harness 压测 · 长剧本（统一计分 + 逐拍曲线）</h1>
         <p class="sub">
             长剧本：100 轮 × 约 4KB 正文 + 每轮一次工具调用，<code>--exhausted stop</code> 跑到自然结束。
-            <strong>开头是统一计分</strong>——按阿里云 FC 的 CU 系数（1.0×核·秒 + 0.15×GB·秒）把 CPU
-            与内存混成一个数，比「谁更省」看它（口径与系数只在 <code>scripts/perf/score.ts</code> 一处）。
+            <strong>开头是统一计分</strong><span class="beta">Beta</span>——按阿里云 FC 的 CU 系数
+            （1.0×核·秒 + 0.15×GB·秒）把 CPU 与内存混成一个数（口径与系数只在
+            <code>scripts/perf/score.ts</code> 一处）。<strong>它还在 Beta：口径没定稿</strong>，
+            拿它看趋势可以，别把名次当结论——两处取舍（后代 CPU 算不算、时长怎么算）还没讨论完。
             下半部分是<strong>逐拍曲线</strong>：x 为相对时间（采样起点算 0），y 由按钮切换，曲线默认按
             1s 窗口平滑（可切回原始）；每条线的峰值标了 harness 名，<strong>内存的纵轴是反的</strong>
             （占用越大越靠下）。数据来自 <code>data/perf-chart.json</code>。
@@ -218,9 +231,9 @@
         </div>
 
         <div id="app" hidden>
-            <!-- 统一计分放在最前：这是本项目的标准口径（谁更省看 CU），打开页面先看到它。 -->
+            <!-- 统一计分放在最前：把 CPU 与内存混成一个数（Beta，口径还在讨论），打开页面先看到它。 -->
             <div id="page-scores">
-                <h2>统一计分（本项目的标准口径）：把 CPU 与内存混成一个数</h2>
+                <h2>统一计分 <span class="beta">Beta</span>：把 CPU 与内存混成一个数</h2>
                 <div class="panel">
                     <div id="formula" class="formula"></div>
                     <div class="scroll-x">
@@ -798,7 +811,8 @@
                     );
                 }
                 note.innerHTML =
-                    "比「谁更省」看这一列（本项目的标准口径，口径与系数只在 scripts/perf/score.ts 一处）。" +
+                    "比「谁更省」先看这一列（统一计分 <strong>Beta</strong>：口径还没定稿，" +
+                    "拿它看趋势可以、别当结论；口径与系数只在 scripts/perf/score.ts 一处）。" +
                     "分数 = 100 × 本批次最小 CU / 本次 CU（最优 100 分），<strong>只在同一批次内可比</strong>" +
                     "——机器状态、后台负载、剧本都跟着批次走。计分固定用<strong>进程树</strong>口径" +
                     "（不受上面「主进程 / 进程树」按钮影响），也不含磁盘项与 GPU 项；" +

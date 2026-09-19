@@ -275,15 +275,18 @@ function summaryLines(summary: SampleSummary, config: PerfConfig): string[] {
     ];
 }
 
-/** 统一计分那一行（人读日志用）：把公式的每一项都摊开，便于事后核对。 */
+/**
+ * 统一计分那一行（人读日志用）：把公式的每一项都摊开，便于事后核对。
+ * 标着 Beta 是刻意的——口径还没定稿（见 score.ts 文件头），日志本身要能自证身份。
+ */
 function costLine(cost: ResourceCost | null): string {
-    if (cost === null || cost.sampleCount === 0) return "统一计分: 无样本";
+    if (cost === null || cost.sampleCount === 0) return "统一计分(Beta): 无样本";
     const child =
         cost.childCpuSeconds > 0
             ? `，其中后代 ${cost.childCpuSeconds.toFixed(3)}（取自${cost.childCpuFrom === "counter" ? "已回收子进程计数器" : "采样到的后代"}）`
             : "";
     return (
-        `统一计分: ${cost.cu.toFixed(3)} CU = 1.0×${cost.cpuSeconds.toFixed(3)} 核·秒` +
+        `统一计分(Beta): ${cost.cu.toFixed(3)} CU = 1.0×${cost.cpuSeconds.toFixed(3)} 核·秒` +
         ` + 0.15×${cost.gbSeconds.toFixed(3)} GB·秒` +
         `（内存项占 ${cost.cu > 0 ? ((cost.memoryCu / cost.cu) * 100).toFixed(0) : "0"}%${child}；` +
         `尾部补齐 ${cost.tailAppliedMs.toFixed(0)}ms）`
