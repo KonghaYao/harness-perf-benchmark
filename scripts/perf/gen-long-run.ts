@@ -46,7 +46,7 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
   --delay-ms <n>        首包前延迟毫秒（默认 0）
   --tool <name>         工具名（默认 Bash；--args exec / commandline 时各有各的默认，见下）
   --args <shape>        工具参数形状（默认 command）:
-                          command              {command}                peri / opencode / Claude Code / MiniMax Code
+                          command              {command}                peri / opencode / Claude Code / MiniMax Code / opencode2
                           command+description  {command, description}   pi / dsh
                           exec                 裸 JavaScript 源码        codex（custom 工具）
                           commandline          {CommandLine, Cwd, …}    agy（Antigravity CLI）
@@ -79,15 +79,23 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     #   2. 上下文压缩：每约 32 个请求插一条「续写摘要」请求
     #      （last=user:"Your main task now is to generate a continuation summary of …"），
     #      同样取号。104 轮实测 3 次压缩，正好 100 个工具轮；103 轮只有 99 个。
+  bun run scripts/perf/gen-long-run.ts --turns 101 --tool shell \\
+    --out data/scenarios/long-run-opencode2.json
+    # opencode v2（npm 包 @opencode/cli，bin 名 opencode2）：shell 工具改名叫 **shell**
+    # （v1 的 bash 没了）、参数只要 {command}。它开局先发一条会话标题生成请求
+    # （messages=2、无 tools，system 写着 "You are a title generator"），比主流程还早，
+    # 同样吃条目，所以 +1：101 轮实测 102 条请求 = 标题 1 + 工具轮 100 + 收尾 1。
 
-  各家自己的辅助请求都会消费条目（opencode / dsh / agy 的标题生成、pi 与 agy 的压缩摘要），
-  所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看 mock.log 里是谁在取号。
-  各家要跑到 100 轮的实际轮数：peri 100 · opencode 100 · Claude Code 100 · codex 100 ·
-  dsh 100 · mcode 100 · **pi 133**（压缩从约 140 条消息起每轮多吃一条）· **agy 104**。
+  各家自己的辅助请求都会消费条目（opencode / dsh / agy / opencode2 的标题生成、
+  pi 与 agy 的压缩摘要），所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看
+  mock.log 里是谁在取号。各家要跑到 100 轮的实际轮数：peri 100 · opencode 100 ·
+  Claude Code 100 · codex 100 · dsh 100 · mcode 100 · **pi 133**（压缩从约 140 条消息起
+  每轮多吃一条）· **agy 104** · **opencode2 101**（标题请求吃第一条）。
   剧本尾部固定两条收尾（轮数之外）：主流程的「任务结束」文本 + 给 peri 预测请求的空白
   响应（后者消掉 peri 固定 5.0s 的收尾等待，机制见 docs/perf-compare.md）。
-  注：agy 的标题请求在**主流程之前**（序列第一条），尾部那两条收尾它只用到第一条——
-  它没有 peri 那样的预测请求，多出来的一条不会被消费，留着只在各家共用同一份生成器时无害。
+  注：agy 与 opencode2 的标题请求都在**主流程之前**（序列第一条），尾部那两条收尾它们只用到
+  第一条——两家都没有 peri 那样的预测请求，多出来的一条不会被消费，留着只在各家共用同一份
+  生成器时无害。
 
 配套运行（各 playground 的 perf-demo.ts 默认剧本已指向自家那份；timeout 只作兜底，
 正常应看到 harness 自行退出。--script 的相对路径按**进程 cwd** 解析，别照抄仓库根的写法）:
@@ -99,6 +107,9 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     --exhausted stop --timeout-ms 1800000
   cd playground/minimax-code && bun perf-demo.ts --exhausted stop --timeout-ms 1800000
     # 默认剧本 data/scenarios/long-run-minimax-code.json；沙盒 MINIMAX_DATA_DIR=playground/minimax-code/.minimax
+  cd playground/opencode2 && bun perf-demo.ts --exhausted stop --timeout-ms 1800000
+    # 默认剧本 data/scenarios/long-run-opencode2.json；沙盒是 XDG_* 指到 .data/.state/.cache/.config，
+    # 命令固定带 --standalone（不加会留一个常驻 serve --service，三次读数就冷热不均）
 `;
 
 const { values } = parseArgs({
@@ -144,10 +155,13 @@ const delayMs = positiveInt(values["delay-ms"], "--delay-ms", 0);
  * 各 harness 的工具形状（重测各家时逐个核过，原先记在各自的 scenario 文件 note 里，
  * 文件删掉后固化在这里）：
  *   peri 3.17 / opencode 1.17 / Claude Code 2.1   Bash                   {command}
+ *   opencode2 2.0.10                              shell                   {command}
  *   codex 0.155                                   exec                    裸 JS 源码（custom 工具）
  *   pi 0.85.1                                     bash                    {command}
  *   dsh 0.1.5-rc.2                                bash                    {command, description}
  *   agy 1.2.7                                     run_command             {CommandLine, Cwd, …}
+ * opencode v2 的 shell 工具就叫 `shell`（v1 的 `bash` 没了）：名字换了，形状还是 {command}。
+ * 注意 v1（opencode）与 v2（opencode2）是**两个 harness**，各自一份剧本，别把这份形状混过去。
  * dsh 的 description 是**必填**：缺了会被工具自己拒掉
  * （tool result: invalid arguments: missing required property "description"），
  * 所以生成器必须能把这一项补上，不能只写 command。

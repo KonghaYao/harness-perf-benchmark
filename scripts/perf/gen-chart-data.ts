@@ -72,10 +72,12 @@ const USAGE = `汇总长剧本压测产物 → 图表数据 JSON
 
 /**
  * 只认长剧本那组：`long-run.json`（peri / opencode / Claude Code）与各家的
- * `long-run-<harness>.json`（codex / pi / dsh / minimax-code，工具形状各家不同）。
- * harness 名里可以带 `-`（`minimax-code`），所以后缀不是「一串小写字母」而是「小写与连字符」。
+ * `long-run-<harness>.json`（codex / pi / dsh / minimax-code / antigravity / opencode2，
+ * 工具形状各家不同）。harness 名里可以带 `-`（`minimax-code`）**也可以带数字**
+ * （`opencode2`），所以后缀是「小写字母 / 数字 / 连字符」——早先只写 `[a-z][a-z-]*` 时
+ * `long-run-opencode2.json` 不匹配，那条曲线被**静默丢掉**（跑批正常、日志无警告，图上少一家）。
  */
-const LONG_RUN_SCRIPT = /^long-run(-[a-z][a-z-]*)?\.json$/;
+const LONG_RUN_SCRIPT = /^long-run(-[a-z][a-z0-9-]*)?\.json$/;
 
 /**
  * 显式挡掉的剧本名：`long-run-startup.json` 是「固定成本探针」（1 轮 / 0KB），

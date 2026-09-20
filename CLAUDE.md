@@ -11,7 +11,7 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 
 | 端点 | 协议 | 谁在用 |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、pi、dsh、MiniMax Code、脚本自测 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、opencode2、pi、dsh、MiniMax Code、脚本自测 |
 | `POST /v1/messages` | Anthropic Messages | Claude Code |
 | `POST /v1/responses` | OpenAI Responses | Codex |
 | `POST /v1beta/models/{model}:generateContent` | Google Gemini API | Antigravity CLI |
@@ -19,8 +19,8 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 两个用途：
 
 - **性能压测**：以脚本控制的节奏驱动 harness（peri / Claude Code / Codex / pi / dsh / MiniMax Code /
-  Antigravity CLI；opencode **已退出排名、不再跑**，见「与 harness 集成」开头），测量 harness 进程自身的
-  CPU / 内存开销（不采 GPU）；
+  Antigravity CLI / opencode2；opencode **v1** 已退出排名、不再跑，见「与 harness 集成」开头），测量
+  harness 进程自身的 CPU / 内存开销（不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
 ## 压测工作流（已实现）
@@ -38,7 +38,8 @@ cd playground/pi          && bun perf-demo.ts --timeout-ms 600000   # pi 沙盒
 cd playground/deepseek    && bun perf-demo.ts --timeout-ms 600000   # dsh 沙盒
 cd playground/minimax-code && bun perf-demo.ts --timeout-ms 600000  # MiniMax Code（mcode）沙盒
 cd playground/antigravity && bun perf-demo.ts --timeout-ms 600000   # Antigravity CLI（agy）沙盒
-# cd playground/opencode  && bun perf-demo.ts --timeout-ms 600000   # 已退出排名：代码保留，常规批次不再跑
+cd playground/opencode2   && bun perf-demo.ts --timeout-ms 600000   # opencode v2（bin 名 opencode2）沙盒
+# cd playground/opencode  && bun perf-demo.ts --timeout-ms 600000   # opencode v1 已退出排名：代码保留，常规批次不再跑
 ```
 
 `perf-demo.ts` 都是复用同一套实现的薄入口（相对路径按仓库根解析），差别只在 harness 命令、
@@ -47,7 +48,10 @@ cd playground/antigravity && bun perf-demo.ts --timeout-ms 600000   # Antigravit
 `stop`；`run.ts` 的 `--script` 是必填（见「关键约定与陷阱」），那份默认值因此由各家 demo 自己带：
 
 - `playground/peri`：默认注入 `--db-path`（沙盒会话库）与 `--settings`（运行时生成、指向本次端口的 JSON）；
-- `playground/opencode`：`XDG_*` 隔离 + `{env:LLM_MOCK_BASE_URL}` 变量替换（换端口不用改配置）；
+- `playground/opencode`（v1）：`XDG_*` 隔离 + `{env:LLM_MOCK_BASE_URL}` 变量替换（换端口不用改配置）；
+- `playground/opencode2`（v2）：同样是 `XDG_*` + `{env:…}`，外加 XDG_CONFIG_HOME、一条死代理，
+  命令固定带 `--standalone`（**不加会留一个常驻后台服务，三次读数冷热不均**）；二进制按
+  **`opencode2` 这个 bin 名**找（裸 `opencode` 已被 v2 顶掉，认名字才不会拿错代）；
 - `playground/claude-code`：`HOME` + `CLAUDE_CONFIG_DIR` 都指到沙盒（**只改后者挡不住用户级 settings**）；
 - `playground/codex`：`CODEX_HOME` 指向沙盒（用户全局配置里有 hooks 与别的 provider）；
 - `playground/pi`：`PI_CODING_AGENT_DIR` 指向沙盒，`models.json` 每次启动按本次端口重写
@@ -84,6 +88,8 @@ bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --args command+desc
 bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --out data/scenarios/long-run-minimax-code.json  # mcode：bash + command，轮数 + 1 条就够
 bun run scripts/perf/gen-long-run.ts --turns 104 --args commandline \
   --out data/scenarios/long-run-antigravity.json  # agy：run_command + 五项参数；104 条 = 100 轮 + 标题 1 + 压缩 3
+bun run scripts/perf/gen-long-run.ts --turns 101 --tool shell \
+  --out data/scenarios/long-run-opencode2.json  # opencode v2：shell 工具 + {command}；101 条 = 100 轮 + 标题 1
 
 cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 ```
@@ -103,12 +109,12 @@ Codex 那笔还顺带说明了「收尾零 CPU 的空等照样花钱」——它
 值 1.76 CU（占当时总 CU 的 53%），修完名次从第四升到第二。见「已知限制与坑」与 `docs/perf-compare.md`。
 注意**「剧本轮数」与「harness 实际执行的轮数」可能不等**：各家自己的辅助请求（标题生成、上下文
 压缩）也消费剧本条目，100 条剧本下 opencode / dsh 实测只跑到 99 轮、pi 要 135 条（`--turns 133`）
-才够跑满 100 轮（数法：`mock.log` 里带工具结果的请求有几条）。生成器写的条目数是 `轮数 + 2`
-（两条收尾，见上），peri 那条「预测下一步输入」就落在最后那条空白上。
+才够跑满 100 轮、opencode2 要 103 条（`--turns 101`）（数法：`mock.log` 里带工具结果的请求有几条）。
+生成器写的条目数是 `轮数 + 2`（两条收尾，见上），peri 那条「预测下一步输入」就落在最后那条空白上。
 
 产物落在**一次运行一个目录**里：`data/runs/<harness>/<runId>/`（`--out-dir` 可改，`data/` 已在
-.gitignore 里），`<harness>` 是 `peri` / `opencode` / `claude-code` / `codex` / `pi` / `dsh` /
-`minimax-code` / `antigravity` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
+.gitignore 里），`<harness>` 是 `peri` / `opencode` / `opencode2` / `claude-code` / `codex` / `pi` /
+`dsh` / `minimax-code` / `antigravity` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
 `claude-code`、`mcode` → `minimax-code`、`agy` → `antigravity`，见 `scripts/perf/harness-id.ts`），
 `<runId>` 形如 `20260919-140136`（同秒第二次运行加 `-2` 后缀）：
 
@@ -294,6 +300,7 @@ bun run src/server.ts --script script.json          # 起 mock（脚本必填，
 bun run scripts/perf/run.ts --script data/scenarios/long-run.json --exhausted stop   # 压测（--script 必填）
 cd playground/claude-code && bun perf-demo.ts       # 换成 Claude Code 压测（默认剧本由 demo 自带）
 cd playground/antigravity && bun perf-demo.ts       # Antigravity CLI（agy）压测
+cd playground/opencode2   && bun perf-demo.ts       # opencode v2（`npm i -g @opencode/cli`）压测
 bun run scripts/perf/verify.ts                      # 采样口径验证实验
 bun test                                            # 全部测试
 bun run typecheck                                   # tsc --noEmit（含 scripts/ 与 playground/）
@@ -318,7 +325,7 @@ Google Gemini API，其余各家走 chat / Messages / Responses 三种）：
   `scripts/peri-demo.json` 就是按「主回答 → 预测 → …」的规律排的。它的位置在**主流程结束之后**，
   长剧本尾部那条空白就是给它的（预测拿到非空文本会拖出 5.0s 收尾等待，见「已知限制与坑」）。
 
-### opencode（**已退出排名，常规批次不再跑**）
+### opencode v1（**已退出排名，常规批次不再跑；v2 见下一节**）
 
 **退出原因**：它在各项指标上都远落后于其余五家（端到端 38.6s vs 1.5~19.9s、进程树 CPU 均值
 69.9% / 峰值 229.3%、RSS 均值 798.9MB / 峰值 943.0MB，整段消耗约 27 核·秒 vs 其余 1.0~5.0），
@@ -326,7 +333,9 @@ Google Gemini API，其余各家走 chat / Messages / Responses 三种）：
 接入说明全部保留**：要复测就按下面的方式单跑，跑完用 `--exclude opencode` 生成图表数据即可
 （`gen-chart-data.ts` 的选项：某家退出常规批次后，留在 `data/runs` 里的历史产物不会自己爬回图表）。
 
-- 二进制从 PATH 找（`Bun.which("opencode")`，实测 1.17.12）；
+- 二进制从 PATH 找（`Bun.which("opencode")`，实测 1.17.12）；**demo 启动前会读一次版本号，
+  不是 1.x 就直接报错**——`npm i -g @opencode/cli`（v2）也提供 `opencode` 这个 bin 名，
+  且 npm 全局目录通常排在 `~/.bun/bin` 前面，会把这里的 v1 静默顶掉（读数就全不作数了）；
 - `playground/opencode/opencode.json` 定义 provider（`npm: "@ai-sdk/openai-compatible"`），
   该文件**随 cwd 生效**，所以必须在 `playground/opencode/` 下启动 opencode；
   baseURL 写成 `{env:LLM_MOCK_BASE_URL}`，demo 按本次端口注入，换端口不必改配置；
@@ -336,6 +345,37 @@ Google Gemini API，其余各家走 chat / Messages / Responses 三种）：
   `.data/.state/.cache`（必须经 `deps.harnessEnv` 注入，别用 `process.env` 赋值——见「已知限制与坑」）；
 - opencode 会在会话开始时额外发一次**标题生成请求**（小模型、走同一个 provider），也消费脚本条目；
 - 排查配置是否按预期生效：`opencode debug config`（合并结果）、`opencode debug paths`（数据目录）。
+
+### opencode v2（`@opencode/cli`，bin 名 `opencode2`；**在排名里**）
+
+v1 的下一代：**同一个项目、同一个仓库**（`github.com/sst/opencode` 现在 308 跳到
+`github.com/anomalyco/opencode`），npm 上 v1 的 `opencode-ai` 与 v2 的 `@opencode/cli` 维护者
+是同一人，所以包里两个 bin 名（`opencode` 与 `opencode2`）都指向同一个 v2 二进制——**但 v1 与
+v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫、这条曲线单开一个 harness id 的原因。
+
+- 二进制从 PATH 找（`Bun.which("opencode2")`，实测 2.0.10，`npm i -g @opencode/cli`）；
+  harness 命令是 `opencode2 run --standalone --model llm-mock/llm-mock --auto '<prompt>'`；
+- **`--standalone` 不是可选项**：不加会走「后台服务」模式，起一个常驻的 `serve --service`，
+  压测跑完它还活着、下一轮直接复用——三次读数变成「第一轮冷、后两轮热」，端到端与启动段全不可比
+  （实测残留进程）。加了之后跑完 `service status` 是 stopped、无残留。**即便加了 `--standalone`，
+  它仍会拉一个子进程** `opencode.exe serve --stdio --port 0`（主 CLI 约 106MB、子进程约 565MB），
+  真干活的是那个子进程——与 Codex 同类，所以计分口径固定用**进程树**（见「统一计分」）；
+- 隔离靠 `XDG_DATA_HOME / XDG_STATE_HOME / XDG_CACHE_HOME / XDG_CONFIG_HOME` 指到沙盒内的
+  `.data/.state/.cache/.config`（实测 `opencode2 debug paths` 四路全认 XDG），必须经
+  `deps.harnessEnv` 注入；另加**死代理**（`HTTPS_PROXY=https_proxy=http://127.0.0.1:9` +
+  `NO_PROXY=127.0.0.1,localhost,::1`，与 codex / agy 同一套路，让遥测类请求快速失败、mock 直连）；
+- provider 配置仍是 cwd 的 `opencode.json`（所以必须在 `playground/opencode2/` 下启动），
+  `{env:LLM_MOCK_BASE_URL}` 插值照旧可用；**`"npm": "@ai-sdk/openai-compatible"` 这一项必须写**
+  ——漏了直接报 `Error: Unsupported package for llm-mock/llm-mock:`（实测）。provider 实现编在那个
+  177MB 的单文件二进制里，**运行时不下载任何 npm 包**（沙盒里没有 node_modules，死代理下照跑）；
+- 工具名换了一代：v1 的 `bash` 没了，**shell 工具叫 `shell`**、参数只要 `{command}`
+  （`workdir` / `timeout` / `background` 可选），所以默认剧本是自家那份
+  `data/scenarios/long-run-opencode2.json`（`gen-long-run.ts --tool shell` 生成，103 条 = 101 + 2）；
+- **消费规律**：序列**第一条**是会话标题生成（`messages=2`、无 tools，system 写着
+  "You are a title generator"），之后每轮工具调用一条主请求，100 轮内没有上下文压缩请求——
+  所以 100 轮要 101 条剧本（`--turns 101`）。实测 102 条请求 = 标题 1 + 工具轮 100 + 收尾 1；
+- 排查配置用 `opencode2 debug paths`（数据目录）；注意 **`opencode2 debug config` 会把后台服务
+  起起来**（实测踩过，压测前记得 `opencode2 service status` 确认没有常驻服务）。
 
 ### Claude Code
 
@@ -448,8 +488,9 @@ Google Gemini API，其余各家走 chat / Messages / Responses 三种）：
 - 工具名 **`bash`**（小写，同 pi）且参数只要 `{command}`（`timeout` 可选），所以剧本用
   `gen-long-run.ts --tool bash`（默认 `--args command`）生成；实测 `bash` 工具**没有**
   `description` 那种必填参数，也没有 dsh 的审批等待；
-- **消费规律是七家里最干净的**：100 轮剧本实收 **101 条 = 100 轮 + 尾部收尾**，没有标题生成、
-  没有上下文压缩、没有预测请求（对比：pi 要 135 条、dsh 的标题请求会吃第 2 条）——实测 3 次
+- **消费规律是八家里最干净的**：100 轮剧本实收 **101 条 = 100 轮 + 尾部收尾**，没有标题生成、
+  没有上下文压缩、没有预测请求（对比：pi 要 135 条、agy 要 106 条、opencode2 要 103 条、dsh 的
+  标题请求会吃第 2 条）——实测 3 次
   端到端 19.6~20.2s（启动 1.3s · 运转 18.2s · 收尾 0.25s）、CU 21.29~22.06（**已并入常规批次**，
   与其余五家同批测得，见 `docs/perf-compare.md`）；
 - 启动时会刷新模型目录（`models.dev/api.json` → `filecdn.minimax.chat`），落成沙盒里
@@ -502,8 +543,9 @@ Google Gemini API，其余各家走 chat / Messages / Responses 三种）：
 - **本地这批读数还是「单跑」的**：`data/runs/antigravity/` 里的产物带 `--label agy-probe`，与第五批
   （`codex-proxy-fix`）隔了一夜，图表页会画出它们并在页尾告警「混批」（机制见「统一计分」那节的
   「一张图不许混批」）。**CI 的 harness 清单已经加上它**（装 agy 与跑批两处，见
-  `.github/workflows/benchmark-pages.yml`）：下一次 CI 批次就是七家同批的读数，发布出去的那张图
-  自然不会有混批告警（线上站点的数据是 CI 自己现跑现生成的，本地 `data/runs` 进不去）。
+  `.github/workflows/benchmark-pages.yml`）：下一次 CI 批次就是八家同批的读数（agy 与 opencode2
+  都在里面），发布出去的那张图自然不会有混批告警（线上站点的数据是 CI 自己现跑现生成的，
+  本地 `data/runs` 进不去）。
 
 ## 已知限制与坑（压测相关）
 
@@ -511,7 +553,7 @@ Google Gemini API，其余各家走 chat / Messages / Responses 三种）：
   而不是轮数；`--turns` 只是原样透传给 harness；
 - **peri 在 `-p` 模式下只在退出时 flush 输出**：被超时强杀时 `<runId>-harness.log` 会是空文件
   （工具会在 perf.log 里写明原因）；自行收敛时该文件有内容。**pi 同样如此**（实测自行收尾时
-  harness.log 有完整回答，loop 剧本被强杀时为空）。**opencode / Claude Code / dsh 是持续流式的**，
+  harness.log 有完整回答，loop 剧本被强杀时为空）。**opencode / opencode2 / Claude Code / dsh 是持续流式的**，
   被强杀也留有输出；
 - 若 peri 报 `workspace identity changed; explicit relinking is required`，那是 `~/.peri/threads/threads.db`
   里该目录的 workspace 记录过期（注册时的 discovery 快照与现状不符），与本仓库无关；
@@ -526,13 +568,16 @@ Google Gemini API，其余各家走 chat / Messages / Responses 三种）：
   `env` 才生效）。所有沙盒变量必须走 `RunDeps.harnessEnv`；早期 demo 用 `process.env.X = …`
   写的隔离是静默失效的；
 - **多数 harness 会额外发请求消耗脚本条目**：peri 发「预测下一步输入」（在**主流程收尾之后**才发，
-  长剧本里吃的是尾部那条空白），opencode 与 dsh 发「会话标题生成」（dsh 那条来自 `dsh-session-title-first-prompt-llm`，
-  只看首条 prompt，一次会话一条；opencode 那条出现在启动期，`messages=2`）；**pi 的
+  长剧本里吃的是尾部那条空白），opencode（v1）、opencode2 与 dsh 发「会话标题生成」（dsh 那条来自
+  `dsh-session-title-first-prompt-llm`，只看首条 prompt，一次会话一条；opencode / opencode2 那两条
+  出现在启动期，`messages=2`、无 tools）；**pi 的
   上下文压缩也会发请求**——pi 默认开压缩（`compaction.enabled=true`，`reserveTokens` 16384 /
   `keepRecentTokens` 20000），从约 140 条消息起每轮追加一条 `messages=2` 的总结；**agy 两样都有**——
   标题生成在**序列第一条**（`gemini-3.1-flash-lite-preview`，`systemInstruction` 里写着
   "conversation title generator"），压缩摘要每约 32 个请求插一条（`last=user:"Your main task now is
-  to generate a continuation summary of …"`），所以 100 轮要 104 条剧本；
+  to generate a continuation summary of …"`），所以 100 轮要 104 条剧本；**opencode2 只有标题那一条**
+  ——序列第一条就是它（"You are a title generator"，`messages=2`、无 tools），之后 100 轮内没有压缩
+  请求，所以 100 轮要 101 条剧本；
   Claude Code / Codex 本次没见到。脚本不足时先看 `*-mock.log` 里
   是谁在取号（每行都有 `messages=` / `input=` 与末条消息的角色），症状是「明明在正常工作，
   却提前收到收尾文本」；

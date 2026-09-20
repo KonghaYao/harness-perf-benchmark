@@ -4,6 +4,10 @@ playground/peri/.peri/*.db*
 playground/opencode/.data/
 playground/opencode/.state/
 playground/opencode/.cache/
+playground/opencode2/.data/
+playground/opencode2/.state/
+playground/opencode2/.cache/
+playground/opencode2/.config/
 playground/claude-code/.home/
 playground/codex/.codex/
 playground/pi/.pi-agent/

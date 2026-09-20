@@ -1,6 +1,6 @@
-# 压测对比：六种 harness（opencode 已退出排名；Antigravity CLI 已接入、尚未并入批次）
+# 压测对比：六种 harness（opencode v1 已退出排名；Antigravity CLI 与 opencode v2 已接入、尚未并入批次）
 
-> **opencode 已退出排名（2026-09-19 起）**
+> **opencode v1 已退出排名（2026-09-19 起）**
 >
 > 它是唯一**各项指标都远落后**的一家（退出排名时的实测：端到端 **38.6s**，同一批其余五家
 > 1.5~19.9s；进程树 **CPU 均值 69.9% / 峰值 229.3%**，两项都最高；进程树 **RSS 均值 798.9MB /
@@ -9,10 +9,12 @@
 > 5 倍以上。
 >
 > 继续把它放进榜单只会拉长横轴、把其余各家压成一堆，它也已不构成有意义的对照，因此**后续批次
-> 不再跑 opencode、不计入排名**，下面的表格里也没有它（各家读数都出自同一批次，混进一份隔了
+> 不再跑 opencode v1、不计入排名**，下面的表格里也没有它（各家读数都出自同一批次，混进一份隔了
 > 几小时的旧产物就破坏了「批内可比」）。`playground/opencode/` 的沙盒与接入代码保留（想复测随时
-> 可按下面的命令单跑，`scripts/perf/harness-id.ts` 里的别名也还在），它的历史产物仍在
-> `data/runs/opencode/`——图表要显示它，生成数据时不加 `--exclude opencode` 即可。
+> 可按下面的命令单跑，`scripts/perf/harness-id.ts` 里的别名也还在，demo 会先读版本号、不是 v1
+> 就报错），它的历史产物仍在 `data/runs/opencode/`——图表要显示它，生成数据时不加
+> `--exclude opencode` 即可。**它的下一代 v2（`opencode2`）是另一家、在排名里**，读数见下面
+> 单独一节：同名不同代，两边的读数不能互相代替。
 
 用 llm-mock 以受控负载测量各 harness 自身的资源开销。测量时间 **2026-09-19 20:39~20:43**（第五批；
 机器 macOS / Apple Silicon 18 核），采样间隔 100ms（`proc_pid_rusage`，CPU 为**单核 100%** 口径，
@@ -37,13 +39,14 @@ harness 走完剧本、收到收尾响应后**自行退出**——回答的是�
 | harness | 版本 | 线协议 | 接入点 | 沙盒隔离 |
 | --- | --- | --- | --- | --- |
 | peri | 3.17.0（PATH） | OpenAI Chat Completions | `--settings <JSON>` | `--db-path` 会话库 |
-| opencode（**已退出排名**） | 1.17.12 | OpenAI Chat Completions | 随 cwd 的 `opencode.json` + `{env:LLM_MOCK_BASE_URL}` | `XDG_*` |
+| opencode v1（**已退出排名**） | 1.17.12 | OpenAI Chat Completions | 随 cwd 的 `opencode.json` + `{env:LLM_MOCK_BASE_URL}` | `XDG_*` |
 | Claude Code | 2.1.277 | Anthropic Messages | `ANTHROPIC_BASE_URL` 等环境变量 | `HOME` + `CLAUDE_CONFIG_DIR` |
 | Codex | 0.155.1 | OpenAI Responses | `CODEX_HOME/config.toml` 的 provider | `CODEX_HOME` |
 | pi | 0.85.1 | OpenAI Chat Completions | 沙盒 `models.json` 换 baseUrl + `--model llm-mock/llm-mock` | `PI_CODING_AGENT_DIR` |
 | dsh | 0.1.5-rc.2 | OpenAI Chat Completions | `$DEEPSEEK_BASE_URL` / `$DEEPSEEK_API_KEY` 环境变量 | `DSH_HOME` |
 | MiniMax Code（`mcode`） | 0.4.12 | OpenAI Chat Completions | 沙盒 `config.yaml` 的 `custom_provider.*.options.baseURL` + `--model custom_provider:llm-mock/llm-mock` | `MINIMAX_DATA_DIR` |
 | Antigravity CLI（`agy`）（**新接入，本批未跑**） | 1.2.7（PATH） | **Google Gemini API** | `GOOGLE_GEMINI_BASE_URL` + 沙盒 `settings.json` 的 `modelProvider: "gemini"` | `HOME` |
+| opencode v2（`opencode2`）（**新接入，本批未跑**） | 2.0.10 | OpenAI Chat Completions | 随 cwd 的 `opencode.json` + `{env:LLM_MOCK_BASE_URL}`，命令带 `--standalone` | `XDG_*` + 死代理 |
 
 约定：每个 harness 都在自己的 playground 沙盒里、用同一份剧本跑
 （`cd playground/<名> && bun perf-demo.ts …`），剧本由同一个生成器现造、工具形状按各家实测；
@@ -267,6 +270,45 @@ CU 30.42 / 31.99 / 32.15），下面取中位那次（19.9s）：
   以上的批次，页尾的告警行就会点名是哪几家、哪个 label，并说明分数只在批内可比（并入批次后这行
   自动消失）。只想看批次内排名就照旧用 `--exclude antigravity` 生成数据（与 `--exclude opencode`
   同一个用法）。
+
+## opencode v2（`opencode2`）：已接入，**尚未并入批次**
+
+> **它不在上面那批里，下面的读数不能与批次表格并列**——理由与上一节相同：3 次读数跑于
+> 2026-09-20 14:19（`--label oc2-probe`），与第五批不是同一时段、同一负载。跨批次**只能比 CU**，
+> 百分制分数与其余指标都不可比（分数是批内相对值）。
+
+`opencode2 run --standalone`（npm `@opencode/cli` 2.0.10）是 2026-09-20 接入的第 8 家，走
+**OpenAI Chat Completions**（与 peri / opencode v1 同协议）。它是 **opencode v1 的下一代**：
+同一个项目（`github.com/sst/opencode` 现在 308 跳到 `anomalyco/opencode`）、同一个维护者，包里
+`opencode` 与 `opencode2` 两个 bin 名指的是同一个 v2 二进制；**但 v1 与 v2 是两个被测对象**，
+v1 已退出排名（见开头那个框），这条是新的一项。产品细节、沙盒与工具形状在 `CLAUDE.md` 的
+「与 harness 集成」，这里只放读数：
+
+| 次 | runId | 端到端 | 启动 · 运转 · 收尾 | CU | 峰值 RSS · CPU |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `20260920-141913` | 9.7s | 0.7 · 8.9 · 0.1 | 9.426 | 695.0MB · 106.2% |
+| 2 | `20260920-141926` | 8.9s | 0.4 · 8.4 · 0.1 | 8.440 | 645.7MB · 96.5% |
+| 3 | `20260920-141938`（中位） | 9.1s | 0.4 · 8.6 · 0.1 | 9.595 | 849.6MB · 105.2% |
+
+- **三次都自行退出**（退出码 0、不用强杀），启动 **0.4~0.7s**、收尾 **0.1s**——时间几乎全在运转段；
+- **它是「一个启动器 + 一个真干活的 worker」**：主 CLI 进程整段只烧 **0.20~0.26 核·秒**，
+  **95% 的 CPU 在它 spawn 的子进程** `opencode.exe serve --stdio --port 0` 里（4.0~4.5 核·秒，
+  走进程树采样而不是已回收子进程计数器）——与 Codex 同类（真干活的是 spawn 出来的二进制），
+  这正是计分口径固定用**进程树**的原因。峰值 RSS 645~850MB 也几乎全是那个子进程的（采样到 2 个进程）；
+- **消费规律：标题在最前，没有压缩**。102 条请求 = **1 条会话标题生成**（`messages=2`、无 tools，
+  system 写着 "You are a title generator"，落在**序列第一条**）+ **100 轮工具调用** + 1 条收尾，
+  所以 100 轮要 **101 条剧本**（`--turns 101`；`--turns 100` 只跑得到 99 轮）。它不像 pi / agy
+  那样在途中插上下文压缩请求；
+- **CU 8.4~9.6**：跨批次口径比，是同批最小的 pi（1.271）的约 7 倍、Codex（1.383）的约 6 倍，
+  离 MiniMax Code（31.995）那一端还远。拆开看 **内存项就占 50%~54%**（RSS 均值 484~576MB，
+  是 CLI 里最高的一档：pi 186MB、agy 207MB 同段位，Codex 约 100MB），CPU 项 4.2~4.7 核·秒；
+- **三次的离散度不小**（端到端 8.9~9.7s、CU 8.440~9.595，±7%），比 agy 的 ±4% 差一档——
+  它顶着几百 MB 的内存跑 9 秒，读数对机器负载更敏感。不过三次的 1 分钟 load（2.8 / 3.8 / 3.8）
+  与 CU 并不同向：最便宜的那次（`…141926`，8.440）恰在中间，最先跑、机器最空的那次反而贵
+  （`…141913`，9.426）——**这 ±7% 更像它自身的抖动，别全推给负载**；跨机器引用时留意；
+- 与 v1 的对照只能看量级：v1 退出排名时的读数是端到端 **38.6s**（那是另一批次、负载更重），
+  v2 在这一批是 9.1s——**别把两批的秒数相减**。要把 v2 并入榜单得整批重跑（含它共 8 家 × 3 次）；
+  CI 的 workflow 已经带上它（装包与跑批两处），下一次 CI 批次就是这个形态。
 
 ## 统一计分（**Beta**）：CPU 与内存 1:1
 

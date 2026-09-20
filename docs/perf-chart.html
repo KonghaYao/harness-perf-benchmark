@@ -506,6 +506,11 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
             const COLORS = {
                 peri: "#d1495b",
                 opencode: "#2f6fed",
+                // opencode2 is the next generation of that same project (same repository, same
+                // maintainer), so it keeps the blue hue and differs in depth: a darker blue reads as
+                // "the same family, the current one", and since v1 is drawn dashed and kept out of the
+                // ranking, the two never compete for the eye.
+                opencode2: "#1243a5",
                 "claude-code": "#d98218",
                 codex: "#12876a",
                 pi: "#7a4fd0",
@@ -535,6 +540,10 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
             const LOGOS = {
                 peri: "logos/peri.png",
                 opencode: "logos/opencode.svg",
+                // Same file on purpose: opencode2 is the same project as opencode (same repository,
+                // same mark), and the name next to the icon is what separates the two rows. Don't
+                // invent a second mark for it — there isn't one upstream to point at.
+                opencode2: "logos/opencode.svg",
                 "claude-code": "logos/claude-code.svg",
                 codex: "logos/codex.svg",
                 pi: "logos/pi.svg",
@@ -550,6 +559,10 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
             const LINKS = {
                 peri: "https://github.com/KonghaYao/peri",
                 opencode: "https://github.com/anomalyco/opencode",
+                // Same repository as opencode: v2 is that project's next generation (the old
+                // github.com/sst/opencode now redirects to anomalyco/opencode), so there is no second
+                // repository to link to.
+                opencode2: "https://github.com/anomalyco/opencode",
                 "claude-code": "https://github.com/anthropics/claude-code",
                 codex: "https://github.com/openai/codex",
                 pi: "https://github.com/earendil-works/pi",
@@ -602,10 +615,14 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
             /**
              * Harnesses that left the line-up: their curves start collapsed (click the legend
              * entry to unfold the historical readings), are drawn dashed, say so next to their name
-             * on the bars, and no longer set the X axis scale. opencode went first — it trails the rest by
-             * a wide margin on every metric (the why, with numbers, is in docs/perf-compare.md), and
-             * keeping it in the line-up only stretched the X axis and squashed the other five into a
-             * pile. Its code and sandbox are still in playground/opencode/ if you want to re-measure.
+             * on the bars, and no longer set the X axis scale. opencode **v1** went first — it trails
+             * the rest by a wide margin on every metric (the why, with numbers, is in
+             * docs/perf-compare.md), and keeping it in the line-up only stretched the X axis and
+             * squashed the other five into a pile. Its code and sandbox are still in
+             * playground/opencode/ if you want to re-measure.
+             *
+             * The ids here are harness ids, so `opencode` means v1 only: v2 is a separate harness
+             * (`opencode2`, next to it in the tables above) and it **is** in the line-up.
              */
             const EXCLUDED = new Set(["opencode"]);
 

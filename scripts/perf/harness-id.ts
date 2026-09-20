@@ -29,6 +29,7 @@ export const HARNESS_ALIASES: Readonly<Record<string, string>> = {
 export const DISPLAY_NAMES: Readonly<Record<string, string>> = {
     peri: "peri",
     opencode: "opencode",
+    opencode2: "opencode2",
     "claude-code": "Claude Code",
     codex: "Codex",
     pi: "pi",

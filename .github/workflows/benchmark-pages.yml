@@ -17,11 +17,12 @@
 #     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
 #     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
 #     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
-#   - 七家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
-#   - opencode 已退出排名，这里不装、不跑。
+#   - 八家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
+#   - opencode **v1** 已退出排名，这里不装、不跑；v2 是另一家（npm 包 `@opencode/cli`，bin 名
+#     `opencode2`），在排名里，沙盒是 playground/opencode2。两者同名不同代，别混。
 #   - Antigravity CLI（agy）是唯一的**脚本装**的第二家：peri 走 GitHub release，它走官方的
 #     install.sh（下载到 ~/.local/bin）。两家都必须装成，装不上这一趟就整趟失败——线上继续挂
-#     上一批的站点，不会悄悄少一条曲线（七条曲线里少一条比整个榜单停更是更坏的失真）。
+#     上一批的站点，不会悄悄少一条曲线（八条曲线里少一条比整个榜单停更是更坏的失真）。
 
 name: benchmark · gh-pages
 
@@ -29,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       turns:
-        description: 长剧本轮数（pi 自动 +33、agy 自动 +4：它们的压缩/标题请求会多吃条目）
+        description: 长剧本轮数（pi 自动 +33、agy 自动 +4、opencode2 自动 +1：它们的压缩/标题请求会多吃条目）
         default: "100"
       repeats:
         description: 每家跑几次（图表取端到端时长居中的那一次）
@@ -72,7 +73,7 @@ concurrency:
 
 jobs:
   bench-and-publish:
-    # 整批 21 次运行（七家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
+    # 整批 24 次运行（八家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
     timeout-minutes: 150
     runs-on: ${{ github.event.inputs.runner || 'macos-latest' }}
     environment:
@@ -151,7 +152,7 @@ jobs:
             echo "- 批次配置：轮数 ${TURNS} · 每家 ${REPEATS} 次 · runner \`${RUNNER}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: 装 harness（peri + 五家 npm CLI）
+      - name: 装 harness（peri + 六家 npm CLI）
         if: steps.decide.outputs.bench == '1'
         env:
           PERI_INSTALL_VERSION: ${{ github.event.inputs.peri_version }}
@@ -173,13 +174,16 @@ jobs:
           fi
           "$HOME/.peri/peri" --version
           echo "${HOME}/.peri" >> "${GITHUB_PATH}"
-          # 其余五家都在 npm 上。opencode 已退出排名，不装。
+          # 其余六家都在 npm 上。注意 `@opencode/cli` 是 opencode **v2**，它的 bin 里同时有
+          # `opencode` 与 `opencode2` 两个名字；v1 已退出排名、这里不装，所以那个 `opencode`
+          # 不会被谁用到（真要复测 v1，playground/opencode 的 demo 认版本号，不是 1.x 会直接报错）。
           npm i -g \
             @anthropic-ai/claude-code \
             @openai/codex \
             @earendil-works/pi-coding-agent \
             @deepseek-ai/dsh \
-            @minimax-ai/code
+            @minimax-ai/code \
+            @opencode/cli
 
       # agy 只有官方一个安装脚本：它查一份平台清单（darwin_arm64 等）→ 下载约 180MB 的
       # 单文件二进制 → 校验 SHA-512 → 落到 ~/.local/bin/agy。脚本自己不改 PATH，所以下面
@@ -203,7 +207,7 @@ jobs:
       - name: 报一下装到了什么版本
         if: steps.decide.outputs.bench == '1'
         run: |
-          for bin in peri agy claude codex pi dsh mcode; do
+          for bin in peri agy claude codex pi dsh mcode opencode2; do
             printf '%-8s %s\n' "${bin}" "$(command -v "${bin}" || echo '（不在 PATH 里）')"
           done
           peri --version || true
@@ -213,8 +217,11 @@ jobs:
           pi --version || true
           dsh --version || true
           mcode --version || true
+          # v2 的版本号自己带名字（实测 `opencode v2.0.10`），打印出来正好当「装的是 v2 不是 v1」
+          # 的现场证据——v1 只输出一个裸的 `1.17.12`。
+          opencode2 --version || true
 
-      - name: 生成剧本（七份，按各家工具形状）
+      - name: 生成剧本（八份，按各家工具形状）
         if: steps.decide.outputs.bench == '1'
         env:
           TURNS: ${{ github.event.inputs.turns || '100' }}
@@ -235,8 +242,13 @@ jobs:
           # 实测 100 轮要 104 条（104 = 100 轮 + 标题 1 + 压缩 3），故 +4。
           gen --turns "$((TURNS + 4))" --args commandline \
             --out data/scenarios/long-run-antigravity.json
+          # opencode2：shell 工具改名叫 shell（v1 的 bash 没了）、参数只要 {command}；它开局先发
+          # 一条会话标题生成请求（比主流程还早），同样吃条目，所以 +1（100 轮实测 102 条请求
+          # = 标题 1 + 工具轮 100 + 收尾 1）。它不像 pi 那样压缩、也没有 peri 的预测请求。
+          gen --turns "$((TURNS + 1))" --tool shell \
+            --out data/scenarios/long-run-opencode2.json
 
-      - name: 跑批次（七家串行，每家 repeats 次）
+      - name: 跑批次（八家串行，每家 repeats 次）
         if: steps.decide.outputs.bench == '1'
         env:
           REPEATS: ${{ github.event.inputs.repeats || '3' }}
@@ -258,7 +270,7 @@ jobs:
             return 0
           }
           for round in $(seq 1 "${REPEATS}"); do
-            for harness in peri claude-code codex pi deepseek minimax-code antigravity; do
+            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2; do
               echo "::group::第 ${round} 轮 · ${harness}"
               run_one "${harness}"
               echo "::endgroup::"
