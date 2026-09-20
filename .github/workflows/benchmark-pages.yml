@@ -161,7 +161,14 @@ jobs:
           # 它在「没装过旧版本」时不会去读 /dev/tty 提问，runner 每次都是干净的 HOME。
           curl -fsSL -o /tmp/peri-install.sh \
             https://raw.githubusercontent.com/konghayao/peri/main/scripts/install.sh
-          bash /tmp/peri-install.sh
+          # 它自己有个 bug（3.17.2 实测）：脚本结尾那句提示用的 BIN_LINK 只在「写 PATH 提示」
+          # 那个分支里赋值，于是 PERI_NO_PATH_HINT=1 时 set -u 会以 unbound variable 收尾——
+          # 而那时二进制与 $HOME/.peri/peri 软链早就装好了。所以不拿它的退出码当成败，
+          # 改由下面自查：真有下载/解包问题，那两句会先失败。
+          if ! bash /tmp/peri-install.sh; then
+            echo "::warning::peri 安装脚本非 0 退出（已知上游 bug：PERI_NO_PATH_HINT=1 时结尾 BIN_LINK 未定义）；下面自查二进制，装不上就失败"
+          fi
+          "$HOME/.peri/peri" --version
           echo "${HOME}/.peri" >> "${GITHUB_PATH}"
           # 其余五家都在 npm 上。opencode 已退出排名，不装。
           npm i -g \

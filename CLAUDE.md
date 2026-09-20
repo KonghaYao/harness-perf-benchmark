@@ -223,6 +223,10 @@ load 在 4~17 之间波动就能让 MiniMax Code 从 19.8s 变 34.7s；负载尖
   runner 上跑出来的数字与开发机不是一个批次——跨批次只比 CU；
 - 站点布局：`docs/perf-chart.html` 当站点根目录的 `index.html`，`logos/` 与 `vendor/` 摆在根上，
   数据放 `data/`——所以页面取数是两处候选（`data/` 优先，退回 `../data/`），本地打开走后者；
+- 装 peri 那一步得留个心眼：官方安装脚本在 `PERI_NO_PATH_HINT=1` 下会以 `BIN_LINK: unbound variable`
+  收尾（上游 bug，3.17.2 实测——那个变量只在「写 PATH 提示」的分支里赋值，末尾那句提示却照用）。
+  出事位置在**全部安装动作之后**（二进制与 `$HOME/.peri/peri` 软链都已就位），所以 workflow 不拿它的
+  退出码当成败，改由紧随其后的 `"$HOME/.peri/peri" --version` 自查：脚本真倒在下载/解包上，这一步才会失败；
 - 一次性设置：repo 的 Settings → Pages → Source 选 **GitHub Actions**（私有仓库还得有 Pro 才开得了 Pages）。
 
 ## 目录结构
