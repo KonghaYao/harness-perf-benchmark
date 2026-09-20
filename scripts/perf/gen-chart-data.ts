@@ -569,31 +569,38 @@ function main(): void {
         generatedAt: new Date().toISOString(),
         // 只列真正贡献了曲线的目录（空目录列进去会让人以为数据来自那儿）
         sourceDir: [...contributingDirs].map((dir) => relative(REPO_ROOT, dir)).join(" + "),
+        // 下面这几段是**直接渲染到图表页上的文案**，所以跟着页面走英文（页面本身就是英文的）。
+        // 别处的注释与命令行输出仍按仓库惯例用中文。
         pickRule:
             picks.length > 0
-                ? `--pick 指定：${picks.join(", ")}`
-                : `每个 harness 取最近 ${window} 次长剧本运行中端到端时长居中的一次`,
+                ? `selected with --pick: ${picks.join(", ")}`
+                : `each harness: the run whose end-to-end duration is the median of its last ${window} runs of the long script`,
         sampleColumns: [...SAMPLE_COLUMNS],
         // 计分口径写进 payload：图表页/报告都不该各自记一份公式。
         scoreFormula: {
-            source: "公式结构借自阿里云函数计算（FC）的「资源使用量 × 转换系数」，系数是本项目定的 CPU 与内存 1:1",
-            expression: "CU = 1.0 × 核·秒 + 1.0 × GB·秒",
+            source:
+                "formula structure borrowed from Alibaba Cloud FC's \"resource usage × conversion " +
+                "coefficient\"; the coefficients are this project's own CPU-to-memory 1:1",
+            expression: "CU = 1.0 × core·s + 1.0 × GB·s",
             coefficients: { ...CU_COEFFICIENTS },
-            scope: "进程树（含 harness 拉起的子进程）",
-            score: "100 × 本批次最小 CU / 本次 CU（最优 100 分）",
+            scope: "process tree (the harness plus everything it spawns)",
+            score: "100 × smallest CU in the batch / this run's CU (best = 100)",
             deviations: [
-                "内存用实测 RSS，不是 FC 的「申报规格 × 时长」",
-                "不含磁盘项（无数据）与 GPU 项（不采 GPU）",
-                "系数不是 FC 的 0.15：FC 眼里 1 核 ≈ 6.67 GB（内存项只占总账 1%~8%），" +
-                    "本项目按「资源负担」读，CPU 与内存逐秒同价",
-                "调用次数不折算（请求数由剧本决定，不是 harness 的开销）",
+                "memory is measured RSS, not FC's \"declared size × duration\"",
+                "no disk term (no data) and no GPU term (no GPU sampling)",
+                "the coefficients are not FC's 0.15: to FC one core ≈ 6.67 GB (a memory term worth " +
+                    "1%~8% of the bill), while this project reads the bill as resource burden — " +
+                    "a core-second and a GB-second cost the same",
+                "call count is not converted (how many requests a script takes is the harness's " +
+                    "strategy, not its overhead)",
             ],
             // 压力口径：峰值，不折算。
             peaks: {
-                label: "峰值（压力口径）",
+                label: "Peaks (stress view)",
                 note:
-                    "取整个窗口的最大值（进程树 RSS / CPU），不折算成分数——峰值是绝对量，可直接横比；" +
-                    "它答的是「最坏一刻要占多少」，与 CU 的「总共烧多少」互补",
+                    "the maximum over the whole window (process-tree RSS / CPU), not converted into a " +
+                    "score — a peak is an absolute quantity and compares directly; it answers \"how much " +
+                    "is held at the worst moment\", complementing CU's \"how much is burned in total\"",
             },
         },
         runs: chosen.map((run) => {

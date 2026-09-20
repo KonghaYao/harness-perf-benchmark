@@ -190,7 +190,8 @@ CU    = 1.0 × 核·秒 + 1.0 × GB·秒        （结构借自 FC；**系数是
 **出口必须同源**（同一口径的数字对不上就是 bug）：每次运行把 `cost`（面积）与 `peaks`（峰值）
 两个字段落 `run.json`，并把摘要行写进 `perf.log` 末尾；
 `gen-chart-data.ts` 从 `samples.csv` **现算**（不读这两个字段，这样老产物也同口径可比）→
-`docs/perf-chart.html` 的计分表与 `docs/perf-compare.md` 的计分章节都只显示，不自己记公式。
+`docs/perf-chart.html` 与 `docs/perf-compare.md` 的计分部分都只显示、不自己记公式（页面上那条公式是
+从 payload 的 `scoreFormula` 印出来的，页面不重打一遍）。
 报告里给 CU 必须同时给「批内相对」与「下界标记」的说明，`gen-chart-data.ts` 的输出会替你把
 这两类警告打出来。
 

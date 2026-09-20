@@ -1,30 +1,35 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
     <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>harness-perf-benchmark 榜单 · 长剧本（100 轮 × 4KB）</title>
+        <title>harness-perf-benchmark · long script (100 turns × 4KB)</title>
         <!--
-            固定的看图页：只读一份数据 JSON（由 `bun run scripts/perf/gen-chart-data.ts`
-            从压测产物里汇总），路径按「站点布局优先」找——`data/perf-chart.json`（发布后的
-            站点：页面就是根目录的 index.html，数据在它旁边），退回 `../data/perf-chart.json`
-            （仓库布局）。发布由 .github/workflows/benchmark-pages.yml 组装并推到 GH Pages。
+            Static chart page: reads one data JSON (aggregated from benchmark artifacts
+            by `bun run scripts/perf/gen-chart-data.ts`), looking for it site-layout
+            first — `data/perf-chart.json` (the published site: the page is the root
+            index.html and the data sits right next to it), falling back to
+            `../data/perf-chart.json` (repo layout). Publishing is assembled and pushed
+            to GH Pages by .github/workflows/benchmark-pages.yml.
 
-            本地打开（file:// 会被 CORS 挡在 fetch 上，必须起个静态服务）：
-                cd <仓库根> && python3 -m http.server 8080
+            Opening it locally (file:// is blocked by CORS on fetch — serve it instead):
+                cd <repo root> && python3 -m http.server 8080
                 → http://localhost:8080/docs/perf-chart.html
 
-            图表库走 CDN（unpkg 的 Chart.js 4 UMD），2s 内没到就自动换本地兜底
-            （vendor/chart.umd.min.js，同一份 v4.5.1 的拷贝，已 gitignore；发布时由 workflow
-            现取一份放进站点）——本机浏览器走 PAC 代理，实测公共 CDN 不是报错而是挂着不动，
-            所以超时是必需的、且不能写成静态的 script 标签（卡住时连后续解析都停下）。
-            两处都拿不到时页面会直说，而不是白屏。
+            Chart.js comes from a CDN (unpkg, v4 UMD) and falls back to a vendored copy
+            (vendor/chart.umd.min.js, the same v4.5.1, gitignored; the workflow fetches
+            one into the site when publishing) when it doesn't arrive within 2s — this
+            machine browses through a PAC proxy where public CDNs don't fail, they just
+            hang, so the timeout is required and a plain script tag is not an option
+            (a hanging tag stalls the rest of the parse). With both sources missing the
+            page says so rather than rendering blank.
         -->
         <style>
-            /* 门面页 · 浅色极简：数据是主角。三条规矩——
-               1) 数字、标签、单位一律等宽 + tabular-nums，上下左右对得齐；
-               2) 分隔只用 1px 发丝线，不要阴影、不要大圆角；
-               3) 全页只有一个强调色（peri 那支红），只用来标「peri 自己」。 */
+            /* Showcase page · light and minimal: the data is the subject. Three rules —
+               1) numbers, labels and units are monospace + tabular-nums, so they line up;
+               2) separation is a 1px hairline only — no shadows, no large radii;
+               3) the page has exactly one accent colour (peri's red), reserved for
+                  marking "peri itself". */
             :root {
                 --ink: #14171c;
                 --muted: #6f7680;
@@ -56,7 +61,7 @@
                 font-family: var(--mono);
                 font-size: 12px;
             }
-            /* 眉标：等宽小字 + 宽字距，给每一块一个「仪器标签」的口吻。 */
+            /* Eyebrow: small monospace caps with wide tracking — the instrument-label voice. */
             .eyebrow {
                 display: block;
                 color: var(--faint);
@@ -64,7 +69,32 @@
                 letter-spacing: 0.16em;
                 text-transform: uppercase;
             }
-            /* 首屏：榜单名 + 一行场景说明，接着就是那张蝴蝶图（门面本身就是它）。 */
+            /* Hero: leaderboard name + one line of scene-setting, then the butterfly chart
+               (the showcase is the chart itself). Also carries the top-right links. */
+            .topbar {
+                display: flex;
+                justify-content: flex-end;
+                gap: 18px;
+                margin-bottom: 22px;
+                font: 500 12px/1 var(--mono);
+            }
+            .topbar a {
+                color: var(--muted);
+                text-decoration: none;
+                border-bottom: 1px solid transparent;
+            }
+            .topbar a:hover {
+                color: var(--ink);
+                border-bottom-color: var(--ink);
+            }
+            /* peri's own link takes the accent colour: same rule as the charts — the red
+               means "this one is peri". */
+            .topbar a.peri-link {
+                color: var(--peri);
+            }
+            .topbar a.peri-link:hover {
+                border-bottom-color: var(--peri);
+            }
             .hero h1 {
                 margin: 16px 0 0;
                 font-size: clamp(24px, 4.4vw, 44px);
@@ -85,7 +115,7 @@
             section {
                 margin-top: 72px;
             }
-            /* 板块开头：一条发丝线 + 眉标 + 标题，像仪器面板的刻线区。 */
+            /* Section head: hairline + eyebrow + title, the way an instrument panel rules off a dial. */
             .head {
                 display: flex;
                 align-items: baseline;
@@ -109,68 +139,39 @@
                 letter-spacing: 0.04em;
                 vertical-align: 1px;
             }
-            /* 表格：全等宽 + tabular-nums，列一定对得齐；只有行线，没有竖线。
-               行高给得松（上下 11px）：表里全是数字，挤在一起就只剩一片灰。 */
-            table {
-                width: 100%;
-                border-collapse: collapse;
-                font: 12.5px/1.5 var(--mono);
-                font-variant-numeric: tabular-nums;
-            }
-            th,
-            td {
-                padding: 11px 10px;
-                border-bottom: 1px solid var(--rule);
-                text-align: right;
-                white-space: nowrap;
-            }
-            th:first-child,
-            td:first-child {
-                padding-left: 0;
-                text-align: left;
-            }
-            thead th {
-                padding-top: 0;
-                color: var(--faint);
-                font-weight: 500;
-            }
-            tbody tr:hover {
+            /* The page's two preformatted blocks — the CU formula and the citation. Same face and
+               wash as inline <code>, one step larger; both are copied out verbatim, so a rewrapped
+               line is a broken formula or a broken citation. */
+            .formula,
+            .cite {
+                margin: 20px 0 24px;
+                padding: 14px 16px;
+                border: 1px solid var(--rule);
                 background: var(--wash);
-            }
-            .score-cell {
-                font-weight: 600;
-            }
-            /* 厂商图标：认图比认名字快；色块留着，它对应曲线与柱子上的颜色。 */
-            .swatch {
-                display: inline-block;
-                width: 8px;
-                height: 8px;
-                margin-right: 6px;
-                border-radius: 2px;
-                vertical-align: baseline;
-            }
-            .logo {
-                width: 17px;
-                height: 17px;
-                margin-right: 7px;
-                border-radius: 4px;
-                vertical-align: -4px;
-            }
-            .scroll-x {
                 overflow-x: auto;
+                font: 12.5px/1.9 var(--mono);
+                font-variant-numeric: tabular-nums;
+                white-space: pre;
             }
-            /* 蝴蝶图：两图并排、名字夹在中间（名字由两张图各自画在自己轴的外侧），
-               所以这里不给卡片边框——条直接坐在纸上，只留一条图上的发丝线。 */
+            /* Butterfly: two charts side by side with the names between them (each chart draws
+               its names outside its own axis), so there is no card border here — the bars sit
+               straight on the paper, with only the hairline above the chart. */
             .bars {
                 display: grid;
                 gap: 10px 44px;
                 grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
             }
-            /* 单独一张的（统一计分那张 CU 图，现在收在页面最后、<figure> 还带着 hidden）：
-               别让它铺满整页，也跟上面那张表拉开一点。 */
-            .bars-single {
-                max-width: 560px;
-                margin-top: 28px;
+            /* The lead chart (the whole-run bill): it spans both columns above the CPU / memory
+               pair below it. Nothing is parked behind `hidden` today, but that attribute on a
+               .bar-box <figure> is how a chart gets switched off — see barBoxHidden. */
+            .bar-box-wide {
+                grid-column: 1 / -1;
+            }
+            /* The one-line hint under the charts (bars are clickable). */
+            .hint {
+                margin: 12px 0 0;
+                color: var(--faint);
+                font: 11.5px/1.6 var(--mono);
             }
             .bar-box {
                 margin: 0;
@@ -194,8 +195,9 @@
                 height: 300px;
                 margin-top: 12px;
             }
-            /* 曲线图：全页唯一带框的元素，框是给它读数值用的。
-               宽度收在 780px 内：铺满整页时曲线被拉得太开、一屏全是图，读数反而散。 */
+            /* The timeline is the only framed element on the page — the frame is there to read
+               values against. Width is capped at 780px: across the full page the curves stretch
+               too wide, the screen turns into nothing but chart, and the readings scatter. */
             .chart-box {
                 position: relative;
                 max-width: 780px;
@@ -205,7 +207,8 @@
                 border: 1px solid var(--rule);
                 border-radius: 4px;
             }
-            /* 控件：分段控件做成墨色实心，不用彩色——强调色留给 peri。 */
+            /* Controls: the segmented switches are solid ink, never coloured — the accent is
+               reserved for peri. */
             .controls {
                 display: flex;
                 flex-wrap: wrap;
@@ -268,7 +271,7 @@
                 overflow-x: auto;
                 font-size: 12px;
             }
-            /* 页脚：数据出处与两条去向，一行排完。 */
+            /* Footer: where the data came from and where to go next, all on one line. */
             .foot {
                 display: flex;
                 flex-wrap: wrap;
@@ -279,7 +282,8 @@
                 color: var(--faint);
                 font: 11.5px/1.7 var(--mono);
             }
-            /* 一次性的入场：首屏从下浮一层就停，别处不动（关掉动效偏好时整个不出现）。 */
+            /* One-off entrance: the hero floats up once and stops; nothing else moves (with
+               reduced motion preferred, none of it happens). */
             @media (prefers-reduced-motion: no-preference) {
                 .hero,
                 .bars {
@@ -310,64 +314,101 @@
     </head>
     <body>
         <header class="hero">
+            <!-- Top right: this project's repository, with peri's own repository next to it —
+                 peri takes the accent colour, it is the one the page is named after. -->
+            <nav class="topbar">
+                <a
+                    class="peri-link"
+                    href="https://github.com/KonghaYao/peri"
+                    target="_blank"
+                    rel="noopener"
+                    >peri ↗</a
+                >
+                <a
+                    href="https://github.com/KonghaYao/harness-perf-benchmark"
+                    target="_blank"
+                    rel="noopener"
+                    >GitHub ↗</a
+                >
+            </nav>
             <span class="eyebrow">Long script · 100 turns × 4KB · Process tree</span>
             <h1>harness-perf-benchmark</h1>
             <p class="sub">
-                各家 coding harness 跑同一部剧本、从起进程到自然退出：条越短，最坏一刻占得越少；
-                整段账在下面的计分表。
+                Coding harnesses run the same script, from process start to a clean exit. The chart at
+                the top is the whole bill, integrated over the run; under it the same harnesses at
+                their worst moment — peak CPU and peak memory. Shorter is leaner in all three.
             </p>
         </header>
 
         <div id="error" hidden>
-            <strong id="error-title">数据没加载出来</strong>
+            <strong id="error-title">Data did not load</strong>
             <div id="error-why" class="sub" style="margin: 6px 0 0"></div>
             <pre id="error-cmd"></pre>
         </div>
 
         <div id="app" hidden>
-            <!-- 门面就是这张蝴蝶图：两图并排、两列名字夹在中间（名字由两张图各画在自己轴的外侧），
-                 每张图各排各的名次，前两名实色、其余半透明当背景。 -->
+            <!-- The showcase is these three charts, one metric each and all read the same way:
+                 cheapest at the top, its own top two solid, the rest dimmed to background. The
+                 whole-run bill (CU) leads — it is the page's headline number, so it spans the full
+                 width — and the CPU / memory pair follows as a butterfly: bars grow from the middle
+                 outwards, with the two name columns between them (each chart draws its names outside
+                 its own axis). -->
             <div class="bars" id="page-bars">
+                <figure class="bar-box bar-box-wide">
+                    <figcaption>
+                        Unified score CU <span class="beta">Beta</span>
+                        <span class="unit">core·s + GB·s · whole run · lower is leaner</span>
+                    </figcaption>
+                    <div class="bar-canvas"><canvas id="bar-cu"></canvas></div>
+                </figure>
                 <figure class="bar-box">
                     <figcaption>
-                        峰值 CPU <span class="unit">% · 单核 = 100% · 最坏一刻</span>
+                        Peak CPU <span class="unit">% · one core = 100% · worst moment</span>
                     </figcaption>
                     <div class="bar-canvas"><canvas id="bar-cpu"></canvas></div>
                 </figure>
                 <figure class="bar-box">
                     <figcaption>
-                        峰值内存 RSS <span class="unit">MB · 最坏一刻占用</span>
+                        Peak memory RSS <span class="unit">MB · held at the worst moment</span>
                     </figcaption>
                     <div class="bar-canvas"><canvas id="bar-rss"></canvas></div>
                 </figure>
             </div>
+            <p class="hint">Click a bar to open that harness's repository.</p>
+            <!-- Batch warnings (a lower-bound CU, a run sampled without the child-CPU column) land
+                 here, right under the bars they qualify; the paragraph takes no space when empty. -->
+            <p class="sub warn" id="score-note"></p>
 
             <section>
                 <div class="head">
                     <span class="eyebrow">Timeline</span>
-                    <h2>逐拍曲线 · CPU 与内存的时间线</h2>
+                    <h2>Per-sample curves · CPU and memory over time</h2>
                 </div>
                 <p class="sub">
-                    内存纵轴反向（越靠下越重）；虚线 = 首个 / 末次请求。
+                    The memory axis is inverted (heavier sits lower); dashed lines = first / last
+                    request.
                 </p>
                 <div class="controls">
-                    <div class="group" id="metric-buttons" role="group" aria-label="Y 轴指标">
-                        <button data-metric="rss" class="active">内存 RSS</button>
+                    <div class="group" id="metric-buttons" role="group" aria-label="Y axis metric">
+                        <button data-metric="rss" class="active">Memory RSS</button>
                         <button data-metric="cpu">CPU</button>
                     </div>
-                    <div class="group" id="scope-buttons" role="group" aria-label="统计口径">
-                        <button data-scope="tree" class="active">进程树</button>
-                        <button data-scope="main">主进程</button>
+                    <div class="group" id="scope-buttons" role="group" aria-label="Scope">
+                        <button data-scope="tree" class="active">Process tree</button>
+                        <button data-scope="main">Main process</button>
                     </div>
-                    <div class="group" id="smooth-buttons" role="group" aria-label="曲线平滑窗口">
-                        <button data-smooth="0">原始</button>
+                    <div class="group" id="smooth-buttons" role="group" aria-label="Smoothing window">
+                        <button data-smooth="0">Raw</button>
                         <button data-smooth="500">0.5s</button>
                         <button data-smooth="1000" class="active">1s</button>
                         <button data-smooth="2000">2s</button>
                     </div>
+                    <!-- Off by default: two dashed lines per curve is six lines of clutter over the
+                         curves, and the question they answer ("when did the requests happen") is not
+                         the one this chart is read for — it is one click away. -->
                     <label class="toggle">
-                        <input type="checkbox" id="marks" checked />
-                        标注首个 / 末次请求
+                        <input type="checkbox" id="marks" />
+                        Mark first / last request
                     </label>
                 </div>
 
@@ -376,66 +417,72 @@
                 </div>
             </section>
 
+            <!-- The foot of the page is the method, not the numbers: the chart is up top, so what
+                 stays here is what a reader needs in order to quote or reuse this — the formula CU
+                 computes (printed from the payload, see renderMethod) and a citation. -->
             <section>
                 <div class="head">
-                    <span class="eyebrow">Runs</span>
-                    <h2>本页画的那几次运行</h2>
+                    <span class="eyebrow">Score</span>
+                    <h2>Unified score · CPU and memory weighed 1:1 <span class="beta">Beta</span></h2>
                 </div>
-                <p class="sub" id="pick-rule"></p>
-                <div class="scroll-x">
-                    <table id="summary">
-                        <thead></thead>
-                        <tbody></tbody>
-                    </table>
-                </div>
+                <p class="sub">
+                    One number for the whole run, area rather than peak. Beta, and not a scientific
+                    measurement: the coefficients are this project's own choice, so the bars order
+                    harnesses inside one batch and nothing more.
+                </p>
+                <div class="formula" id="score-formula"></div>
+                <p class="hint" id="score-source"></p>
             </section>
 
-            <!-- 统一计分整块排在最后：口径还在 Beta，先不占首屏；表里给数字，柱状图先收着
-                 （<figure> 上那个 hidden）——去掉 hidden 就放回来，JS 照着这个属性决定画不画。 -->
-            <section id="page-scores">
+            <section>
                 <div class="head">
-                    <span class="eyebrow">Score</span>
-                    <h2>统一计分 · CPU 与内存 1:1 <span class="beta">Beta</span></h2>
+                    <span class="eyebrow">Cite</span>
+                    <h2>Citing this benchmark</h2>
                 </div>
-                <div class="scroll-x">
-                    <table id="scores">
-                        <thead></thead>
-                        <tbody></tbody>
-                    </table>
-                </div>
-                <p class="sub warn" id="score-note"></p>
-                <div class="bars bars-single">
-                    <figure class="bar-box" hidden>
-                        <figcaption>
-                            统一计分 CU <span class="unit">核·秒 + GB·秒 · 越低越省</span>
-                        </figcaption>
-                        <div class="bar-canvas"><canvas id="bar-cu"></canvas></div>
-                    </figure>
-                </div>
+                <p class="sub">
+                    Both forms name the same thing — the repository, with the long script of the
+                    benchmark as the measurement.
+                </p>
+                <!-- No newline right after the tag: in a <pre> that would render as a blank first
+                     line, and a cite block is copied out verbatim. -->
+                <pre class="cite">KonghaYao (2026). harness-perf-benchmark: long-script resource benchmark for coding
+harnesses. https://github.com/KonghaYao/harness-perf-benchmark
+
+@misc{harnessperfbenchmark,
+  title        = {harness-perf-benchmark: long-script resource benchmark for coding harnesses},
+  author       = {KonghaYao},
+  year         = {2026},
+  howpublished = {\url{https://github.com/KonghaYao/harness-perf-benchmark}},
+  note         = {Unified score CU = 1 core-second + 1 GB-second of process-tree CPU and memory,
+                  integrated over the run (Beta)}
+}</pre>
             </section>
 
             <footer class="foot">
                 <span id="data-meta"></span>
-                <span>口径与系数 <code>scripts/perf/score.ts</code></span>
-                <span>完整报告 <code>docs/perf-compare.md</code></span>
-                <span>换数据 <code>bun run scripts/perf/gen-chart-data.ts</code></span>
+                <span id="pick-rule"></span>
+                <span>Method and coefficients <code>scripts/perf/score.ts</code></span>
+                <span>Full report <code>docs/perf-compare.md</code></span>
+                <span>Regenerate the data <code>bun run scripts/perf/gen-chart-data.ts</code></span>
             </footer>
         </div>
 
         <script>
-            // samples 行的列序，与 scripts/perf/gen-chart-data.ts 的 SAMPLE_COLUMNS 一致。
+            // Column order of a samples row, matching SAMPLE_COLUMNS in scripts/perf/gen-chart-data.ts.
             const COL = { elapsed: 0, cpu: 1, rss: 2, treeCpu: 3, treeRss: 4, procs: 5 };
 
-            // 图表库的两个来源：CDN 先试（2s 超时），拿不到换仓库里的本地拷贝。
+            // Two sources for the chart library: try the CDN first (2s timeout), then the local
+            // vendored copy.
             const CDN_URL = "https://unpkg.com/chart.js@4/dist/chart.umd.min.js";
             const VENDOR_URL = "vendor/chart.umd.min.js";
 
             const METRICS = {
                 rss: {
                     unit: "MB",
-                    // 内存轴反转（0 在顶、占用越大越靠下）：曲线的走向与「内存变重」同向，
-                    // 一眼能看出哪家一路涨、哪家中途把自己压回去了。
-                    axis: "内存 RSS（MB）· 纵轴已反转",
+                    // The memory axis is inverted (0 at the top, heavier further down), so the
+                    // curve runs the same way "memory getting heavier" does: one look tells you
+                    // who climbs the whole way and who squeezes itself back down midway.
+                    axis: "Memory RSS (MB) · axis inverted",
                     reverse: true,
                     index: { main: COL.rss, tree: COL.treeRss },
                     // KB → MB
@@ -444,7 +491,7 @@
                 },
                 cpu: {
                     unit: "%",
-                    axis: "CPU（%，单核 = 100%）",
+                    axis: "CPU (%, one core = 100%)",
                     reverse: false,
                     index: { main: COL.cpu, tree: COL.treeCpu },
                     value: (row, index) => row[index],
@@ -452,9 +499,10 @@
                 },
             };
 
-            // 认得的 harness 用固定色（跟 docs 里的表对应），不认识按顺序发色。
-            // 键必须用 harness id（`claude-code` 不是 `claude`，见 scripts/perf/harness-id.ts）——
-            // 写错了不会报错，只会悄悄掉进 PALETTE 轮询、跟别人撞色。
+            // Known harnesses get fixed colours (they match the tables in docs/); anything else
+            // takes the next one in turn. Keys must be harness ids (`claude-code`, not `claude`, see
+            // scripts/perf/harness-id.ts) — a typo raises nothing, it just slips into the PALETTE
+            // rotation and collides with someone else's colour.
             const COLORS = {
                 peri: "#d1495b",
                 opencode: "#2f6fed",
@@ -467,15 +515,19 @@
             const PALETTE = Object.values(COLORS);
 
             /**
-             * 厂商图标，放在同目录的 logos/ 下（相对路径，页面得从仓库根起服务才认得出，
-             * 别改成绝对路径）。来源与许可：
-             *   claude-code / codex / dsh / minimax-code / opencode ← @lobehub/icons-static-svg（MIT），
-             *     SVG 内的 <title> 已核对是「Claude Code」「Codex」「DeepSeek」「Minimax」「opencode」；
-             *   pi ← pi 官方 README 引用的 https://pi.dev/logo-auto.svg；
-             *   peri ← 自家品牌图 perihelion/images/img_peri_silver_flat_logo_s01.png（裁到 mark、缩成 64px）。
-             * 商标归各家所有，这里只用来标识「这一行/这条线是哪家 harness」。
-             * 键必须用 harness id（与 COLORS 同一套，见 scripts/perf/harness-id.ts）：写错了不会报错，
-             * 只会静默退回「只有名字、没有图标」。
+             * Vendor icons, kept in logos/ next to this page (relative paths — the page has to be
+             * served from the repo root to find them, so don't make them absolute). Sources and
+             * licences:
+             *   claude-code / codex / dsh / minimax-code / opencode ← @lobehub/icons-static-svg (MIT);
+             *     the <title> inside each SVG has been checked to read "Claude Code", "Codex",
+             *     "DeepSeek", "Minimax" and "opencode";
+             *   pi ← https://pi.dev/logo-auto.svg, the logo the pi README points at;
+             *   peri ← our own brand mark, perihelion/images/img_peri_silver_flat_logo_s01.png
+             *     (cropped to the mark, scaled to 64px).
+             * The trademarks belong to their owners; they are here only to say which row, curve or
+             * bar belongs to which harness. Keys must be harness ids (the same set as COLORS, see
+             * scripts/perf/harness-id.ts): a typo raises nothing, it just silently degrades to
+             * "a name with no icon".
              */
             const LOGOS = {
                 peri: "logos/peri.png",
@@ -487,18 +539,30 @@
                 "minimax-code": "logos/minimax-code.svg",
             };
 
-            /** 表格单元里的「图标 + 名字」：认不出的 harness 只给名字，不留破图占位。 */
-            const logoOf = (id) =>
-                LOGOS[id] === undefined ? "" : `<img class="logo" src="${LOGOS[id]}" alt="" />`;
+            /**
+             * Every harness's repository, the same links README.md lists. The bars point here (a click
+             * opens the repo); a harness with no entry simply isn't clickable (no dead link).
+             */
+            const LINKS = {
+                peri: "https://github.com/KonghaYao/peri",
+                opencode: "https://github.com/anomalyco/opencode",
+                "claude-code": "https://github.com/anthropics/claude-code",
+                codex: "https://github.com/openai/codex",
+                pi: "https://github.com/earendil-works/pi",
+                dsh: "https://github.com/deepseek-ai/deepseek-harness",
+                "minimax-code": "https://github.com/MiniMax-AI/minimax-code",
+            };
 
-            // 图例用的图标对象：Chart.js 的 pointStyle 要的是**已加载完的 Image**，所以预先加载，
-            // 加载好之前（或失败时）图例退回原来的方形色块，不空一块。
+            // Legend icon objects: Chart.js's pointStyle wants an **already-loaded Image**, so they are
+            // preloaded; until one is ready (or if it fails) the legend falls back to its square swatch
+            // instead of leaving a gap.
             //
-            // 尺寸必须**显式写死**：Chart.js 画图片点样式时用的是 image.width / image.height
-            // （源码里 `drawImage(f, -f.width/2, -f.height/2, f.width, f.height)`），
-            // 图例的 pointStyleWidth 只影响格子布局、影响不到图片本身。不写死的话各家图标各按
-            // 自身内在尺寸画：lobehub 那几张是 `width="1em"`（16px）、pi 的官方 logo 没有宽高属性
-            // （150px）、peri.png 是 64px——图例里就会一大一小还互相压字。
+            // The size has to be **pinned explicitly**: drawing an image point style, Chart.js uses
+            // image.width / image.height (in its source: `drawImage(f, -f.width/2, -f.height/2, f.width,
+            // f.height)`), while the legend's pointStyleWidth only affects the cell layout, never the
+            // image itself. Left unpinned, each icon is drawn at its own intrinsic size: the lobehub ones
+            // are `width="1em"` (16px), pi's official logo carries no size attributes (150px), peri.png
+            // is 64px — and the legend comes out lopsided with labels running into each other.
             const LEGEND_ICON_PX = 14;
             const logoImages = new Map(
                 Object.entries(LOGOS).map(([id, src]) => {
@@ -513,7 +577,8 @@
                     return [id, { image, ready }];
                 }),
             );
-            // 图标不该拖住页面：最多等 1.5s，到点就按「没加载出来」画（表格里的 <img> 自己会补上）。
+            // Icons must not hold the page up: wait at most 1.5s, then draw as if they never loaded
+            // (the canvases then fall back to a name with no mark).
             const logosReady = Promise.race([
                 Promise.all([...logoImages.values()].map((entry) => entry.ready)),
                 new Promise((resolve) => setTimeout(resolve, 1500)),
@@ -527,26 +592,26 @@
             };
 
             /**
-             * 已退出排名的 harness：曲线默认收起（点图例可展开看历史读数）、画成虚线、汇总表里
-             * 标注、X 轴也不再按它们的时长定标。opencode 是第一个——它在各项指标上都远落后于
-             * 其余各家（理由与数据见 docs/perf-compare.md），继续混在榜单里只会把横轴拉长、
-             * 把其余五家压成一堆。代码与沙盒仍在 playground/opencode/，想复测随时可以单跑。
+             * Harnesses that left the line-up: their curves start collapsed (click the legend
+             * entry to unfold the historical readings), are drawn dashed, say so next to their name
+             * on the bars, and no longer set the X axis scale. opencode went first — it trails the rest by
+             * a wide margin on every metric (the why, with numbers, is in docs/perf-compare.md), and
+             * keeping it in the line-up only stretched the X axis and squashed the other five into a
+             * pile. Its code and sandbox are still in playground/opencode/ if you want to re-measure.
              */
             const EXCLUDED = new Set(["opencode"]);
 
-            const state = { metric: "rss", scope: "tree", marks: true, smoothMs: 1000 };
-            /** 系统里关掉了动效就别放首屏那一下生长动画（别处本来也没有动效）。 */
+            const state = { metric: "rss", scope: "tree", marks: false, smoothMs: 1000 };
+            /** With reduced motion asked for, skip the hero's one entrance animation (nothing else animates). */
             const prefersReducedMotion =
                 window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
             let payload = null;
             let chart = null;
 
             const colorOf = (run, order) => COLORS[run.id] ?? PALETTE[order % PALETTE.length];
-            const seconds = (ms) => `${(ms / 1000).toFixed(1)}s`;
             const round = (value, digits) => Number(value.toFixed(digits));
-            const fmt = (value, metric) => value.toFixed(METRICS[metric].digits);
 
-            /** 虚线分界线：每条线上画「首个请求」「末次请求」两根，颜色跟随该 harness。 */
+            /** Dashed markers: a "first request" and a "last request" line per curve, in that harness's colour. */
             const marksPlugin = {
                 id: "requestMarks",
                 afterDatasetsDraw(canvas) {
@@ -574,12 +639,15 @@
             };
 
             /**
-             * 峰值标记：在每条曲线自己的最高点画一个点，右侧写 harness 名（CPU 与内存都画）。
+             * Peak markers: a dot at each curve's own maximum, with the harness name to its right
+             * (drawn for both CPU and memory).
              *
-             * 取的是**画出来的**那条线（跟着平滑窗口走），所以标记点必然落在曲线上；汇总表里的
-             * 峰值按原始读数算，平滑开着时两者会有出入（想看原始峰值就把窗口切回「原始」）。
-             * 名字先试右侧，右边放不下就翻到左侧——否则最后那几条线（内存峰值多半在收尾处）
-             * 的字会越出画布。
+             * It reads the **drawn** line, so it follows the smoothing window and the dot always sits
+             * on the curve; the bar charts at the top of the page take their values from the
+             * payload's raw readings, so while smoothing is on the two disagree (switch the window
+             * back to "Raw" for raw peaks). The name tries the right side first and flips to the left
+             * when it runs out of room — otherwise the last few curves (memory peaks usually sit at
+             * the tail) would write past the edge of the canvas.
              */
             const peakPlugin = {
                 id: "peakLabels",
@@ -589,9 +657,10 @@
                     ctx.font = `600 11px ${CANVAS_SANS}`;
                     ctx.textBaseline = "middle";
 
-                    // 先把所有峰值点换算成像素，顺手算好名字框的横向范围。
-                    // 隐藏的线（已退出排名那家，或图例里被点掉的）不标峰值：它的 dataset 仍在
-                    // data.datasets 里，不判可见性就会画出一个没有线的孤零零的点。
+                    // Turn every peak into pixels first, and work out each name's horizontal span
+                    // along the way. Hidden curves (an excluded harness, or one toggled off in the
+                    // legend) get no marker: their datasets are still in data.datasets, and without
+                    // the visibility check you'd draw a lone dot with no line under it.
                     const labels = [];
                     canvas.data.datasets.forEach((dataset, index) => {
                         if (!dataset.peak) return;
@@ -601,7 +670,8 @@
                         if (!Number.isFinite(x) || !Number.isFinite(y)) return;
                         if (x < chartArea.left || x > chartArea.right) return;
                         const width = ctx.measureText(dataset.label).width;
-                        // 名字先试右侧，右边放不下就翻到左侧（内存峰值多半落在收尾处，贴着右边界）
+                        // The name tries the right side first, flipping left when it doesn't fit (memory
+                        // peaks usually sit at the tail, hard against the right edge)
                         const toRight = x + 8 + width <= chartArea.right;
                         labels.push({
                             dataset,
@@ -613,8 +683,9 @@
                         });
                     });
 
-                    // 两个峰值挨得近时（内存图里 dsh 与 Codex 的 y 只差 10px）名字会叠在一起，
-                    // 按 y 排一遍、给前者让位——只挪字不挪点，点始终在曲线上。
+                    // Two peaks close together (in the memory chart dsh and Codex are 10px apart
+                    // vertically) would pile their names up, so sort by y and make room — only the
+                    // text moves, never the dot: the dot stays on the curve.
                     labels.sort((a, b) => a.y - b.y);
                     const placed = [];
                     for (const label of labels) {
@@ -630,7 +701,8 @@
                             }
                         }
                         label.textY = Math.min(textY, chartArea.bottom - 8);
-                        // 落笔点：写在右侧时左对齐到 left，翻到左侧时右对齐到 right
+                        // Where the text starts: left-aligned at `left` when it sits on the right,
+                        // right-aligned at `right` when it flipped over
                         label.textX = label.toRight ? label.left : label.right;
                         placed.push(label);
                     }
@@ -642,7 +714,8 @@
                         ctx.arc(label.x, label.y, 3.5, 0, Math.PI * 2);
                         ctx.fill();
                         ctx.textAlign = label.toRight ? "left" : "right";
-                        // 描一圈白边：峰值点正压在别人曲线上，纯色字会糊成一团
+                        // A white outline: the peak dot sits on top of other curves and solid text
+                        // smears into them
                         ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
                         ctx.lineWidth = 3;
                         ctx.strokeText(dataset.label, label.textX, label.textY);
@@ -653,11 +726,14 @@
             };
 
             /**
-             * 时间窗对称滑动平均（`t` 是 elapsed_ms，`y` 是按当前指标与口径取出的读数）。
+             * Symmetric moving average over a time window (`t` is elapsed_ms, `y` the reading picked
+             * out by the current metric and scope).
              *
-             * 窗口按**毫秒**算而不是按点数：采样间隔由 --interval-ms 决定，点数会跟着变，写死
-             * 「前后各 5 个点」换个间隔就不是同一个窗口了。首尾两端的窗口按实际重叠部分截断
-             * （只有半边），端点因此更贴原始读数、不会被无中生有地拉平。
+             * The window is measured in **milliseconds**, not in samples: the sampling interval comes
+             * from --interval-ms, so the sample count moves with it, and a hardcoded "5 points either
+             * side" would be a different window at a different interval. At both ends the window is
+             * truncated to the actual overlap (half a window), which keeps the endpoints closer to the
+             * raw reading instead of flattening them out of nowhere.
              */
             function smoothSeries(series, windowMs) {
                 if (windowMs <= 0 || series.length < 3) return series;
@@ -665,7 +741,7 @@
                 const out = new Array(series.length);
                 let sum = 0;
                 let head = 0;
-                let tail = 0; // 窗口是 [head, tail)
+                let tail = 0; // the window is [head, tail)
                 for (let i = 0; i < series.length; i += 1) {
                     const center = series[i].t;
                     while (tail < series.length && series[tail].t <= center + half) {
@@ -681,11 +757,11 @@
                 return out;
             }
 
-            /** 提示框里的读数：平滑开着时点明这是平滑值，免得被当成 samples.csv 里的原始读数。 */
+            /** The tooltip reading: say so when smoothing is on, so it isn't mistaken for a raw samples.csv value. */
             function tooltipLabel(metric) {
                 return (item) =>
                     `${item.dataset.label}: ${item.parsed.y}${metric.unit}` +
-                    (state.smoothMs > 0 ? `（${state.smoothMs / 1000}s 平滑）` : "");
+                    (state.smoothMs > 0 ? ` (${state.smoothMs / 1000}s smoothed)` : "");
             }
 
             function buildDatasets() {
@@ -693,7 +769,8 @@
                 const index = metric.index[state.scope];
                 return payload.runs.map((run, order) => {
                     const color = colorOf(run, order);
-                    // 先留着 elapsed_ms（x 轴要秒，平滑要毫秒），平滑完再换算。
+                    // Keep elapsed_ms for now (the x axis wants seconds, the smoothing wants
+                    // milliseconds) and convert once smoothing is done.
                     const raw = run.samples.map((row) => ({
                         t: row[COL.elapsed],
                         y: metric.value(row, index),
@@ -705,10 +782,12 @@
                     }
                     return {
                         label: run.name,
-                        // 图例里画厂商图标（取不到就是 undefined，退回默认的方形点样式）
+                        // The legend draws the vendor icon (undefined when it isn't there, which falls
+                        // back to the default square point style)
                         pointStyle: legendIcon(run.id),
                         hidden: EXCLUDED.has(run.id),
-                        // 退场的画虚线：万一被点开，也一眼看得出它不在榜单里
+                        // Excluded harnesses are dashed: if someone does unfold one, it still reads as
+                        // not being in the line-up
                         borderDash: EXCLUDED.has(run.id) ? [5, 3] : [],
                         data: smoothed.map((point) => ({
                             x: point.t / 1000,
@@ -735,8 +814,9 @@
             function renderChart() {
                 const metric = METRICS[state.metric];
                 const datasets = buildDatasets();
-                // X 轴按**参与排名**的那几家定：退场者的长尾会把其余五家压成一堆。suggestedMax
-                // 只是建议——把它的线从图例点开时，轴会自己伸到它的时长上。
+                // The X axis is set by the harnesses **still in the line-up**: an excluded one's long
+                // tail would squash the other five into a pile. suggestedMax is only a suggestion —
+                // click its line on in the legend and the axis stretches to its duration by itself.
                 const ranked = payload.runs.filter((run) => !EXCLUDED.has(run.id));
                 const maxSeconds = Math.ceil(
                     Math.max(...(ranked.length > 0 ? ranked : payload.runs).map((run) => run.endToEndMs)) / 1000,
@@ -764,7 +844,7 @@
                                 type: "linear",
                                 beginAtZero: true,
                                 suggestedMax: maxSeconds,
-                                title: { display: true, text: "相对时间（秒）" },
+                                title: { display: true, text: "Elapsed (seconds)" },
                                 ticks: { callback: (value) => `${value}s` },
                                 grid: { color: "#f1f3f5" },
                             },
@@ -774,8 +854,10 @@
                                 reverse: metric.reverse,
                                 title: { display: true, text: metric.axis },
                                 ticks: {
-                                    // 单位现取当前指标，不要在创建时定格：刻度回调是在建图时注册的，
-                                    // 里面闭包住当时的 metric 的话，切到 CPU 后读数还会标着「MB」。
+                                    // The unit is read from the current metric rather than frozen here:
+                                    // this tick callback is registered when the chart is built, so closing
+                                    // over the metric of that moment would keep labelling the readings
+                                    // "MB" after a switch to CPU.
                                     callback: (value) => `${value}${METRICS[state.metric].unit}`,
                                 },
                                 grid: { color: "#eef1f4" },
@@ -786,8 +868,9 @@
                                 position: "top",
                                 labels: {
                                     usePointStyle: true,
-                                    // 格子按 pointStyleWidth 排（usePointStyle 下 boxWidth 只是兜底），
-                                    // 与上面 LEGEND_ICON_PX 保持一致，否则图例自己算的间距与画出来的图对不上。
+                                    // Cells are laid out by pointStyleWidth (with usePointStyle, boxWidth is
+                                    // only a fallback) and it has to match LEGEND_ICON_PX above, otherwise
+                                    // the spacing the legend computes disagrees with the icons it draws.
                                     pointStyleWidth: 14,
                                     boxWidth: 12,
                                     boxHeight: 12,
@@ -805,189 +888,107 @@
                 });
             }
 
-            /** 汇总表：分界与时长是静态事实，均值/峰值跟随当前「指标 + 口径」。 */
-            function renderSummary() {
-                const metric = METRICS[state.metric];
-                const index = metric.index[state.scope];
-                const scopeName = state.scope === "tree" ? "进程树" : "主进程";
-                const columns = [
-                    "harness",
-                    "runId",
-                    "端到端",
-                    "启动→首个请求",
-                    "首个→末次请求",
-                    "末次→退出",
-                    "mock 请求数",
-                    "采样点",
-                    `${metric.axis}（${scopeName}）均值 / 峰值`,
-                ];
-
-                const rows = payload.runs.map((run, order) => {
-                    const values = run.samples.map((row) => metric.value(row, index));
-                    const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
-                    const peak = Math.max(...values);
-                    const tail = run.segments === null ? "—" : seconds(run.segments.tailMs);
-                    return [
-                        logoOf(run.id) +
-                            `<span class="swatch" style="background:${colorOf(run, order)}"></span>${run.name}` +
-                            (EXCLUDED.has(run.id)
-                                ? `<span style="color:var(--muted)"> · 已退出排名</span>`
-                                : ""),
-                        run.runId,
-                        seconds(run.endToEndMs),
-                        run.segments === null ? "—" : seconds(run.segments.startupMs),
-                        run.segments === null ? "—" : seconds(run.segments.spanMs),
-                        tail + (run.segments !== null && run.segments.tailMs >= 1000 ? "（零请求）" : ""),
-                        run.requests ?? "—",
-                        String(run.samples.length),
-                        `${fmt(mean, state.metric)} / ${fmt(peak, state.metric)}${metric.unit}`,
-                    ];
-                });
-
-                const table = document.getElementById("summary");
-                table.querySelector("thead").innerHTML =
-                    `<tr>${columns.map((name) => `<th>${name}</th>`).join("")}</tr>`;
-                table.querySelector("tbody").innerHTML = rows
-                    .map((cells) => `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`)
-                    .join("");
-            }
-
             /**
-             * 计分块：页面只把每个 harness 的账摊开——这一块是给数字看的，不是给字看的。
-             * 式子与系数（口径只在 scripts/perf/score.ts 一处定义）暂时不写在页上，
-             * 要读口径看 score.ts、要读结论看 docs/perf-compare.md。
+             * The method block at the foot of the page: the formula CU computes, where its shape comes
+             * from, and the batch warnings. The formula is printed **from the payload**, never
+             * retyped: its coefficients live in exactly one place (scripts/perf/score.ts), and a page
+             * that restates them can disagree with the bars at the top.
              */
-            function renderScores() {
-                const table = document.getElementById("scores");
+            function renderMethod() {
                 const note = document.getElementById("score-note");
+                const formulaBox = document.getElementById("score-formula");
+                const source = document.getElementById("score-source");
+                const chartBox = document.getElementById("bar-cu").closest(".bar-box");
                 if (
                     payload.scoreFormula === undefined ||
                     !payload.runs.some((run) => run.score !== undefined)
                 ) {
-                    // 老 JSON：不硬撑，直接说清怎么办（这一行本来就是留给这类提示的）。
-                    table.hidden = true;
+                    // An old JSON: don't pretend, just say what to do (this line exists for exactly
+                    // this kind of note). The formula and the chart go with the numbers — an empty
+                    // framed block and an empty chart would be worse than none, and hiding the chart's
+                    // <figure> is also what stops renderBars from building it.
+                    formulaBox.hidden = true;
+                    source.hidden = true;
+                    chartBox.hidden = true;
                     note.hidden = false;
                     note.textContent =
-                        "这份 data/perf-chart.json 里没有计分块（生成器版本较老）：重跑一次 " +
-                        "bun run scripts/perf/gen-chart-data.ts 就会带上统一计分。";
+                        "This data/perf-chart.json has no score block (it came from an older " +
+                        "generator): re-run bun run scripts/perf/gen-chart-data.ts and the unified " +
+                        "score comes with it.";
                     return;
                 }
-                table.hidden = false;
 
-                // 表头分两层：上层是**口径**（面积 / 构成 / 峰值 / 分段），下层是列名。
-                const columnNames = [
-                    "CU",
-                    "分数",
-                    "核·秒",
-                    "MB·秒",
-                    "内存项占 CU",
-                    "后代 CPU",
-                    "峰值 RSS（MB）",
-                    "峰值 CPU（%）",
-                    "启动 / 运转 / 收尾 CU（各自积分）",
-                ];
-                const num = (value, digits) => value.toFixed(digits);
-                // 这一节是页面开头，名次得一眼看出来：按 CU 从省到贵排。
-                // 颜色仍按 payload 里的原始次序取，排序不会换色。
-                const colors = new Map();
-                payload.runs.forEach((run, order) => colors.set(run.id, colorOf(run, order)));
-                const ranked = [...payload.runs].sort(
-                    (a, b) => (a.score?.cu ?? Infinity) - (b.score?.cu ?? Infinity),
-                );
-                const rows = ranked.map((run) => {
-                    const s = run.score;
-                    const segments =
-                        s.segments === null
-                            ? "—"
-                            : `${num(s.segments.startup.cu, 3)} / ${num(s.segments.span.cu, 3)} / ${num(s.segments.tail.cu, 3)}`;
-                    const child =
-                        s.childCpuSeconds > 0
-                            ? `${num(s.childCpuSeconds, 3)}（${s.childCpuFrom === "counter" ? "已回收计数器" : "采样到"}）`
-                            : "0";
-                    const share = s.cu > 0 ? `${((s.memoryCu / s.cu) * 100).toFixed(0)}%` : "—";
-                    // 峰值带 title：点上去能看到它出现在第几秒、当时几个进程（判「是不是工具子进程顶出来的」）。
-                    const peaks = s.peaks;
-                    const rssTitle =
-                        peaks === undefined
-                            ? ""
-                            : ` title="峰值出现在 ${(peaks.treeRssAtMs / 1000).toFixed(2)}s，当时 ${peaks.procs} 个进程"`;
-                    return [
-                        logoOf(run.id) +
-                            `<span class="swatch" style="background:${colors.get(run.id)}"></span>${run.name}` +
-                            (EXCLUDED.has(run.id)
-                                ? `<span style="color:var(--muted)"> · 已退出排名</span>`
-                                : ""),
-                        num(s.cu, 3),
-                        `<span class="score-cell">${num(s.score, 1)}</span>`,
-                        num(s.cpuSeconds, 3),
-                        num(s.mbSeconds ?? s.gbSeconds * 1024, 0),
-                        share,
-                        child,
-                        peaks === undefined ? "—" : `<span${rssTitle}>${num(peaks.treeRssMb, 1)}</span>`,
-                        peaks === undefined ? "—" : num(peaks.treeCpuPercent, 1),
-                        segments,
-                    ];
-                });
-
-                table.querySelector("thead").innerHTML =
-                    `<tr>` +
-                    `<th rowspan="2">harness</th>` +
-                    `<th colspan="2">统一计分（面积 · CPU 与内存 1:1）</th>` +
-                    `<th colspan="4">构成（积分出来）</th>` +
-                    `<th colspan="2">压力口径（峰值 · 进程树）</th>` +
-                    `<th rowspan="2">启动 / 运转 / 收尾 CU（各自积分）</th>` +
-                    `</tr><tr>${columnNames
-                        .map((name) => `<th>${name}</th>`)
-                        .join("")}</tr>`;
-                table.querySelector("tbody").innerHTML = rows
-                    .map((cells) => `<tr>${cells.map((cell) => `<td>${cell}</td>`).join("")}</tr>`)
-                    .join("");
+                // The computation, printed from the payload's own scoreFormula block. Four lines:
+                // what CU is, where it comes from (an integral over the whole run, not a mean), how
+                // it turns into the score, and what it covers. The lines are not padded into columns
+                // — the first one comes verbatim from the generator, and re-typing it here is how
+                // the page and the numbers start to disagree.
+                const formula = payload.scoreFormula;
+                formulaBox.textContent = [
+                    formula.expression,
+                    "core·s = ∫ tree CPU% / 100 dt     GB·s = ∫ RSS / 2^20 dt     (over the whole run)",
+                    formula.score,
+                    `scope: ${formula.scope}`,
+                ].join("\n");
+                // Small print: where the shape of the formula comes from, and that the coefficients
+                // are this project's choice (someone who wants to argue about them should find them
+                // named, not hidden).
+                source.textContent = `${formula.source}.`;
 
                 const warnings = [];
                 const noChild = payload.runs.filter((run) => !run.score.childColumnPresent);
                 if (noChild.length > 0) {
                     warnings.push(
-                        `这几次运行的采样没有 child_cpu_pct 列（进程树口径偏低）：` +
-                            noChild.map((run) => run.name).join("、") +
-                            "——重跑一轮就有",
+                        "These runs were sampled without a child_cpu_pct column (the process-tree " +
+                            "view reads low): " +
+                            noChild.map((run) => run.name).join(", ") +
+                            " — re-run a batch and it is there",
                     );
                 }
                 const noTail = payload.runs.filter((run) => !run.score.tailGapKnown);
                 if (noTail.length > 0) {
                     warnings.push(
-                        `这几次运行没记 harness 退出时刻，末拍 → 退出的空档补不上，CU 是下界：` +
-                            noTail.map((run) => run.name).join("、"),
+                        "These runs never recorded when the harness exited, so the last sample → exit " +
+                            "gap can't be filled in and CU is a lower bound: " +
+                            noTail.map((run) => run.name).join(", "),
                     );
                 }
-                // 这一栏只留给「这批数据有坑」的告警：正常情况下一个字符都不占（连高度一起收掉，
-                // 免得空段落留下 18px 的假间距）。
-                // 口径本身不在这里念——公式已经在一行说明里，长解释在 docs/perf-compare.md。
+                // This line is reserved for "there is a trap in this batch" warnings: normally it takes
+                // up not a single character (height included, so that an empty paragraph leaves no
+                // phantom 18px gap).
                 note.innerHTML =
-                    warnings.length > 0 ? `<span class="warn">⚠ ${warnings.join("；")}</span>` : "";
+                    warnings.length > 0 ? `<span class="warn">⚠ ${warnings.join("; ")}</span>` : "";
                 note.hidden = warnings.length === 0;
             }
 
             /**
-             * 柱状图的两个自绘插件（Chart.js 的刻度只能画文字，图标与条末数字都得自己补）。
+             * The two hand-drawn plugins for the bar charts (Chart.js tick labels are text only, so the
+             * icons and the numbers at the end of each bar have to be painted on top).
              *
-             * 素材按 canvas id 存表里、不挂在 chart 实例上：图表一开始动（首帧同步画）就得有素材，
-             * 构造之后再挂已经晚了（首帧什么也画不出，后面又没有任何东西触发重画）。
+             * The material is held in a table keyed by canvas id instead of being hung off the chart
+             * instance: the first frame paints synchronously, so anything attached after the chart is
+             * constructed is already too late (that frame draws nothing, and nothing triggers a repaint
+             * afterwards).
              *
-             * `mirror` = 左半边那张 CPU 图：值轴反转（0 停在右端）、条从右往左长、y 轴刻度挪到了右侧
-             * ——于是「条的哪一头是值端」「数字往哪边让」「图标画在轴的哪一侧」全都得反着来。
+             * `mirror` = the CPU chart on the left half: its value axis is reversed (0 sits at the right
+             * end), bars grow from right to left, and the y-axis ticks move to the right side — so "which
+             * end of the bar is the value end", "which way the numbers go" and "which side of the axis
+             * the icon is drawn on" all have to be flipped.
              */
             const barEntries = new Map();
-            /** 前两名以外的行画半透明：每张图只看头两名，其余只当背景。 */
+            /** Every row but the top two is drawn translucent: each chart is read for its top two, the rest is background. */
             const DIM_ALPHA = 0.35;
             const DIM_TEXT = "rgba(20, 23, 28, 0.34)";
-            // 画布上没有 CSS：这两副字体与页面保持同一张面孔——数字等宽，名字用无衬线。
+            // There is no CSS on a canvas: these two font stacks keep the page's face — monospace for
+            // numbers, sans for names.
             const CANVAS_MONO = "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace";
             const CANVAS_SANS = "-apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif";
 
             /**
-             * y 轴图标：Chart.js 的刻度标签只能画文字，图标得自己补。做法是用 ticks.padding
-             * 在「轴」与「文字」之间留出一条空档（22px），再把 14px 的图标画进去
-             * ——离轴 4px、离文字 4px，互不重叠。镜像图的轴在右侧，图标跟着挪到轴的右边。
+             * Y-axis icons: Chart.js tick labels are text only, so the icons are drawn by hand. The trick
+             * is to use ticks.padding to leave a 22px gap between the axis and the text, then draw the
+             * 14px icon into it — 4px from the axis, 4px from the text, no overlap. On the mirrored chart
+             * the axis sits on the right, so the icon moves to the right of the axis.
              */
             const axisLogoPlugin = {
                 id: "axisLogos",
@@ -1002,7 +1003,8 @@
                         if (image === undefined || !image.complete || image.naturalWidth === 0) return;
                         const y = scales.y.getPixelForTick(index);
                         if (!Number.isFinite(y)) return;
-                        // 图标总在轴与文字之间：轴在右（镜像图）就画在轴右边，轴在左就画在轴左边。
+                        // The icon always sits between the axis and the text: axis on the right (mirrored
+                        // chart) draws it to the right of the axis, axis on the left draws it on the left.
                         const x = bars.mirror ? chartArea.right + 4 : chartArea.left - 4 - size;
                         ctx.globalAlpha = entry.dim ? DIM_ALPHA : 1;
                         ctx.drawImage(image, x, y - size / 2, size, size);
@@ -1012,8 +1014,10 @@
             };
 
             /**
-             * 条末的数值：放得下就写在条外（深灰），放不下翻进条内（白字）——镜像图方向全反。
-             * 淡化的那些行一律写浅灰：条本身只剩 35% 不透明度，条内的白字会糊成一片。
+             * The value at the end of a bar: written outside the bar (dark grey) when it fits, flipped
+             * inside it (white) when it doesn't — on a mirrored chart every direction reverses. Dimmed
+             * rows always get light grey text: the bar itself is only 35% opaque, and white on top of it
+             * smears.
              */
             const barValuePlugin = {
                 id: "barValues",
@@ -1021,7 +1025,8 @@
                     const bars = barEntries.get(chart.canvas.id);
                     if (bars === undefined) return;
                     const { ctx, chartArea } = chart;
-                    // 值端在条的这一头：普通图是右端（+1），镜像图是左端（-1）。
+                    // The value end of the bar: the right end on a normal chart (+1), the left end on a
+                    // mirrored one (-1).
                     const dir = bars.mirror ? -1 : 1;
                     ctx.save();
                     ctx.font = `600 11px ${CANVAS_MONO}`;
@@ -1034,7 +1039,8 @@
                             dir > 0
                                 ? bar.x + 6 + width <= chartArea.right
                                 : bar.x - 6 - width >= chartArea.left;
-                        // 条外：贴着值端往外排；条内：翻回条里侧排。
+                        // Outside the bar: laid out from the value end outwards. Inside: flipped to the
+                        // inner side of the bar.
                         const align = dir > 0 ? (outside ? "left" : "right") : outside ? "right" : "left";
                         ctx.textAlign = align;
                         ctx.fillStyle = entry.dim ? DIM_TEXT : outside ? "#41474e" : "#fff";
@@ -1045,27 +1051,35 @@
             };
 
             /**
-             * 那张图的 <figure> 是不是被 HTML 标了 hidden（统一计分 CU 那张现在就是）。
-             * 只看自己这一格：`#app` 在数据到位前也是 hidden，认祖先会把每一张都当成收起。
+             * Whether that chart's <figure> carries hidden in the HTML — the switch that parks a chart
+             * without deleting it (nothing is parked today; the page reads it so that putting the
+             * attribute back is all it takes). Only this element is checked: `#app` is hidden as well
+             * until the data arrives, so walking up the ancestors would treat every chart as parked.
              */
             const barBoxHidden = (canvasId) =>
                 document.getElementById(canvasId)?.closest(".bar-box")?.hasAttribute("hidden") === true;
 
             /**
-             * 柱状概览：峰值 CPU 与峰值内存并排成一张「蝴蝶图」——条从中间往两边长，条短的是省的，
-             * 两列 harness 名与图标夹在两排条中间：左半边那张（CPU）的值轴反转、y 轴刻度挪到右侧，
-             * 名字就写在自己轴的右边；右半边那张（内存）的刻度照旧在左轴，名字写在自己轴的左边。
+             * The bar charts, all built here and all read the same way: one metric per chart, its own
+             * ranking (cheapest first, so first place is the top row), its own top two solid and the
+             * rest translucent, and the harness names and icons written against the bars.
              *
-             * 每张图都是一份独立的榜单：各自按本图的指标从省到贵排，各自的前两名实色、其余半透明
-             * （peri 不再单独照顾——它在两张图里都在前两名，颜色自然还是那支红）。
-             * 单位不同（% / MB）不共用一个数值轴；
-             * 口径固定进程树（与计分表一致），**不随上面「主进程 / 进程树」按钮变**，所以只建一次。
+             * The whole-run CU chart leads (it spans the page width, so it needs no mirroring), and
+             * the "butterfly" follows: peak CPU and peak memory side by side, bars growing from the
+             * middle outwards — the left chart (CPU) has its value axis reversed and its y ticks moved
+             * to the right, so the names end up between the two charts, while the memory chart keeps
+             * its ticks on the left axis.
+             *
+             * Different units (% / MB / CU) never share one value axis;
+             * the scope is always the process tree and does **not** follow the "main process / process
+             * tree" buttons above, so this is built once.
              */
             let barCharts = null;
             function renderBars() {
                 const scored = payload.runs.filter((run) => run.score !== undefined);
                 if (scored.length === 0) {
-                    // 老 JSON 里没有计分块：跟计分表一样不硬撑，把整块收起来。
+                    // An older JSON has no score block: don't fake it — collapse the whole block (the
+                    // CU chart is part of it, and the page has nothing else to show there).
                     document.getElementById("page-bars").hidden = true;
                     return;
                 }
@@ -1075,7 +1089,8 @@
 
                 const specs = [
                     { id: "bar-cu", value: (run) => run.score.cu, digits: 3, unit: " CU" },
-                    // 镜像的那张（左半边）：值轴反转 + y 轴刻度在右侧，名字与图标于是落在两图中间。
+                    // The mirrored one (left half): reversed value axis + y ticks on the right, which puts
+                    // the names and icons between the two charts.
                     {
                         id: "bar-cpu",
                         value: (run) => run.score.peaks?.treeCpuPercent,
@@ -1085,7 +1100,7 @@
                     },
                     { id: "bar-rss", value: (run) => run.score.peaks?.treeRssMb, digits: 1, unit: " MB" },
                 ]
-                    // 哪张的 <figure> 带 hidden 就不画哪张（CU 那张：口径还在 Beta，先收起来）。
+                    // A chart whose <figure> carries hidden is not drawn (see barBoxHidden).
                     .filter((spec) => !barBoxHidden(spec.id));
 
                 barCharts = specs.map((spec) => {
@@ -1094,13 +1109,16 @@
                         .map((run) => ({
                             run,
                             value: spec.value(run),
-                            // 已退出排名那家（若数据里还带着）标一下，免得看着像在榜单里
-                            label: run.name + (EXCLUDED.has(run.id) ? "（已退出排名）" : ""),
+                            // Mark an excluded harness (if the data still carries one) so it doesn't read
+                            // as being in the line-up
+                            label: run.name + (EXCLUDED.has(run.id) ? " (left the line-up)" : ""),
                         }))
                         .filter((entry) => Number.isFinite(entry.value))
-                        // 本图自己的名次：指标越小越靠上，第一名在最上面
+                        // This chart's own ranking: the smaller the metric, the higher up — first place
+                        // sits at the top
                         .sort((a, b) => a.value - b.value);
-                    // 名次只数还留在排名里的：已退出排名的（若数据里还带着）不占名额、一律淡下去。
+                    // Only harnesses still in the line-up take a rank: an excluded one (if the data still
+                    // carries it) never takes a slot and is always dimmed.
                     let rank = 0;
                     const entries = sorted.map((entry) => {
                         const excluded = EXCLUDED.has(entry.run.id);
@@ -1108,7 +1126,8 @@
                         if (!excluded) rank += 1;
                         return {
                             ...entry,
-                            // 本图前两名实色，其余淡成背景（见两个插件里的 DIM_*）
+                            // The top two of this chart stay solid, the rest dim into the background (see
+                            // DIM_* in the two plugins)
                             dim,
                             text: entry.value.toFixed(spec.digits) + spec.unit,
                         };
@@ -1121,8 +1140,9 @@
                             datasets: [
                                 {
                                     data: entries.map((entry) => entry.value),
-                                    // 淡化用 8 位十六进制色（#rrggbbaa）：条淡下去，名字与图标跟着淡
-                                    // （见 barEntries 上的 dim 与两个插件里的 DIM_ALPHA / DIM_TEXT）。
+                                    // Dimming uses 8-digit hex (#rrggbbaa): the bar fades, and the name and
+                                    // icon fade with it (see dim on barEntries and DIM_ALPHA / DIM_TEXT in
+                                    // the two plugins).
                                     backgroundColor: entries.map((entry) =>
                                         entry.dim
                                             ? colors.get(entry.run.id) + "59"
@@ -1136,24 +1156,28 @@
                         },
                         options: {
                             indexAxis: "y",
-                            // 首屏唯一一处动效：条从中间的零线往外长出来（600ms 一次，不循环）。
-                            // 关掉动效偏好时直接落位。素材已在构造前备好，动画每一帧都画得出来。
+                            // The only animation on the first screen: bars grow out of the zero line in the
+                            // middle (600ms, once, no loop). With reduced motion preferred they land in
+                            // place immediately. The material is ready before construction, so every frame
+                            // has something to draw.
                             animation: prefersReducedMotion
                                 ? false
                                 : { duration: 600, easing: "easeOutQuart" },
                             responsive: true,
                             maintainAspectRatio: false,
-                            // 值端留出条外数值的位置：普通图在右，镜像图在左；名字那一侧各留 10px 透气。
+                            // Room at the value end for the number outside the bar: right on a normal chart,
+                            // left on a mirrored one; the name side gets 10px to breathe.
                             layout: {
                                 padding: mirrored ? { left: 54, right: 10 } : { left: 10, right: 54 },
                             },
                             scales: {
                                 x: {
                                     beginAtZero: true,
-                                    // 镜像：0 停在右端（贴着名字那列），条往左长。
+                                    // Mirrored: 0 sits at the right end (against the name column) and bars
+                                    // grow leftwards.
                                     reverse: mirrored,
                                     grid: { color: "#f1f2f4" },
-                                    // 刻度是数字：等宽，与表格里的数字同一副面孔。
+                                    // Ticks are numbers: monospace, the same face as the bar values.
                                     ticks: {
                                         color: "#a4aab2",
                                         font: { size: 10.5, family: CANVAS_MONO },
@@ -1161,12 +1185,15 @@
                                 },
                                 y: {
                                     grid: { display: false },
-                                    // 名字那列贴着中间：镜像图把刻度挪到轴的右侧，普通图留在左轴——
-                                    // 两列名字于是夹在两排条中间。padding 空出来的地方画图标。
+                                    // The name column hugs the middle: the mirrored chart moves its ticks to
+                                    // the right of the axis and the normal one keeps them on the left, which
+                                    // is what puts the two name columns between the two rows of bars. The
+                                    // padding gap is where the icons go.
                                     position: mirrored ? "right" : "left",
                                     ticks: {
                                         padding: 22,
-                                        // 名字是字：无衬线；淡化的那些连字重一起降下去，实色的更跳。
+                                        // The names are words: sans-serif. Dimmed ones drop their weight too,
+                                        // so the solid ones pop.
                                         font: (context) => ({
                                             size: 12,
                                             family: CANVAS_SANS,
@@ -1191,14 +1218,35 @@
                         },
                         plugins: [axisLogoPlugin, barValuePlugin],
                     });
+                    // Clicking a bar opens that harness's repository (the links in LINKS — it is the
+                    // only way to them now that no table is left to hold a name link).
+                    // getElementsAtEventForMode gives the elements under the pointer, nearest first, and
+                    // the index lines up with `entries`.
+                    const hitIndex = (event) => {
+                        const hits = chart.getElementsAtEventForMode(
+                            event,
+                            "nearest",
+                            { intersect: true },
+                            true,
+                        );
+                        return hits.length === 0 ? undefined : hits[0].index;
+                    };
+                    chart.canvas.addEventListener("click", (event) => {
+                        const index = hitIndex(event);
+                        const href = index === undefined ? undefined : LINKS[entries[index]?.run.id];
+                        if (href !== undefined) window.open(href, "_blank", "noopener,noreferrer");
+                    });
+                    // Say that the bars are clickable: a pointer cursor while one is under the pointer.
+                    chart.canvas.addEventListener("mousemove", (event) => {
+                        chart.canvas.style.cursor = hitIndex(event) === undefined ? "default" : "pointer";
+                    });
                     return chart;
                 });
             }
 
             function renderAll() {
                 renderChart();
-                renderSummary();
-                renderScores();
+                renderMethod();
                 renderBars();
             }
 
@@ -1232,7 +1280,8 @@
                     for (const sibling of button.parentElement.children) {
                         sibling.classList.toggle("active", sibling === button);
                     }
-                    // 只重画曲线：汇总表的均值 / 峰值始终按原始读数算，不随平滑变。
+                    // Redraw the curves only: the score block's integrals come from the raw samples and
+                    // do not follow the smoothing window.
                     renderChart();
                 });
             }
@@ -1245,11 +1294,12 @@
             }
 
             /**
-             * 注入一个 <script> 并等它有结果（加载成功 / 报错 / 超时都算结果）。
+             * Inject a script tag and wait for an outcome (loaded, failed and timed out all count).
              *
-             * 必须有超时：本机浏览器走 PAC 代理，实测公共 CDN 不是报错而是**挂着不动**，
-             * 只挂 onerror 会一直等下去（页面白屏）。这也是不用静态 <script src> 的原因——
-             * 静态标签卡住时连后面的解析都停在原地。
+             * The timeout is essential: this machine browses through a PAC proxy where public CDNs do
+             * not fail, they hang — with only onerror wired up the wait never ends and the page stays
+             * blank. That is also why there is no static script tag: while one hangs, the rest of the
+             * parse stops right there.
              */
             function loadScript(src, timeoutMs) {
                 return new Promise((resolve) => {
@@ -1268,9 +1318,9 @@
             }
 
             /**
-             * 拿到 Chart 全局：先试 CDN（unpkg），2s 内没到就换仓库里的本地兜底
-             * （docs/vendor/chart.umd.min.js，同一份 v4.5.1；该目录已 gitignore，
-             * 所以换机器可能没有，那时只能如实报错）。
+             * Get hold of the Chart global: try the CDN (unpkg) first and switch to the local fallback
+             * after 2s (docs/vendor/chart.umd.min.js, the same v4.5.1; that directory is gitignored, so
+             * another machine may not have it — then all the page can do is report it honestly).
              */
             async function ensureLibrary() {
                 if (typeof Chart !== "undefined") return true;
@@ -1279,11 +1329,13 @@
             }
 
             /**
-             * 数据来源的候选路径，按「发布出去的站点优先」排：
-             *   data/perf-chart.json   站点布局——GH Pages 上页面就是根目录的 index.html，
-             *                          数据在它旁边的 data/（由 workflow 组装，见 .github/workflows/）；
-             *   ../data/perf-chart.json 仓库布局——本地从仓库根起静态服务时走这条。
-             * 两条都不通就把两次失败原因都报出来，别让人猜是哪一种。
+             * Candidate paths for the data, published layout first:
+             *   data/perf-chart.json     site layout — on GH Pages the page is the root index.html and
+             *                            the data sits in data/ next to it (assembled by the workflow,
+             *                            see .github/workflows/);
+             *   ../data/perf-chart.json  repo layout — this is the one taken when a static server is
+             *                            started from the repo root locally.
+             * With both failing, report both reasons — don't make people guess which one it was.
              */
             const DATA_CANDIDATES = ["data/perf-chart.json", "../data/perf-chart.json"];
 
@@ -1295,19 +1347,20 @@
                         if (!response.ok) throw new Error(`HTTP ${response.status}`);
                         return await response.json();
                     } catch (error) {
-                        failures.push(`${url}（${error.message}）`);
+                        failures.push(`${url} (${error.message})`);
                     }
                 }
-                throw new Error(failures.join("；"));
+                throw new Error(failures.join("; "));
             }
 
             async function main() {
                 if (!(await ensureLibrary())) {
                     showError(
-                        "图表库没加载出来",
-                        "CDN（unpkg）与本地兜底 docs/vendor/chart.umd.min.js 都没取到——" +
-                            "兜底文件可能缺失，或页面不是从仓库根起服务打开的（相对路径对不上）。",
-                        "ls docs/vendor/chart.umd.min.js   # 本地兜底在不在\n" +
+                        "The chart library did not load",
+                        "Neither the CDN (unpkg) nor the local fallback docs/vendor/chart.umd.min.js " +
+                            "came through — the fallback file may be missing, or the page is not being " +
+                            "served from the repo root (relative paths then point elsewhere).",
+                        "ls docs/vendor/chart.umd.min.js   # is the local fallback there\n" +
                             "curl -sI https://unpkg.com/chart.js@4/dist/chart.umd.min.js",
                     );
                     return;
@@ -1317,23 +1370,25 @@
                     data = await loadPayload();
                 } catch (error) {
                     showError(
-                        "数据没加载出来",
-                        `两份数据都没读到（${error.message}）：要么文件还没生成，` +
-                            "要么页面是直接用 file:// 打开的（fetch 会被 CORS 挡住）。",
+                        "The data did not load",
+                        `Neither data file could be read (${error.message}): either it hasn't been ` +
+                            "generated yet, or the page was opened over file:// (fetch is blocked by CORS).",
                         "cd " +
-                            "<仓库根> && bun run scripts/perf/gen-chart-data.ts\n" +
-                            "cd <仓库根> && python3 -m http.server 8080\n" +
+                            "<repo root> && bun run scripts/perf/gen-chart-data.ts\n" +
+                            "cd <repo root> && python3 -m http.server 8080\n" +
                             "→ http://localhost:8080/docs/perf-chart.html",
                     );
                     return;
                 }
                 payload = data;
-                // 两处各一句话：表格下面说「画的是哪几次运行」，页脚说数据出处。
-                document.getElementById("pick-rule").textContent = `${data.pickRule}。`;
+                // Two lines in the footer: which run stands for each harness (one curve per harness,
+                // so the page has to say which one it picked), and where the data came from.
+                document.getElementById("pick-rule").textContent = `${data.pickRule}.`;
                 document.getElementById("data-meta").textContent =
-                    `数据生成于 ${data.generatedAt} · 产物 ${data.sourceDir}`;
+                    `Generated ${data.generatedAt} · artifacts ${data.sourceDir}`;
                 document.getElementById("app").hidden = false;
-                // 等图例图标加载完再画第一版图：Chart.js 不会因为图标后到而自己重画。
+                // Wait for the legend icons before drawing the first version: Chart.js does not repaint
+                // by itself when an icon arrives late.
                 await logosReady;
                 wireControls();
                 renderAll();
