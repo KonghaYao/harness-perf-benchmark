@@ -511,6 +511,9 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 pi: "#7a4fd0",
                 dsh: "#b23a8a",
                 "minimax-code": "#0f8ab5",
+                // Olive: every other hue is taken (red / blue / orange / green / purple / magenta /
+                // cyan), and Antigravity's own yellow (#FFE432) is a line that vanishes on white.
+                antigravity: "#7d9c00",
             };
             const PALETTE = Object.values(COLORS);
 
@@ -518,9 +521,9 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
              * Vendor icons, kept in logos/ next to this page (relative paths — the page has to be
              * served from the repo root to find them, so don't make them absolute). Sources and
              * licences:
-             *   claude-code / codex / dsh / minimax-code / opencode ← @lobehub/icons-static-svg (MIT);
-             *     the <title> inside each SVG has been checked to read "Claude Code", "Codex",
-             *     "DeepSeek", "Minimax" and "opencode";
+             *   claude-code / codex / dsh / minimax-code / opencode / antigravity ← @lobehub/icons-static-svg
+             *     (MIT); the <title> inside each SVG has been checked to read "Claude Code", "Codex",
+             *     "DeepSeek", "Minimax", "opencode" and "Antigravity";
              *   pi ← https://pi.dev/logo-auto.svg, the logo the pi README points at;
              *   peri ← our own brand mark, perihelion/images/img_peri_silver_flat_logo_s01.png
              *     (cropped to the mark, scaled to 64px).
@@ -537,6 +540,7 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 pi: "logos/pi.svg",
                 dsh: "logos/dsh.svg",
                 "minimax-code": "logos/minimax-code.svg",
+                antigravity: "logos/antigravity.svg",
             };
 
             /**
@@ -551,6 +555,10 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 pi: "https://github.com/earendil-works/pi",
                 dsh: "https://github.com/deepseek-ai/deepseek-harness",
                 "minimax-code": "https://github.com/MiniMax-AI/minimax-code",
+                // No repository: the Antigravity CLI ships as an install script and is not open
+                // source, so this points at the product page (the CLI's own page is a post under
+                // /blog/) and the install command lives in CLAUDE.md.
+                antigravity: "https://antigravity.google/",
             };
 
             // Legend icon objects: Chart.js's pointStyle wants an **already-loaded Image**, so they are
@@ -951,6 +959,36 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                         "These runs never recorded when the harness exited, so the last sample → exit " +
                             "gap can't be filled in and CU is a lower bound: " +
                             noTail.map((run) => run.name).join(", "),
+                    );
+                }
+                // **A chart must not mix batches.** The score divides by the smallest CU *in a batch*,
+                // so a run from another batch (a new harness measured on its own, say) gets a score
+                // that means nothing — and nothing on the page would show it: the bars look the same.
+                // The payload carries each run's --label, so the majority label is treated as the
+                // batch and everyone else is named. Grouping by label rather than by date keeps this
+                // honest for runs that were never labelled at all.
+                //
+                // Harnesses in EXCLUDED are left out of it: they are already drawn dashed, collapsed
+                // and marked as "left the line-up", so their age is on screen — pointing at opencode
+                // again here would just be noise on every chart.
+                const byLabel = new Map();
+                for (const run of payload.runs) {
+                    if (EXCLUDED.has(run.id)) continue;
+                    const key = run.label ?? "(no --label)";
+                    byLabel.set(key, [...(byLabel.get(key) ?? []), run.name]);
+                }
+                if (byLabel.size > 1) {
+                    const sorted = [...byLabel.entries()].sort((a, b) => b[1].length - a[1].length);
+                    const [batchKey, batchNames] = sorted[0];
+                    warnings.push(
+                        "This chart mixes runs from different batches: " +
+                            sorted
+                                .slice(1)
+                                .map(([key, names]) => `${names.join(", ")} (--label ${key})`)
+                                .join(", ") +
+                            ` did not run with the other ${batchNames.length} (--label ${batchKey}). ` +
+                            "Scores are relative to the smallest CU inside one batch, so those runs can " +
+                            "only be read as raw CU — re-run them together under one --label to rank them",
                     );
                 }
                 // This line is reserved for "there is a trap in this batch" warnings: normally it takes

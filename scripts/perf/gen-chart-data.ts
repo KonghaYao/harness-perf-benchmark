@@ -119,6 +119,11 @@ export interface RunRecord {
      * 老产物没有它，进程树口径会偏低——这个事实要跟着数据走，不能悄悄按 0 处理。
      */
     childColumnPresent: boolean;
+    /**
+     * 跑批时带的 `--label`（没带就是 null）。它进 payload 只为一件事：让页面能看出
+     * **这一张图上混了不同批次的运行**——百分制分数是「本批最小 CU」的相对值，跨批混画
+     * 出来的分数没有意义，而页面上看数据是看不出来的。
+     */
     label: string | null;
 }
 
@@ -616,6 +621,7 @@ function main(): void {
                 requests: run.requests,
                 segments: run.segments,
                 requestMarksMs: run.requestMarksMs,
+                label: run.label,
                 score: serializeCost(run, cost, scores.get(run.runId) ?? 0),
                 samples: toRows(run.samples),
             };
