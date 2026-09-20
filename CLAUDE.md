@@ -206,6 +206,25 @@ CU    = 1.0 × 核·秒 + 1.0 × GB·秒        （结构借自 FC；**系数是
 load 在 4~17 之间波动就能让 MiniMax Code 从 19.8s 变 34.7s；负载尖峰撞上哪一家，哪一家的读数
 就偏保守（重跑比硬解释划算）。
 
+## CI：跑一批 + 发 GH Pages
+
+`.github/workflows/benchmark-pages.yml` 一趟串起「装 harness → 生成剧本 → 跑整批 → 汇总 →
+组装站点 → 发 Pages」，判定逻辑只在那一个 workflow 的 decide 步骤里：
+
+- 触发：`workflow_dispatch`（可传 turns / repeats / runner / peri 版本；勾 `skip_bench` 只发布、
+  取消勾 `publish` 只跑管道不动线上——第一次调管道就用 `turns=5 repeats=1 publish=off`）、
+  `schedule`（每周一 03:00 UTC）、`push` 到 main；
+- **push 只动了 `docs/` 时不重跑压测**（改页面不该把榜单数字刷一遍），拿上一次的结果直接重发；
+  动了 `scripts/perf/`、`src/`、`playground/` 或 workflow 才重跑；
+- 数据是「现跑现生成」、仓库里不存（`data/` 已 gitignore）：每趟把 `data/perf-chart.json` 存进
+  Actions cache，只发布的那趟取上一次的；缓存空时自动补跑一批；
+- 默认 runner 是 **macOS**：采样器的首选后端 `proc_pid_rusage` 只在 macOS 上可用，换 ubuntu 会
+  静默退到 `ps`（CPU 读数分辨率约 60ms、`child_cpu_pct` 恒为 0，页面上看不出异常），CU 会偏低。
+  runner 上跑出来的数字与开发机不是一个批次——跨批次只比 CU；
+- 站点布局：`docs/perf-chart.html` 当站点根目录的 `index.html`，`logos/` 与 `vendor/` 摆在根上，
+  数据放 `data/`——所以页面取数是两处候选（`data/` 优先，退回 `../data/`），本地打开走后者；
+- 一次性设置：repo 的 Settings → Pages → Source 选 **GitHub Actions**（私有仓库还得有 Pro 才开得了 Pages）。
+
 ## 目录结构
 
 ```
@@ -237,6 +256,7 @@ script.json             默认演示脚本（工具调用 + 中文回答）
 scripts/peri-demo.json  按 peri 的消费规律编排的演示脚本
 playground/<harness>/   各自 harness 的运行沙盒 + perf-demo.ts 入口 + 剧本（按需）
 docs/perf-compare.md    各 harness 的压测对比报告
+.github/workflows/benchmark-pages.yml  CI：跑一批 + 组装站点 + 发 GH Pages（见上）
 data/runs/              压测产物：一次运行一个目录（已 gitignore）
 data/claude-date/       老布局的压测产物（迁移前的遗留，迁完即可删）
 ```

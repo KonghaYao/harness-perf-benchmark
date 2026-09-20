@@ -1,0 +1,313 @@
+# 一趟跑完：装 harness → 生成剧本 → 跑整批 → 汇总出图表数据 → 发到 GitHub Pages。
+#
+# 触发与「这一趟跑不跑压测」（判定逻辑在下面的 decide 步骤里，只有一处）：
+#   workflow_dispatch  手动。默认跑一批；可传 turns / repeats / runner / peri 版本，
+#                      或勾 skip_bench 只把上一次的结果重新发布一遍。
+#                      第一次调管道（或在 fork 上试）建议：turns=5 · repeats=1 · publish 取消勾选——
+#                      装/跑/汇总/摘要都走一遍，但线上不动、结果也不进缓存。
+#   schedule           每周一 03:00 UTC 跑一批，免得榜单停在上一次。
+#   push 到 main       改动只落在 docs/ 时**不跑**压测——页面改动不该把榜单数字刷一遍，
+#                      直接拿上一次的结果重发；动了 scripts/perf/、src/、playground/ 或本文件才重跑。
+#
+# 结果怎么留下来：数据是「现跑现生成」的，仓库里不存（data/ 已 gitignore）。每一趟跑完都把
+# data/perf-chart.json 存进 Actions cache，只发布的那一趟取上一次的；缓存空的时候自动补跑一批。
+#
+# 口径提醒（这是发布用的站点，读的人会拿它当结论，所以别省这段）：
+#   - 默认 runner 是 macOS：采样器的首选后端 proc_pid_rusage 只在 macOS 上可用。换 ubuntu 会
+#     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
+#     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
+#     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
+#   - 六家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
+#   - opencode 已退出排名，这里不装、不跑。
+
+name: benchmark · gh-pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      turns:
+        description: 长剧本轮数（pi 会自动 +33，它每轮多消费一条上下文压缩请求）
+        default: "100"
+      repeats:
+        description: 每家跑几次（图表取端到端时长居中的那一次）
+        default: "3"
+      runner:
+        description: 跑压测的 runner 标签
+        default: macos-latest
+      peri_version:
+        description: peri 的 release tag（例 agent-v3.17.2；留空 = 最新）
+        default: ""
+      skip_bench:
+        description: 跳过压测，只重新发布上一次的结果
+        type: boolean
+        default: false
+      publish:
+        description: 发布到 GitHub Pages（关掉就只跑一遍管道，线上不动、结果也不存）
+        type: boolean
+        default: true
+  schedule:
+    - cron: "0 3 * * 1"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/benchmark-pages.yml"
+      - "scripts/perf/**"
+      - "src/**"
+      - "playground/**"
+      - "docs/**"
+
+# 发布 Pages 要的三个权限；contents 只读就够（本流程不写仓库）。
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 两趟叠在一起会互相抢端口、抢 data/runs，也会把读数搅浑：串行，不取消。
+concurrency:
+  group: benchmark-pages
+  cancel-in-progress: false
+
+jobs:
+  bench-and-publish:
+    # 整批 18 次运行，慢的机器上要几十分钟；给足上限，超了就是真卡住了。
+    timeout-minutes: 150
+    runs-on: ${{ github.event.inputs.runner || 'macos-latest' }}
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: 检出（要拿 before..sha 的改动清单，取全量历史）
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 钉住与本机一致的版本：各家 sandbox 的隔离（harnessEnv）依赖 Bun 1.4 起 `Bun.spawn`
+      # 不再继承运行时对 process.env 赋值的这个行为，换版本要连着沙盒一起验。
+      - name: 装 Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - name: 依赖
+        run: bun install --frozen-lockfile
+
+      # 只发布的那一趟靠它拿数据；跑压测的那一趟拿到的会被新结果覆盖。
+      - name: 取上一次的结果
+        uses: actions/cache/restore@v4
+        with:
+          path: data/perf-chart.json
+          key: perf-chart-${{ github.run_id }}
+          restore-keys: perf-chart-
+
+      - name: 决定这一趟跑不跑压测
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+          SKIP: ${{ github.event.inputs.skip_bench || 'false' }}
+          PUBLISH: ${{ github.event.inputs.publish || 'true' }}
+          TURNS: ${{ github.event.inputs.turns || '100' }}
+          REPEATS: ${{ github.event.inputs.repeats || '3' }}
+          RUNNER: ${{ github.event.inputs.runner || 'macos-latest' }}
+        run: |
+          set -euo pipefail
+          bench=1
+          reason="手动触发"
+          [ "${EVENT}" = "schedule" ] && reason="定时跑一批"
+          if [ "${SKIP}" = "true" ]; then
+            bench=0
+            reason="勾了 skip_bench"
+          fi
+          if [ "${EVENT}" = "push" ] && [ "${bench}" = "1" ]; then
+            # 只动了页面/文档就不重跑：判定看的是这次 push 的改动清单（全 0 的 before 表示新分支，按重跑处理）。
+            changed=$(git diff --name-only "${BEFORE}" "${SHA}" 2>/dev/null || true)
+            if [ -n "${changed}" ] && ! printf '%s\n' "${changed}" \
+                | grep -qE '^(scripts/perf/|src/|playground/|\.github/workflows/)'; then
+              bench=0
+              reason="这次 push 只动了页面/文档，沿用上一次的结果"
+            else
+              reason="这次 push 动了压测相关代码"
+            fi
+          fi
+          if [ "${bench}" = "0" ] && [ ! -f data/perf-chart.json ]; then
+            bench=1
+            reason="缓存里没有可用的图表数据，先补跑一批"
+          fi
+          # 管道自检：手动跑一趟小批次（turns=5 repeats=1）把 publish 关掉，
+          # 装/跑/汇总/摘要都走一遍，但线上不动、结果也不进缓存。
+          publish=true
+          if [ "${PUBLISH}" = "false" ]; then publish=false; fi
+          echo "bench=${bench}" >> "${GITHUB_OUTPUT}"
+          echo "publish=${publish}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "## harness-perf-benchmark"
+            echo ""
+            echo "- 这一趟：$([ "${bench}" = "1" ] && echo '跑一批压测' || echo '只重新发布')（${reason}）"
+            echo "- 发布：$([ "${publish}" = "true" ] && echo '会发到 Pages' || echo '不发（publish 关掉了）')"
+            echo "- 批次配置：轮数 ${TURNS} · 每家 ${REPEATS} 次 · runner \`${RUNNER}\`"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: 装 harness（peri + 五家 npm CLI）
+        if: steps.decide.outputs.bench == '1'
+        env:
+          PERI_INSTALL_VERSION: ${{ github.event.inputs.peri_version }}
+          PERI_NO_PATH_HINT: "1"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # peri 走官方安装脚本（从 GitHub release 取本平台的包，解到 $HOME/.peri）。
+          # 不 curl | bash：先落盘再执行，出问题时日志里能看到脚本本身。
+          # 它在「没装过旧版本」时不会去读 /dev/tty 提问，runner 每次都是干净的 HOME。
+          curl -fsSL -o /tmp/peri-install.sh \
+            https://raw.githubusercontent.com/konghayao/peri/main/scripts/install.sh
+          bash /tmp/peri-install.sh
+          echo "${HOME}/.peri" >> "${GITHUB_PATH}"
+          # 其余五家都在 npm 上。opencode 已退出排名，不装。
+          npm i -g \
+            @anthropic-ai/claude-code \
+            @openai/codex \
+            @earendil-works/pi-coding-agent \
+            @deepseek-ai/dsh \
+            @minimax-ai/code
+
+      - name: 报一下装到了什么版本
+        if: steps.decide.outputs.bench == '1'
+        run: |
+          for bin in peri claude codex pi dsh mcode; do
+            printf '%-8s %s\n' "${bin}" "$(command -v "${bin}" || echo '（不在 PATH 里）')"
+          done
+          peri --version || true
+          claude --version || true
+          codex --version || true
+          pi --version || true
+          dsh --version || true
+          mcode --version || true
+
+      - name: 生成剧本（五份，按各家工具形状）
+        if: steps.decide.outputs.bench == '1'
+        env:
+          TURNS: ${{ github.event.inputs.turns || '100' }}
+        run: |
+          set -euo pipefail
+          gen() { bun run scripts/perf/gen-long-run.ts "$@"; }
+          # peri / claude-code 共用 Bash + command 形状的那份；其余各家参数不一样，见 CLAUDE.md。
+          gen --turns "${TURNS}" --out data/scenarios/long-run.json
+          gen --turns "${TURNS}" --args exec --out data/scenarios/long-run-codex.json
+          # pi 的上下文压缩每轮多吃一条请求，130 轮才跑满 100 轮（实测 133 够）。
+          gen --turns "$((TURNS + 33))" --tool bash --out data/scenarios/long-run-pi.json
+          gen --turns "${TURNS}" --tool bash --args command+description \
+            --out data/scenarios/long-run-dsh.json
+          gen --turns "${TURNS}" --tool bash --out data/scenarios/long-run-minimax-code.json
+
+      - name: 跑批次（六家串行，每家 repeats 次）
+        if: steps.decide.outputs.bench == '1'
+        env:
+          REPEATS: ${{ github.event.inputs.repeats || '3' }}
+        run: |
+          set -euo pipefail
+          label="ci-$(date -u +%Y%m%d-%H%M)"
+          echo "批次标签：${label}（写进每次运行的 run.json，便于按批筛）"
+          # 一次没跑成（harness 崩了 / 端口被占）就再试一次：gen-chart-data 按「最近 window 次」
+          # 取中位，补上一条能让它落回正常的 3 条里。
+          run_one() {
+            local dir="playground/$1" attempt
+            for attempt in 1 2; do
+              if (cd "${dir}" && bun perf-demo.ts --timeout-ms 240000 --label "${label}"); then
+                return 0
+              fi
+              echo "::warning::$1 第 ${attempt} 次运行非 0 退出"
+            done
+            echo "::warning::$1 这一轮两次都没跑成，图表会少一条读数"
+            return 0
+          }
+          for round in $(seq 1 "${REPEATS}"); do
+            for harness in peri claude-code codex pi deepseek minimax-code; do
+              echo "::group::第 ${round} 轮 · ${harness}"
+              run_one "${harness}"
+              echo "::endgroup::"
+            done
+          done
+          ls -R data/runs | head -40
+
+      - name: 汇总出图表数据
+        if: steps.decide.outputs.bench == '1'
+        env:
+          REPEATS: ${{ github.event.inputs.repeats || '3' }}
+        run: |
+          set -euo pipefail
+          bun run scripts/perf/gen-chart-data.ts \
+            --dir data/runs --window "${REPEATS}" --out data/perf-chart.json
+
+      - name: 存下这一份结果（下次只发布时复用）
+        if: steps.decide.outputs.bench == '1' && steps.decide.outputs.publish == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: data/perf-chart.json
+          key: perf-chart-${{ github.run_id }}
+
+      - name: 结果摘要
+        run: |
+          set -euo pipefail
+          # 采样后端自检：rusage 不可用时 run.ts 会静默退到 ps，读数会偏低而页面看不出来。
+          # 「只发布」那一趟没有 data/runs（直接沿用缓存里的结果），这里的 grep 必须容得下空目录，
+          # 否则 set -e + pipefail 会把整步判失败。
+          degraded=$( { grep -rl '"backend": "ps"' data/runs/*/*/run.json 2>/dev/null || true; } \
+            | wc -l | tr -d ' ')
+          echo "退到 ps 后端的运行次数：${degraded}"
+          [ "${degraded}" = "0" ] || echo "::warning::有 ${degraded} 次运行退到了 ps 采样后端，这一批的 CU 是下界"
+          node -e '
+            const fs = require("node:fs");
+            const data = JSON.parse(fs.readFileSync("data/perf-chart.json", "utf8"));
+            const rows = data.runs.filter((run) => run.score).sort((a, b) => a.score.cu - b.score.cu);
+            const num = (value, digits) => (value === undefined ? "n/a" : value.toFixed(digits));
+            const lines = [
+              "",
+              `数据生成于 ${data.generatedAt} · 产物 ${data.sourceDir}`,
+              "",
+              "| harness | CU | 分数 | 峰值 CPU % | 峰值 RSS MB |",
+              "| --- | --- | --- | --- | --- |",
+              ...rows.map((run) => {
+                const peaks = run.score.peaks ?? {};
+                return `| ${run.name} | ${run.score.cu.toFixed(3)} | ${num(run.score.score, 1)} | ${num(peaks.treeCpuPercent, 1)} | ${num(peaks.treeRssMb, 1)} |`;
+              }),
+            ];
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+          '
+
+      - name: 组装站点（页面在根，数据在 data/）
+        run: |
+          set -euo pipefail
+          rm -rf _site
+          mkdir -p _site/data _site/logos
+          # 页面跑到站点根当首页，logos/ 与 vendor/ 都按页面的相对路径摆在根上；
+          # 数据放 _site/data/：页面取数先试 data/（站点布局），再试 ../data/（仓库布局）。
+          cp docs/perf-chart.html _site/index.html
+          cp -R docs/logos/. _site/logos/
+          cp data/perf-chart.json _site/data/perf-chart.json
+          # Chart.js 的本地兜底也带上：页面先试 unpkg（2s 超时），拿不到才用 vendor/。
+          # 取不到不算失败——那只是少了一层兜底，页面照旧走 CDN。
+          if curl -fsSL --max-time 20 -o _site/chart.tmp \
+              https://unpkg.com/chart.js@4/dist/chart.umd.min.js; then
+            mkdir -p _site/vendor
+            mv _site/chart.tmp _site/vendor/chart.umd.min.js
+          else
+            rm -f _site/chart.tmp
+            echo "::warning::没能取到 Chart.js 的本地兜底，页面将只依赖 CDN"
+          fi
+          find _site -type f | sort
+
+      - name: 配置 Pages
+        if: steps.decide.outputs.publish == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: 上传站点
+        if: steps.decide.outputs.publish == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: 发布
+        if: steps.decide.outputs.publish == 'true'
+        id: deploy
+        uses: actions/deploy-pages@v4
