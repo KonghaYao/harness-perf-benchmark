@@ -17,8 +17,11 @@
 #     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
 #     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
 #     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
-#   - 六家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
+#   - 七家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
 #   - opencode 已退出排名，这里不装、不跑。
+#   - Antigravity CLI（agy）是唯一的**脚本装**的第二家：peri 走 GitHub release，它走官方的
+#     install.sh（下载到 ~/.local/bin）。两家都必须装成，装不上这一趟就整趟失败——线上继续挂
+#     上一批的站点，不会悄悄少一条曲线（七条曲线里少一条比整个榜单停更是更坏的失真）。
 
 name: benchmark · gh-pages
 
@@ -26,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       turns:
-        description: 长剧本轮数（pi 会自动 +33，它每轮多消费一条上下文压缩请求）
+        description: 长剧本轮数（pi 自动 +33、agy 自动 +4：它们的压缩/标题请求会多吃条目）
         default: "100"
       repeats:
         description: 每家跑几次（图表取端到端时长居中的那一次）
@@ -69,7 +72,7 @@ concurrency:
 
 jobs:
   bench-and-publish:
-    # 整批 18 次运行，慢的机器上要几十分钟；给足上限，超了就是真卡住了。
+    # 整批 21 次运行（七家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
     timeout-minutes: 150
     runs-on: ${{ github.event.inputs.runner || 'macos-latest' }}
     environment:
@@ -178,20 +181,40 @@ jobs:
             @deepseek-ai/dsh \
             @minimax-ai/code
 
+      # agy 只有官方一个安装脚本：它查一份平台清单（darwin_arm64 等）→ 下载约 180MB 的
+      # 单文件二进制 → 校验 SHA-512 → 落到 ~/.local/bin/agy。脚本自己不改 PATH，所以下面
+      # 补一句 GITHUB_PATH；**它没有钉版本的参数**（只认 --dir），CI 每次拿到的是当天的最新版，
+      # 版本号只留在下一步的清单里，不进 run.json——那是全局约定（run.json 的 harness.version
+      # 一律 null，不做 --version 探测），不是 agy 特殊，见 scripts/perf/run-meta.ts。
+      # 顺带一提：`agy --version` 是有的（1.2.7 实测，只是没写进 --help），下面拿它自查。
+      # 沙盒与本步无关：mock 端点、假 GEMINI_API_KEY、死代理都是 playground/antigravity/
+      # perf-demo.ts 在起 harness 时注入的（deps.harnessEnv），这里只需要一个能跑的 agy。
+      - name: 装 Antigravity CLI（agy：官方脚本装到 ~/.local/bin）
+        if: steps.decide.outputs.bench == '1'
+        run: |
+          set -euo pipefail
+          # 与 peri 那步同一条纪律：先落盘再执行，脚本本身能进日志。
+          curl -fsSL -o /tmp/agy-install.sh https://antigravity.google/cli/install.sh
+          bash /tmp/agy-install.sh
+          # 自查：脚本自己会校验 sha512，这里再确认二进制确实能跑（真倒在下载/校验上，这步失败）。
+          "$HOME/.local/bin/agy" --version
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
       - name: 报一下装到了什么版本
         if: steps.decide.outputs.bench == '1'
         run: |
-          for bin in peri claude codex pi dsh mcode; do
+          for bin in peri agy claude codex pi dsh mcode; do
             printf '%-8s %s\n' "${bin}" "$(command -v "${bin}" || echo '（不在 PATH 里）')"
           done
           peri --version || true
+          agy --version || true
           claude --version || true
           codex --version || true
           pi --version || true
           dsh --version || true
           mcode --version || true
 
-      - name: 生成剧本（五份，按各家工具形状）
+      - name: 生成剧本（七份，按各家工具形状）
         if: steps.decide.outputs.bench == '1'
         env:
           TURNS: ${{ github.event.inputs.turns || '100' }}
@@ -201,13 +224,19 @@ jobs:
           # peri / claude-code 共用 Bash + command 形状的那份；其余各家参数不一样，见 CLAUDE.md。
           gen --turns "${TURNS}" --out data/scenarios/long-run.json
           gen --turns "${TURNS}" --args exec --out data/scenarios/long-run-codex.json
-          # pi 的上下文压缩每轮多吃一条请求，130 轮才跑满 100 轮（实测 133 够）。
+          # pi 从约 140 条消息起自动压缩，压缩期每轮多一条 messages=2 的总结请求：
+          # 100 轮实测要 135 条（--turns 133），131 条只有 99 轮。
           gen --turns "$((TURNS + 33))" --tool bash --out data/scenarios/long-run-pi.json
           gen --turns "${TURNS}" --tool bash --args command+description \
             --out data/scenarios/long-run-dsh.json
           gen --turns "${TURNS}" --tool bash --out data/scenarios/long-run-minimax-code.json
+          # agy：shell 工具是 run_command、五项大驼峰参数都必填；它还有两笔自己的开销——
+          # 序列**第一条**是会话标题生成，另有一条「每约 32 个请求一次」的上下文压缩摘要。
+          # 实测 100 轮要 104 条（104 = 100 轮 + 标题 1 + 压缩 3），故 +4。
+          gen --turns "$((TURNS + 4))" --args commandline \
+            --out data/scenarios/long-run-antigravity.json
 
-      - name: 跑批次（六家串行，每家 repeats 次）
+      - name: 跑批次（七家串行，每家 repeats 次）
         if: steps.decide.outputs.bench == '1'
         env:
           REPEATS: ${{ github.event.inputs.repeats || '3' }}
@@ -229,7 +258,7 @@ jobs:
             return 0
           }
           for round in $(seq 1 "${REPEATS}"); do
-            for harness in peri claude-code codex pi deepseek minimax-code; do
+            for harness in peri claude-code codex pi deepseek minimax-code antigravity; do
               echo "::group::第 ${round} 轮 · ${harness}"
               run_one "${harness}"
               echo "::endgroup::"

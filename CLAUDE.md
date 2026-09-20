@@ -243,6 +243,10 @@ load 在 4~17 之间波动就能让 MiniMax Code 从 19.8s 变 34.7s；负载尖
   收尾（上游 bug，3.17.2 实测——那个变量只在「写 PATH 提示」的分支里赋值，末尾那句提示却照用）。
   出事位置在**全部安装动作之后**（二进制与 `$HOME/.peri/peri` 软链都已就位），所以 workflow 不拿它的
   退出码当成败，改由紧随其后的 `"$HOME/.peri/peri" --version` 自查：脚本真倒在下载/解包上，这一步才会失败；
+- 装 agy 那一步与 peri 同类（也是官方的 `install.sh`，先落盘再执行），但**它没有钉版本的参数**
+  （只认 `--dir`），CI 每次拿到的是当天的最新版；脚本自己校验 SHA-512、装到 `~/.local/bin`，且**不改
+  PATH**，所以 workflow 补一句 `GITHUB_PATH`。`agy --version` 是有的（1.2.7 实测，只是没写进 `--help`），
+  workflow 拿它当安装自查——装不上这一趟就整趟失败，线上继续挂上一批的站点，不会悄悄少一条曲线；
 - 一次性设置：repo 的 Settings → Pages → Source 选 **GitHub Actions**（私有仓库还得有 Pro 才开得了 Pages）。
 
 ## 目录结构
@@ -495,10 +499,11 @@ Google Gemini API，其余各家走 chat / Messages / Responses 三种）：
   要看执行细节加 `--output-format stream-json`；
 - `--print-timeout` 实测默认 0（不限时），loop 剧本不会自行收敛——收敛要靠有限长剧本 +
   `--exhausted stop` 的收尾文本；
-- **它是「单跑过、还没并入批次」的那一家**：`data/runs/antigravity/` 里的产物带 `--label agy-probe`，
-  图表页会画出它们并在页尾告警「混批」（机制见「统一计分」那节的「一张图不许混批」）。线上站点
-  （CI）的 harness 清单里**还没有它**——要上站得先给 workflow 加装 agy 与沙盒环境变量，
-  在那之前发布的图表是六家。
+- **本地这批读数还是「单跑」的**：`data/runs/antigravity/` 里的产物带 `--label agy-probe`，与第五批
+  （`codex-proxy-fix`）隔了一夜，图表页会画出它们并在页尾告警「混批」（机制见「统一计分」那节的
+  「一张图不许混批」）。**CI 的 harness 清单已经加上它**（装 agy 与跑批两处，见
+  `.github/workflows/benchmark-pages.yml`）：下一次 CI 批次就是七家同批的读数，发布出去的那张图
+  自然不会有混批告警（线上站点的数据是 CI 自己现跑现生成的，本地 `data/runs` 进不去）。
 
 ## 已知限制与坑（压测相关）
 
