@@ -5,238 +5,303 @@
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <title>harness-perf-benchmark 榜单 · 长剧本（100 轮 × 4KB）</title>
         <!--
-            固定的看图页：只读同目录之外的一份数据 JSON（data/perf-chart.json，由
-            `bun run scripts/perf/gen-chart-data.ts` 从压测产物里汇总）。
+            固定的看图页：只读一份数据 JSON（由 `bun run scripts/perf/gen-chart-data.ts`
+            从压测产物里汇总），路径按「站点布局优先」找——`data/perf-chart.json`（发布后的
+            站点：页面就是根目录的 index.html，数据在它旁边），退回 `../data/perf-chart.json`
+            （仓库布局）。发布由 .github/workflows/benchmark-pages.yml 组装并推到 GH Pages。
 
             本地打开（file:// 会被 CORS 挡在 fetch 上，必须起个静态服务）：
                 cd <仓库根> && python3 -m http.server 8080
                 → http://localhost:8080/docs/perf-chart.html
 
             图表库走 CDN（unpkg 的 Chart.js 4 UMD），2s 内没到就自动换本地兜底
-            （vendor/chart.umd.min.js，同一份 v4.5.1 的拷贝，已 gitignore）——本机浏览器走 PAC 代理，
-            实测公共 CDN 不是报错而是挂着不动，所以超时是必需的、且不能写成静态的 script 标签
-            （卡住时连后续解析都停下）。两处都拿不到时页面会直说，而不是白屏。
+            （vendor/chart.umd.min.js，同一份 v4.5.1 的拷贝，已 gitignore；发布时由 workflow
+            现取一份放进站点）——本机浏览器走 PAC 代理，实测公共 CDN 不是报错而是挂着不动，
+            所以超时是必需的、且不能写成静态的 script 标签（卡住时连后续解析都停下）。
+            两处都拿不到时页面会直说，而不是白屏。
         -->
         <style>
+            /* 门面页 · 浅色极简：数据是主角。三条规矩——
+               1) 数字、标签、单位一律等宽 + tabular-nums，上下左右对得齐；
+               2) 分隔只用 1px 发丝线，不要阴影、不要大圆角；
+               3) 全页只有一个强调色（peri 那支红），只用来标「peri 自己」。 */
             :root {
-                --fg: #1b1f24;
-                --muted: #6a737d;
-                --line: #e3e6ea;
-                --bg: #fbfbfc;
-                --accent: #2f6fed;
+                --ink: #14171c;
+                --muted: #6f7680;
+                --faint: #a4aab2;
+                --rule: #e8eaed;
+                --wash: #f6f7f9;
+                --peri: #d1495b;
+                --warn: #a4531a;
+                --sans: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC",
+                    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+                --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
             }
             * {
                 box-sizing: border-box;
             }
             body {
                 margin: 0 auto;
-                max-width: 1080px;
-                padding: 24px 20px 56px;
-                background: var(--bg);
-                color: var(--fg);
-                font: 14px/1.6 -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
-                    sans-serif;
-            }
-            h1 {
-                margin: 0 0 4px;
-                font-size: 21px;
-            }
-            h2 {
-                margin: 28px 0 8px;
-                font-size: 15px;
-            }
-            .sub {
-                margin: 0 0 18px;
-                color: var(--muted);
+                max-width: 1120px;
+                padding: 56px 28px 80px;
+                background: #fff;
+                color: var(--ink);
+                font: 14px/1.65 var(--sans);
+                -webkit-font-smoothing: antialiased;
             }
             code {
                 padding: 1px 5px;
-                border-radius: 4px;
-                background: #eef1f4;
-                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                font-size: 12.5px;
+                border-radius: 3px;
+                background: var(--wash);
+                font-family: var(--mono);
+                font-size: 12px;
             }
+            /* 眉标：等宽小字 + 宽字距，给每一块一个「仪器标签」的口吻。 */
+            .eyebrow {
+                display: block;
+                color: var(--faint);
+                font: 500 10.5px/1 var(--mono);
+                letter-spacing: 0.16em;
+                text-transform: uppercase;
+            }
+            /* 首屏：榜单名 + 一行场景说明，接着就是那张蝴蝶图（门面本身就是它）。 */
+            .hero h1 {
+                margin: 16px 0 0;
+                font-size: clamp(24px, 4.4vw, 44px);
+                font-weight: 700;
+                letter-spacing: -0.035em;
+                line-height: 1.04;
+                overflow-wrap: anywhere;
+            }
+            .sub {
+                margin: 10px 0 18px;
+                color: var(--muted);
+                font-size: 13px;
+            }
+            .hero .sub {
+                max-width: 64ch;
+                margin: 14px 0 30px;
+            }
+            section {
+                margin-top: 72px;
+            }
+            /* 板块开头：一条发丝线 + 眉标 + 标题，像仪器面板的刻线区。 */
+            .head {
+                display: flex;
+                align-items: baseline;
+                gap: 14px;
+                padding-top: 16px;
+                border-top: 1px solid var(--rule);
+            }
+            h2 {
+                margin: 0;
+                font-size: 17px;
+                font-weight: 650;
+                letter-spacing: -0.01em;
+            }
+            .beta {
+                padding: 1px 7px;
+                border: 1px solid #e6cfa8;
+                border-radius: 999px;
+                background: #fdf6ec;
+                color: var(--warn);
+                font: 600 10.5px/1.6 var(--mono);
+                letter-spacing: 0.04em;
+                vertical-align: 1px;
+            }
+            /* 表格：全等宽 + tabular-nums，列一定对得齐；只有行线，没有竖线。
+               行高给得松（上下 11px）：表里全是数字，挤在一起就只剩一片灰。 */
+            table {
+                width: 100%;
+                border-collapse: collapse;
+                font: 12.5px/1.5 var(--mono);
+                font-variant-numeric: tabular-nums;
+            }
+            th,
+            td {
+                padding: 11px 10px;
+                border-bottom: 1px solid var(--rule);
+                text-align: right;
+                white-space: nowrap;
+            }
+            th:first-child,
+            td:first-child {
+                padding-left: 0;
+                text-align: left;
+            }
+            thead th {
+                padding-top: 0;
+                color: var(--faint);
+                font-weight: 500;
+            }
+            tbody tr:hover {
+                background: var(--wash);
+            }
+            .score-cell {
+                font-weight: 600;
+            }
+            /* 厂商图标：认图比认名字快；色块留着，它对应曲线与柱子上的颜色。 */
+            .swatch {
+                display: inline-block;
+                width: 8px;
+                height: 8px;
+                margin-right: 6px;
+                border-radius: 2px;
+                vertical-align: baseline;
+            }
+            .logo {
+                width: 17px;
+                height: 17px;
+                margin-right: 7px;
+                border-radius: 4px;
+                vertical-align: -4px;
+            }
+            .scroll-x {
+                overflow-x: auto;
+            }
+            /* 蝴蝶图：两图并排、名字夹在中间（名字由两张图各自画在自己轴的外侧），
+               所以这里不给卡片边框——条直接坐在纸上，只留一条图上的发丝线。 */
+            .bars {
+                display: grid;
+                gap: 10px 44px;
+                grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+            }
+            /* 单独一张的（统一计分那张 CU 图，现在收在页面最后、<figure> 还带着 hidden）：
+               别让它铺满整页，也跟上面那张表拉开一点。 */
+            .bars-single {
+                max-width: 560px;
+                margin-top: 28px;
+            }
+            .bar-box {
+                margin: 0;
+                padding: 0;
+            }
+            .bar-box figcaption {
+                display: flex;
+                justify-content: space-between;
+                gap: 12px;
+                padding-top: 10px;
+                border-top: 1px solid var(--rule);
+                font: 500 11.5px/1 var(--mono);
+                letter-spacing: 0.03em;
+                white-space: nowrap;
+            }
+            .bar-box figcaption .unit {
+                color: var(--faint);
+            }
+            .bar-canvas {
+                position: relative;
+                height: 300px;
+                margin-top: 12px;
+            }
+            /* 曲线图：全页唯一带框的元素，框是给它读数值用的。
+               宽度收在 780px 内：铺满整页时曲线被拉得太开、一屏全是图，读数反而散。 */
+            .chart-box {
+                position: relative;
+                max-width: 780px;
+                height: 46vh;
+                min-height: 320px;
+                padding: 16px;
+                border: 1px solid var(--rule);
+                border-radius: 4px;
+            }
+            /* 控件：分段控件做成墨色实心，不用彩色——强调色留给 peri。 */
             .controls {
                 display: flex;
                 flex-wrap: wrap;
-                gap: 16px;
+                gap: 14px 20px;
                 align-items: center;
-                margin-bottom: 14px;
+                margin-bottom: 16px;
             }
             .group {
                 display: inline-flex;
-                border: 1px solid var(--line);
-                border-radius: 8px;
+                border: 1px solid var(--rule);
+                border-radius: 4px;
                 overflow: hidden;
-                background: #fff;
             }
             .group button {
-                padding: 6px 14px;
+                padding: 5px 12px;
                 border: 0;
-                border-right: 1px solid var(--line);
+                border-right: 1px solid var(--rule);
                 background: #fff;
                 color: var(--muted);
-                font: inherit;
+                font: 12px/1.6 var(--mono);
                 cursor: pointer;
             }
             .group button:last-child {
                 border-right: 0;
             }
             .group button:hover {
-                background: #f2f5f9;
+                background: var(--wash);
             }
             .group button.active {
-                background: var(--accent);
+                background: var(--ink);
                 color: #fff;
             }
             .toggle {
                 display: inline-flex;
-                gap: 6px;
+                gap: 7px;
                 align-items: center;
                 color: var(--muted);
+                font-size: 12.5px;
                 cursor: pointer;
                 user-select: none;
             }
-            .chart-box {
-                position: relative;
-                height: 62vh;
-                min-height: 360px;
-                padding: 12px;
-                border: 1px solid var(--line);
-                border-radius: 10px;
-                background: #fff;
-            }
-            table {
-                width: 100%;
-                border-collapse: collapse;
-                font-size: 13px;
-            }
-            th,
-            td {
-                padding: 6px 8px;
-                border-bottom: 1px solid var(--line);
-                text-align: right;
-                white-space: nowrap;
-            }
-            th:first-child,
-            td:first-child {
-                text-align: left;
-            }
-            th:nth-child(2),
-            td:nth-child(2) {
-                text-align: left;
-                color: var(--muted);
-                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-            }
-            thead th {
-                color: var(--muted);
-                font-weight: 500;
-            }
-            .swatch {
-                display: inline-block;
-                width: 9px;
-                height: 9px;
-                margin-right: 6px;
-                border-radius: 2px;
-                vertical-align: baseline;
-            }
-            /* 厂商图标：表格每行开头，认图比认名字快；色块仍留着（它对应曲线颜色）。 */
-            .logo {
-                width: 18px;
-                height: 18px;
-                margin-right: 6px;
-                border-radius: 4px;
-                vertical-align: -4px;
-            }
-            ul.notes {
-                margin: 6px 0 0;
-                padding-left: 20px;
-                color: #41474e;
-            }
-            ul.notes li {
-                margin-bottom: 5px;
-            }
-            /* 计分公式：等宽、可滚，长表达式不撑破面板。 */
-            .formula {
-                margin: 0 0 12px;
-                padding: 10px 12px;
-                border: 1px solid var(--line);
-                border-radius: 8px;
-                background: #f7f9fb;
-                font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                font-size: 12.5px;
-                line-height: 1.7;
-                overflow-x: auto;
-                white-space: pre;
-            }
-            .formula .from {
-                color: var(--muted);
-            }
-            .score-cell {
-                font-weight: 600;
-                font-variant-numeric: tabular-nums;
+            .toggle input {
+                margin: 0;
+                accent-color: var(--ink);
             }
             .warn {
-                color: #a4531a;
-            }
-            /* Beta 徽标：口径还没定稿的指标，别让读者把它当结论。 */
-            .beta {
-                padding: 1px 7px;
-                border: 1px solid #e6cfa8;
-                border-radius: 999px;
-                background: #fdf6ec;
-                color: #a4531a;
-                font-size: 11px;
-                font-weight: 600;
-                vertical-align: 2px;
-            }
-            .panel {
-                padding: 14px 16px;
-                border: 1px solid var(--line);
-                border-radius: 10px;
-                background: #fff;
-            }
-            /* 柱状图板块：一排小图，窄屏自动换行。每格自带标题，canvas 撑满标题以下的剩余高度。 */
-            .bars {
-                display: grid;
-                gap: 12px;
-                grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            }
-            .bar-box {
-                margin: 0;
-                padding: 12px 14px 8px;
-                border: 1px solid var(--line);
-                border-radius: 10px;
-                background: #fff;
-            }
-            .bar-box figcaption {
-                margin-bottom: 6px;
-                font-size: 13px;
-            }
-            .bar-box figcaption .unit {
-                color: var(--muted);
-            }
-            .bar-canvas {
-                position: relative;
-                height: 240px;
-            }
-            /* 计分表列多（10 列、时间列不给折行），窄一点的屏上允许横向滚动，别把面板撑破。 */
-            .scroll-x {
-                overflow-x: auto;
+                color: var(--warn);
             }
             #error {
-                padding: 14px 16px;
+                padding: 18px 20px;
                 border: 1px solid #f0c2c2;
-                border-radius: 10px;
-                background: #fff6f6;
+                border-radius: 4px;
+                background: #fffafa;
             }
             #error pre {
-                margin: 8px 0 0;
-                padding: 10px 12px;
-                border-radius: 6px;
-                background: #f4f6f8;
+                margin: 10px 0 0;
+                padding: 12px;
+                border-radius: 4px;
+                background: var(--wash);
                 overflow-x: auto;
-                font-size: 12.5px;
+                font-size: 12px;
+            }
+            /* 页脚：数据出处与两条去向，一行排完。 */
+            .foot {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px 22px;
+                margin-top: 80px;
+                padding-top: 16px;
+                border-top: 1px solid var(--rule);
+                color: var(--faint);
+                font: 11.5px/1.7 var(--mono);
+            }
+            /* 一次性的入场：首屏从下浮一层就停，别处不动（关掉动效偏好时整个不出现）。 */
+            @media (prefers-reduced-motion: no-preference) {
+                .hero,
+                .bars {
+                    animation: rise 0.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+                }
+                .bars {
+                    animation-delay: 0.06s;
+                }
+                @keyframes rise {
+                    from {
+                        opacity: 0;
+                        transform: translateY(8px);
+                    }
+                }
+            }
+            @media (max-width: 720px) {
+                body {
+                    padding: 36px 18px 56px;
+                }
+                .bar-canvas {
+                    height: 260px;
+                }
             }
             [hidden] {
                 display: none !important;
@@ -244,20 +309,14 @@
         </style>
     </head>
     <body>
-        <h1>harness-perf-benchmark 榜单</h1>
-        <p class="sub">
-            长剧本：100 轮 × 约 4KB 正文 + 每轮一次工具调用，<code>--exhausted stop</code> 跑到自然结束。
-            <strong>开头是统一计分</strong><span class="beta">Beta</span>：把 CPU 与内存按
-            <strong>1:1</strong> 折成一个数——<code>CU = 1.0×核·秒 + 1.0×GB·秒</code>
-            （公式结构借自阿里云 FC 的「资源使用量 × 转换系数」，系数是本项目定的），再折成批内百分制；
-            另给一列不折算的<strong>峰值</strong>（最坏一刻要占多少）。接着是<strong>柱状概览</strong>：
-            CU 与两个峰值各一排横条，条短的是省的。口径与系数只在
-            <code>scripts/perf/score.ts</code> 一处。<strong>还在 Beta：口径没定稿</strong>，
-            拿它看趋势可以，别把名次当结论——两处取舍（后代 CPU 算不算、时长怎么算）还没讨论完。
-            下半部分是<strong>逐拍曲线</strong>：x 为相对时间（采样起点算 0），y 由按钮切换，曲线默认按
-            1s 窗口平滑（可切回原始）；每条线的峰值标了 harness 名，<strong>内存的纵轴是反的</strong>
-            （占用越大越靠下）。数据来自 <code>data/perf-chart.json</code>。
-        </p>
+        <header class="hero">
+            <span class="eyebrow">Long script · 100 turns × 4KB · Process tree</span>
+            <h1>harness-perf-benchmark</h1>
+            <p class="sub">
+                各家 coding harness 跑同一部剧本、从起进程到自然退出：条越短，最坏一刻占得越少；
+                整段账在下面的计分表。
+            </p>
+        </header>
 
         <div id="error" hidden>
             <strong id="error-title">数据没加载出来</strong>
@@ -266,166 +325,101 @@
         </div>
 
         <div id="app" hidden>
-            <!-- 统一计分放在最前：面积（CU）+ 峰值，打开页面先看到它。 -->
-            <div id="page-scores">
-                <h2>统一计分 <span class="beta">Beta</span>：CPU 与内存 1:1</h2>
-                <div class="panel">
-                    <div id="formula" class="formula"></div>
-                    <div class="scroll-x">
-                        <table id="scores">
-                            <thead></thead>
-                            <tbody></tbody>
-                        </table>
-                    </div>
-                    <p class="sub" id="score-note" style="margin: 10px 0 0"></p>
-                </div>
+            <!-- 门面就是这张蝴蝶图：两图并排、两列名字夹在中间（名字由两张图各画在自己轴的外侧），
+                 每张图各排各的名次，前两名实色、其余半透明当背景。 -->
+            <div class="bars" id="page-bars">
+                <figure class="bar-box">
+                    <figcaption>
+                        峰值 CPU <span class="unit">% · 单核 = 100% · 最坏一刻</span>
+                    </figcaption>
+                    <div class="bar-canvas"><canvas id="bar-cpu"></canvas></div>
+                </figure>
+                <figure class="bar-box">
+                    <figcaption>
+                        峰值内存 RSS <span class="unit">MB · 最坏一刻占用</span>
+                    </figcaption>
+                    <div class="bar-canvas"><canvas id="bar-rss"></canvas></div>
+                </figure>
             </div>
 
-            <!--
-                柱状图板块：把「统一计分表」里最要紧的三列（CU / 峰值 CPU / 峰值内存）各自画成
-                一排横条，谁省谁贵一眼看出来。横向条（indexAxis: "y"）是为了让 harness 名与图标
-                排在左边当类目轴，长名字不会被竖排刻度截断。三个指标单位不同（CU / % / MB），
-                不共用一个数值轴，所以是三张独立的小图。
-            -->
-            <div id="page-bars">
-                <h2>柱状看：CU 与两个峰值（每条越短越好）</h2>
-                <div class="bars">
-                    <figure class="bar-box">
+            <section>
+                <div class="head">
+                    <span class="eyebrow">Timeline</span>
+                    <h2>逐拍曲线 · CPU 与内存的时间线</h2>
+                </div>
+                <p class="sub">
+                    内存纵轴反向（越靠下越重）；虚线 = 首个 / 末次请求。
+                </p>
+                <div class="controls">
+                    <div class="group" id="metric-buttons" role="group" aria-label="Y 轴指标">
+                        <button data-metric="rss" class="active">内存 RSS</button>
+                        <button data-metric="cpu">CPU</button>
+                    </div>
+                    <div class="group" id="scope-buttons" role="group" aria-label="统计口径">
+                        <button data-scope="tree" class="active">进程树</button>
+                        <button data-scope="main">主进程</button>
+                    </div>
+                    <div class="group" id="smooth-buttons" role="group" aria-label="曲线平滑窗口">
+                        <button data-smooth="0">原始</button>
+                        <button data-smooth="500">0.5s</button>
+                        <button data-smooth="1000" class="active">1s</button>
+                        <button data-smooth="2000">2s</button>
+                    </div>
+                    <label class="toggle">
+                        <input type="checkbox" id="marks" checked />
+                        标注首个 / 末次请求
+                    </label>
+                </div>
+
+                <div class="chart-box">
+                    <canvas id="chart"></canvas>
+                </div>
+            </section>
+
+            <section>
+                <div class="head">
+                    <span class="eyebrow">Runs</span>
+                    <h2>本页画的那几次运行</h2>
+                </div>
+                <p class="sub" id="pick-rule"></p>
+                <div class="scroll-x">
+                    <table id="summary">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- 统一计分整块排在最后：口径还在 Beta，先不占首屏；表里给数字，柱状图先收着
+                 （<figure> 上那个 hidden）——去掉 hidden 就放回来，JS 照着这个属性决定画不画。 -->
+            <section id="page-scores">
+                <div class="head">
+                    <span class="eyebrow">Score</span>
+                    <h2>统一计分 · CPU 与内存 1:1 <span class="beta">Beta</span></h2>
+                </div>
+                <div class="scroll-x">
+                    <table id="scores">
+                        <thead></thead>
+                        <tbody></tbody>
+                    </table>
+                </div>
+                <p class="sub warn" id="score-note"></p>
+                <div class="bars bars-single">
+                    <figure class="bar-box" hidden>
                         <figcaption>
-                            统一计分 CU <span class="unit">· 面积口径（核·秒 + 内存），越低越省</span>
+                            统一计分 CU <span class="unit">核·秒 + GB·秒 · 越低越省</span>
                         </figcaption>
                         <div class="bar-canvas"><canvas id="bar-cu"></canvas></div>
                     </figure>
-                    <figure class="bar-box">
-                        <figcaption>
-                            峰值 CPU <span class="unit">· 进程树，单核 = 100%，最坏一刻</span>
-                        </figcaption>
-                        <div class="bar-canvas"><canvas id="bar-cpu"></canvas></div>
-                    </figure>
-                    <figure class="bar-box">
-                        <figcaption>
-                            峰值内存 RSS <span class="unit">· 进程树，最坏一刻占用</span>
-                        </figcaption>
-                        <div class="bar-canvas"><canvas id="bar-rss"></canvas></div>
-                    </figure>
                 </div>
-                <p class="sub" id="bars-note" style="margin: 10px 0 0"></p>
-            </div>
+            </section>
 
-            <h2>逐拍曲线：CPU 与内存怎么随时间走</h2>
-            <div class="controls">
-                <div class="group" id="metric-buttons" role="group" aria-label="Y 轴指标">
-                    <button data-metric="rss" class="active">内存 RSS</button>
-                    <button data-metric="cpu">CPU</button>
-                </div>
-                <div class="group" id="scope-buttons" role="group" aria-label="统计口径">
-                    <button data-scope="tree" class="active">进程树</button>
-                    <button data-scope="main">主进程</button>
-                </div>
-                <div class="group" id="smooth-buttons" role="group" aria-label="曲线平滑窗口">
-                    <button data-smooth="0">原始</button>
-                    <button data-smooth="500">0.5s</button>
-                    <button data-smooth="1000" class="active">1s</button>
-                    <button data-smooth="2000">2s</button>
-                </div>
-                <label class="toggle">
-                    <input type="checkbox" id="marks" checked />
-                    标注首个 / 末次请求
-                </label>
-            </div>
-
-            <div class="chart-box">
-                <canvas id="chart"></canvas>
-            </div>
-
-            <h2>这次画的是哪几次运行</h2>
-            <div class="panel">
-                <table id="summary">
-                    <thead></thead>
-                    <tbody></tbody>
-                </table>
-                <p class="sub" id="pick-rule" style="margin: 10px 0 0"></p>
-            </div>
-
-            <h2>读数怎么读</h2>
-            <div class="panel">
-                <ul class="notes">
-                    <li>
-                        <strong>opencode 已退出排名，这张图上没有它</strong>：它在各项指标上都远落后于其余
-                        各家（端到端 38.6s、进程树 CPU 均值 69.9% / 峰值 229.3%、RSS 均值 798.9MB / 峰值
-                        943.0MB，按「端到端 × CPU 均值」估整段约 27 核·秒 vs 其余 1.0~5.0），继续混在榜单里
-                        只会拉长横轴、把其余各家压成一堆，故<strong>常规批次不再跑它</strong>；生成图表数据时
-                        用 <code>--exclude opencode</code> 把它留在 <code>data/runs/</code> 里的历史产物挡在外面
-                        （想复测就单跑一次、生成时不加这个开关，页面会给它画虚线并默认收起）。
-                        代码与沙盒保留在 <code>playground/opencode/</code>，理由见 <code>docs/perf-compare.md</code>。
-                    </li>
-                    <li>
-                        <strong>一个 harness 一条线</strong>：线的右端就是它退出的时刻；各家的端到端
-                        时长能差一个数量级，所以横向长度本身就是结论之一。
-                    </li>
-                    <li>
-                        <strong>虚线是「首个请求」与「末次请求」</strong>（mock 侧记的时刻挪到采样时间轴上）。
-                        虚线右边曲线还在、却几乎零 CPU，那就是<strong>收尾等待</strong>——本批六家都已很小
-                        （pi 0.02s · Codex 0.04s · Claude Code 0.06s · peri 0.07s · dsh 0.07s ·
-                        MiniMax Code 0.23s）。历史上这里有过两笔大账，本批都已消掉：Codex 的 10.1s
-                        （退出时向 <code>chatgpt.com</code> 发请求、本机 DNS 污染导致超时，现由 demo 注入
-                        死端口代理）与 peri 的固定 5.0s（等 Prediction 后台任务，现由剧本尾部的空白收尾条
-                        消掉）。两笔的根因与验证见 <code>docs/perf-compare.md</code>。
-                    </li>
-                    <li>
-                        <strong>请求数 ≠ 轮数</strong>：mock 请求里混着各家自己的辅助请求——peri 的
-                        「预测下一步输入」（吃剧本尾部那条空白、不占轮次）、dsh 的标题生成（吃掉第 2 条
-                        剧本）、pi 的上下文压缩总结（34 条）。辅助请求同样消费剧本条目，所以 100 条剧本下
-                        dsh 实际只执行了 99 轮工具调用；<strong>pi 为此用 133 轮的剧本（135 条）</strong>，
-                        135 次请求 = 100 轮主循环 + 34 条压缩总结 + 1 条初始。
-                    </li>
-                    <li>
-                        <strong>pi 的曲线中途会「变轻」</strong>：压缩之后它回传的历史被压成摘要
-                        （本批消息数最多到 <code>messages=200</code>，压缩请求 34 条），所以请求体与内存
-                        不像别家那样一路涨——这是 pi 自己把上下文管掉了，不是漏跑。
-                    </li>
-                    <li>
-                        <strong>口径默认「进程树」</strong>：Codex 的 CLI 只是 Node 启动器
-                        （主进程 40MB 上下、CPU 近 0），真正干活的是它 spawn 的原生二进制，
-                        切到「主进程」看 Codex 会严重低报。
-                    </li>
-                    <li>
-                        CPU 是<strong>单核 100%</strong> 口径，多线程进程可以 &gt;100%；内存取 RSS（含共享内存，
-                        含工具调用的子进程时按进程树算）。
-                    </li>
-                    <li>
-                        <strong>曲线默认按 1s 窗口做滑动平均</strong>（上面可切原始 / 0.5s / 1s / 2s）。
-                        100ms 采样下多线程 harness 的 CPU 本就是锯齿：一轮里「拼请求、解析上下文」突发几拍，
-                        等 mock 回包时几乎归零——本批数据里相邻两拍跳 30 个百分点以上的有 MiniMax Code
-                        21 处、Claude Code 3 处、dsh 3 处、pi 1 处（peri / Codex 各 0 处），
-                        <strong>那是真实读数，不是采样抖动</strong>；换 1s 窗口后这些跳变全部降到 0 处
-                        （0.5s 窗口同样为 0）。所以平滑放在看图侧、不动原始数据：表格里的均值 / 峰值与
-                        <code>samples.csv</code> 始终是原始值，想看毛刺切回「原始」。
-                    </li>
-                    <li>
-                        <strong>每条线的峰值上标了 harness 名</strong>（CPU 与内存都标）：圆点就是该家曲线的
-                        最高处——平滑开着时标的是平滑后的峰值，想看原始峰值先把窗口切回「原始」；汇总表里
-                        那列始终按原始读数算。名字默认写在峰值右侧，右边放不下时翻到左侧（内存峰值多半
-                        落在收尾处，容易贴着右边界）。
-                    </li>
-                    <li>
-                        <strong>内存的纵轴是反的</strong>（0 在顶、占用越大越靠下）：曲线往下走 = 内存变重，
-                        方向与「负担加重」一致；CPU 轴仍是正常方向（越高越忙）。
-                    </li>
-                    <li>
-                        <strong>系数为什么是 1:1</strong>：FC 的 <code>0.15 CU/(GB·秒)</code> 等于说
-                        「1 个核 ≈ 6.67 GB」（AWS Lambda 新版价 ≈ 7.6、Cloud Run ≈ 9，行业都在这条线上），
-                        那是云厂商的出价。照它算，内存项在总账里只占 1%~8%，「谁更省内存」几乎不参与
-                        计分（实测把内存权重压到 0，名次几乎不动）。本项目问的是<strong>资源负担</strong>，
-                        就把这件事明说一次：<strong>1 核·秒 = 1 GB·秒</strong>，改系数只改
-                        <code>score.ts</code> 里 <code>CU_COEFFICIENTS</code> 那一处。
-                    </li>
-                    <li>
-                        机器上同时有别的工作负载时绝对值会偏高，<strong>横向比形状比数值更稳</strong>；
-                        要更干净的数字就空机器上重跑，再生成一次 JSON。
-                    </li>
-                </ul>
-            </div>
+            <footer class="foot">
+                <span id="data-meta"></span>
+                <span>口径与系数 <code>scripts/perf/score.ts</code></span>
+                <span>完整报告 <code>docs/perf-compare.md</code></span>
+                <span>换数据 <code>bun run scripts/perf/gen-chart-data.ts</code></span>
+            </footer>
         </div>
 
         <script>
@@ -535,12 +529,15 @@
             /**
              * 已退出排名的 harness：曲线默认收起（点图例可展开看历史读数）、画成虚线、汇总表里
              * 标注、X 轴也不再按它们的时长定标。opencode 是第一个——它在各项指标上都远落后于
-             * 其余各家（理由与数据见下面「读数怎么读」的第一条），继续混在榜单里只会把横轴拉长、
+             * 其余各家（理由与数据见 docs/perf-compare.md），继续混在榜单里只会把横轴拉长、
              * 把其余五家压成一堆。代码与沙盒仍在 playground/opencode/，想复测随时可以单跑。
              */
             const EXCLUDED = new Set(["opencode"]);
 
             const state = { metric: "rss", scope: "tree", marks: true, smoothMs: 1000 };
+            /** 系统里关掉了动效就别放首屏那一下生长动画（别处本来也没有动效）。 */
+            const prefersReducedMotion =
+                window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
             let payload = null;
             let chart = null;
 
@@ -589,7 +586,7 @@
                 afterDatasetsDraw(canvas) {
                     const { ctx, chartArea, scales } = canvas;
                     ctx.save();
-                    ctx.font = "600 11px -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif";
+                    ctx.font = `600 11px ${CANVAS_SANS}`;
                     ctx.textBaseline = "middle";
 
                     // 先把所有峰值点换算成像素，顺手算好名字框的横向范围。
@@ -856,35 +853,26 @@
             }
 
             /**
-             * 计分块：公式与系数全部来自 payload.scoreFormula（口径只在 scripts/perf/score.ts
-             * 一处定义），页面只负责显示 + 把每个 harness 的账摊开。
+             * 计分块：页面只把每个 harness 的账摊开——这一块是给数字看的，不是给字看的。
+             * 式子与系数（口径只在 scripts/perf/score.ts 一处定义）暂时不写在页上，
+             * 要读口径看 score.ts、要读结论看 docs/perf-compare.md。
              */
             function renderScores() {
-                const box = document.getElementById("formula");
                 const table = document.getElementById("scores");
                 const note = document.getElementById("score-note");
-                const formula = payload.scoreFormula;
-                if (formula === undefined || !payload.runs.some((run) => run.score !== undefined)) {
-                    // 老 JSON：不硬撑，直接说清怎么办。
-                    box.textContent =
-                        "这份 data/perf-chart.json 里没有计分块（生成器版本较老）。\n" +
-                        "重跑一次 bun run scripts/perf/gen-chart-data.ts 就会带上统一计分。";
+                if (
+                    payload.scoreFormula === undefined ||
+                    !payload.runs.some((run) => run.score !== undefined)
+                ) {
+                    // 老 JSON：不硬撑，直接说清怎么办（这一行本来就是留给这类提示的）。
                     table.hidden = true;
-                    note.textContent = "";
+                    note.hidden = false;
+                    note.textContent =
+                        "这份 data/perf-chart.json 里没有计分块（生成器版本较老）：重跑一次 " +
+                        "bun run scripts/perf/gen-chart-data.ts 就会带上统一计分。";
                     return;
                 }
                 table.hidden = false;
-                const c = formula.coefficients;
-                const pk = formula.peaks;
-                box.innerHTML = [
-                    `CU使用量 = ∑(资源使用量 × CU转换系数)     <span class="from">← 公式结构借自 ${formula.source}</span>`,
-                    `统一计分  CU = ${c.vCpuSecond.toFixed(1)} × 核·秒 + ${c.gbSecond.toFixed(1)} × GB·秒     <span class="from">（CPU 与内存 1:1；范围：${formula.scope}）</span>`,
-                    `  核·秒 = ∫(CPU% / 100) dt      <span class="from">CPU 是「单核 100%」口径，多线程可 &gt;100%</span>`,
-                    `  GB·秒 = ∫(RSS / 1GB) dt       <span class="from">内存取实测 RSS，不是「申报规格 × 时长」</span>`,
-                    `  分数  = ${formula.score}`,
-                    `峰值（压力口径，不折算） = ${pk.note}`,
-                    `与 FC 的差别: ${formula.deviations.join("；")}`,
-                ].join("\n");
 
                 // 表头分两层：上层是**口径**（面积 / 构成 / 峰值 / 分段），下层是列名。
                 const columnNames = [
@@ -971,82 +959,106 @@
                             noTail.map((run) => run.name).join("、"),
                     );
                 }
+                // 这一栏只留给「这批数据有坑」的告警：正常情况下一个字符都不占（连高度一起收掉，
+                // 免得空段落留下 18px 的假间距）。
+                // 口径本身不在这里念——公式已经在一行说明里，长解释在 docs/perf-compare.md。
                 note.innerHTML =
-                    "<strong>CU</strong> 答「跑完这部剧本总共烧掉多少」（面积，含时长），" +
-                    "<strong>峰值</strong>答「最坏一刻要占多少」（不折算——MB 与 % 本来就能横比）：" +
-                    "两个问题互补。系数是 <strong>CPU 与内存 1:1</strong>（1 核·秒 = 1 GB·秒）——" +
-                    "FC 原表的内存系数是 0.15（等于说「1 核 ≈ 6.67 GB」），照它算内存项只占总账 1%~8%，" +
-                    "「谁更省内存」几乎不参与计分；本项目按资源负担读，就在 <code>score.ts</code> 里明说这一条。" +
-                    "分数是 100 × 本批次最小者 / 本次，<strong>只在同一批次内可比</strong>" +
-                    "（机器状态、后台负载、剧本都跟着批次走）。口径固定用<strong>进程树</strong>" +
-                    "（不受上面「主进程 / 进程树」按钮影响），也不含磁盘项与 GPU 项；" +
-                    "请求数<strong>不折算</strong>——它由剧本决定，不是 harness 的开销。总分是<strong>逐拍累加</strong>" +
-                    "（每拍资源率 × 该拍实测间隔），末列三段是同一口径的<strong>分段积分</strong>：" +
-                    "三列之和 = 总分 − 尾部补齐（那 ~0.1s 只进总分），所以别把三段相加当总分；" +
-                    "MB·秒只是把 GB·秒换个分母显示（×1024）。" +
-                    "统一计分还在 <strong>Beta</strong>：口径没定稿（后代 CPU 算不算、时长怎么算仍在讨论），" +
-                    "拿它看趋势可以、别把名次当结论（口径与系数只在 <code>scripts/perf/score.ts</code> 一处）。" +
-                    (warnings.length > 0
-                        ? `<br><span class="warn">⚠ ${warnings.join("；")}</span>`
-                        : "");
+                    warnings.length > 0 ? `<span class="warn">⚠ ${warnings.join("；")}</span>` : "";
+                note.hidden = warnings.length === 0;
             }
 
             /**
-             * y 轴图标：Chart.js 的刻度标签只能画文字，图标得自己补。做法是用 ticks.padding
-             * 在「轴」与「文字」之间留出一条空档（22px），再把 14px 的图标右对齐画进去
-             * ——右端离轴 4px、左端离文字 4px，互不重叠。
+             * 柱状图的两个自绘插件（Chart.js 的刻度只能画文字，图标与条末数字都得自己补）。
              *
-             * 数据按 canvas id 存表里、不挂在 chart 实例上：`animation: false` 时首帧是在
-             * `new Chart()` 里同步画完的，构造之后再挂 `chart.$bars` 已经晚了（首帧什么也画不出，
-             * 后面又没有任何东西触发重画）。
+             * 素材按 canvas id 存表里、不挂在 chart 实例上：图表一开始动（首帧同步画）就得有素材，
+             * 构造之后再挂已经晚了（首帧什么也画不出，后面又没有任何东西触发重画）。
+             *
+             * `mirror` = 左半边那张 CPU 图：值轴反转（0 停在右端）、条从右往左长、y 轴刻度挪到了右侧
+             * ——于是「条的哪一头是值端」「数字往哪边让」「图标画在轴的哪一侧」全都得反着来。
              */
             const barEntries = new Map();
+            /** 前两名以外的行画半透明：每张图只看头两名，其余只当背景。 */
+            const DIM_ALPHA = 0.35;
+            const DIM_TEXT = "rgba(20, 23, 28, 0.34)";
+            // 画布上没有 CSS：这两副字体与页面保持同一张面孔——数字等宽，名字用无衬线。
+            const CANVAS_MONO = "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace";
+            const CANVAS_SANS = "-apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif";
+
+            /**
+             * y 轴图标：Chart.js 的刻度标签只能画文字，图标得自己补。做法是用 ticks.padding
+             * 在「轴」与「文字」之间留出一条空档（22px），再把 14px 的图标画进去
+             * ——离轴 4px、离文字 4px，互不重叠。镜像图的轴在右侧，图标跟着挪到轴的右边。
+             */
             const axisLogoPlugin = {
                 id: "axisLogos",
                 afterDraw(chart) {
-                    const entries = barEntries.get(chart.canvas.id);
-                    if (entries === undefined) return;
+                    const bars = barEntries.get(chart.canvas.id);
+                    if (bars === undefined) return;
                     const { ctx, chartArea, scales } = chart;
                     const size = LEGEND_ICON_PX;
                     ctx.save();
-                    entries.forEach((entry, index) => {
+                    bars.entries.forEach((entry, index) => {
                         const image = logoImages.get(entry.run.id)?.image;
                         if (image === undefined || !image.complete || image.naturalWidth === 0) return;
                         const y = scales.y.getPixelForTick(index);
                         if (!Number.isFinite(y)) return;
-                        ctx.drawImage(image, chartArea.left - 4 - size, y - size / 2, size, size);
-                    });
-                    ctx.restore();
-                },
-            };
-
-            /** 条末的数值：放得下就写在条外右侧（深灰），放不下翻进条内（白字）。 */
-            const barValuePlugin = {
-                id: "barValues",
-                afterDatasetsDraw(chart) {
-                    const entries = barEntries.get(chart.canvas.id);
-                    if (entries === undefined) return;
-                    const { ctx, chartArea } = chart;
-                    ctx.save();
-                    ctx.font = "600 11px -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif";
-                    ctx.textBaseline = "middle";
-                    chart.getDatasetMeta(0).data.forEach((bar, index) => {
-                        const entry = entries[index];
-                        if (entry === undefined) return;
-                        const outside = bar.x + 6 + ctx.measureText(entry.text).width <= chartArea.right;
-                        ctx.textAlign = outside ? "left" : "right";
-                        ctx.fillStyle = outside ? "#41474e" : "#fff";
-                        ctx.fillText(entry.text, outside ? bar.x + 6 : bar.x - 6, bar.y);
+                        // 图标总在轴与文字之间：轴在右（镜像图）就画在轴右边，轴在左就画在轴左边。
+                        const x = bars.mirror ? chartArea.right + 4 : chartArea.left - 4 - size;
+                        ctx.globalAlpha = entry.dim ? DIM_ALPHA : 1;
+                        ctx.drawImage(image, x, y - size / 2, size, size);
                     });
                     ctx.restore();
                 },
             };
 
             /**
-             * 柱状图板块：把计分表里最要紧的三列（CU / 峰值 CPU / 峰值内存）各画一排横条，
-             * 条短的是省的，自上而下按「越小越好」排。
+             * 条末的数值：放得下就写在条外（深灰），放不下翻进条内（白字）——镜像图方向全反。
+             * 淡化的那些行一律写浅灰：条本身只剩 35% 不透明度，条内的白字会糊成一片。
+             */
+            const barValuePlugin = {
+                id: "barValues",
+                afterDatasetsDraw(chart) {
+                    const bars = barEntries.get(chart.canvas.id);
+                    if (bars === undefined) return;
+                    const { ctx, chartArea } = chart;
+                    // 值端在条的这一头：普通图是右端（+1），镜像图是左端（-1）。
+                    const dir = bars.mirror ? -1 : 1;
+                    ctx.save();
+                    ctx.font = `600 11px ${CANVAS_MONO}`;
+                    ctx.textBaseline = "middle";
+                    chart.getDatasetMeta(0).data.forEach((bar, index) => {
+                        const entry = bars.entries[index];
+                        if (entry === undefined) return;
+                        const width = ctx.measureText(entry.text).width;
+                        const outside =
+                            dir > 0
+                                ? bar.x + 6 + width <= chartArea.right
+                                : bar.x - 6 - width >= chartArea.left;
+                        // 条外：贴着值端往外排；条内：翻回条里侧排。
+                        const align = dir > 0 ? (outside ? "left" : "right") : outside ? "right" : "left";
+                        ctx.textAlign = align;
+                        ctx.fillStyle = entry.dim ? DIM_TEXT : outside ? "#41474e" : "#fff";
+                        ctx.fillText(entry.text, outside ? bar.x + dir * 6 : bar.x - dir * 6, bar.y);
+                    });
+                    ctx.restore();
+                },
+            };
+
+            /**
+             * 那张图的 <figure> 是不是被 HTML 标了 hidden（统一计分 CU 那张现在就是）。
+             * 只看自己这一格：`#app` 在数据到位前也是 hidden，认祖先会把每一张都当成收起。
+             */
+            const barBoxHidden = (canvasId) =>
+                document.getElementById(canvasId)?.closest(".bar-box")?.hasAttribute("hidden") === true;
+
+            /**
+             * 柱状概览：峰值 CPU 与峰值内存并排成一张「蝴蝶图」——条从中间往两边长，条短的是省的，
+             * 两列 harness 名与图标夹在两排条中间：左半边那张（CPU）的值轴反转、y 轴刻度挪到右侧，
+             * 名字就写在自己轴的右边；右半边那张（内存）的刻度照旧在左轴，名字写在自己轴的左边。
              *
-             * 三个指标单位不同（CU / % / MB），不共用一个数值轴，所以是三张独立的小图；
+             * 每张图都是一份独立的榜单：各自按本图的指标从省到贵排，各自的前两名实色、其余半透明
+             * （peri 不再单独照顾——它在两张图里都在前两名，颜色自然还是那支红）。
+             * 单位不同（% / MB）不共用一个数值轴；
              * 口径固定进程树（与计分表一致），**不随上面「主进程 / 进程树」按钮变**，所以只建一次。
              */
             let barCharts = null;
@@ -1063,26 +1075,45 @@
 
                 const specs = [
                     { id: "bar-cu", value: (run) => run.score.cu, digits: 3, unit: " CU" },
-                    { id: "bar-cpu", value: (run) => run.score.peaks?.treeCpuPercent, digits: 1, unit: "%" },
+                    // 镜像的那张（左半边）：值轴反转 + y 轴刻度在右侧，名字与图标于是落在两图中间。
+                    {
+                        id: "bar-cpu",
+                        value: (run) => run.score.peaks?.treeCpuPercent,
+                        digits: 1,
+                        unit: "%",
+                        mirror: true,
+                    },
                     { id: "bar-rss", value: (run) => run.score.peaks?.treeRssMb, digits: 1, unit: " MB" },
-                ];
+                ]
+                    // 哪张的 <figure> 带 hidden 就不画哪张（CU 那张：口径还在 Beta，先收起来）。
+                    .filter((spec) => !barBoxHidden(spec.id));
+
                 barCharts = specs.map((spec) => {
-                    const entries = scored
+                    const mirrored = spec.mirror === true;
+                    const sorted = scored
                         .map((run) => ({
                             run,
                             value: spec.value(run),
                             // 已退出排名那家（若数据里还带着）标一下，免得看着像在榜单里
-                            label:
-                                run.name + (EXCLUDED.has(run.id) ? "（已退出排名）" : ""),
+                            label: run.name + (EXCLUDED.has(run.id) ? "（已退出排名）" : ""),
                         }))
                         .filter((entry) => Number.isFinite(entry.value))
-                        .sort((a, b) => a.value - b.value)
-                        .map((entry) => ({
+                        // 本图自己的名次：指标越小越靠上，第一名在最上面
+                        .sort((a, b) => a.value - b.value);
+                    // 名次只数还留在排名里的：已退出排名的（若数据里还带着）不占名额、一律淡下去。
+                    let rank = 0;
+                    const entries = sorted.map((entry) => {
+                        const excluded = EXCLUDED.has(entry.run.id);
+                        const dim = excluded || rank >= 2;
+                        if (!excluded) rank += 1;
+                        return {
                             ...entry,
+                            // 本图前两名实色，其余淡成背景（见两个插件里的 DIM_*）
+                            dim,
                             text: entry.value.toFixed(spec.digits) + spec.unit,
-                        }));
-
-                    barEntries.set(spec.id, entries);
+                        };
+                    });
+                    barEntries.set(spec.id, { entries, mirror: mirrored });
                     const chart = new Chart(document.getElementById(spec.id), {
                         type: "bar",
                         data: {
@@ -1090,30 +1121,63 @@
                             datasets: [
                                 {
                                     data: entries.map((entry) => entry.value),
-                                    backgroundColor: entries.map((entry) => colors.get(entry.run.id)),
-                                    borderRadius: 4,
-                                    maxBarThickness: 20,
+                                    // 淡化用 8 位十六进制色（#rrggbbaa）：条淡下去，名字与图标跟着淡
+                                    // （见 barEntries 上的 dim 与两个插件里的 DIM_ALPHA / DIM_TEXT）。
+                                    backgroundColor: entries.map((entry) =>
+                                        entry.dim
+                                            ? colors.get(entry.run.id) + "59"
+                                            : colors.get(entry.run.id),
+                                    ),
+                                    borderRadius: 3,
+                                    maxBarThickness: 18,
                                     barPercentage: 0.72,
                                 },
                             ],
                         },
                         options: {
                             indexAxis: "y",
-                            animation: false,
+                            // 首屏唯一一处动效：条从中间的零线往外长出来（600ms 一次，不循环）。
+                            // 关掉动效偏好时直接落位。素材已在构造前备好，动画每一帧都画得出来。
+                            animation: prefersReducedMotion
+                                ? false
+                                : { duration: 600, easing: "easeOutQuart" },
                             responsive: true,
                             maintainAspectRatio: false,
-                            // 右侧留出条末数值的位置
-                            layout: { padding: { right: 54 } },
+                            // 值端留出条外数值的位置：普通图在右，镜像图在左；名字那一侧各留 10px 透气。
+                            layout: {
+                                padding: mirrored ? { left: 54, right: 10 } : { left: 10, right: 54 },
+                            },
                             scales: {
                                 x: {
                                     beginAtZero: true,
-                                    grid: { color: "#f1f3f5" },
-                                    ticks: { font: { size: 10.5 } },
+                                    // 镜像：0 停在右端（贴着名字那列），条往左长。
+                                    reverse: mirrored,
+                                    grid: { color: "#f1f2f4" },
+                                    // 刻度是数字：等宽，与表格里的数字同一副面孔。
+                                    ticks: {
+                                        color: "#a4aab2",
+                                        font: { size: 10.5, family: CANVAS_MONO },
+                                    },
                                 },
                                 y: {
                                     grid: { display: false },
-                                    // padding 把刻度文字推开，空出来的地方画厂商图标（见 axisLogoPlugin）
-                                    ticks: { font: { size: 11 }, padding: 22 },
+                                    // 名字那列贴着中间：镜像图把刻度挪到轴的右侧，普通图留在左轴——
+                                    // 两列名字于是夹在两排条中间。padding 空出来的地方画图标。
+                                    position: mirrored ? "right" : "left",
+                                    ticks: {
+                                        padding: 22,
+                                        // 名字是字：无衬线；淡化的那些连字重一起降下去，实色的更跳。
+                                        font: (context) => ({
+                                            size: 12,
+                                            family: CANVAS_SANS,
+                                            weight:
+                                                entries[context.index]?.dim === false
+                                                    ? "600"
+                                                    : "400",
+                                        }),
+                                        color: (context) =>
+                                            entries[context.index]?.dim ? DIM_TEXT : "#14171c",
+                                    },
                                 },
                             },
                             plugins: {
@@ -1129,10 +1193,6 @@
                     });
                     return chart;
                 });
-                document.getElementById("bars-note").innerHTML =
-                    "三个指标都固定按<strong>进程树</strong>口径算（不受上面「主进程 / 进程树」按钮影响）；" +
-                    "CU 是整段的面积，两个峰值是「最坏一刻」——同一家这两栏的名次可以不同：" +
-                    "CU 低说明跑完全程更省，峰值低说明最坏那一刻不会顶到机器上限。";
             }
 
             function renderAll() {
@@ -1218,6 +1278,29 @@
                 return await loadScript(VENDOR_URL, 5000);
             }
 
+            /**
+             * 数据来源的候选路径，按「发布出去的站点优先」排：
+             *   data/perf-chart.json   站点布局——GH Pages 上页面就是根目录的 index.html，
+             *                          数据在它旁边的 data/（由 workflow 组装，见 .github/workflows/）；
+             *   ../data/perf-chart.json 仓库布局——本地从仓库根起静态服务时走这条。
+             * 两条都不通就把两次失败原因都报出来，别让人猜是哪一种。
+             */
+            const DATA_CANDIDATES = ["data/perf-chart.json", "../data/perf-chart.json"];
+
+            async function loadPayload() {
+                const failures = [];
+                for (const url of DATA_CANDIDATES) {
+                    try {
+                        const response = await fetch(url, { cache: "no-store" });
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        return await response.json();
+                    } catch (error) {
+                        failures.push(`${url}（${error.message}）`);
+                    }
+                }
+                throw new Error(failures.join("；"));
+            }
+
             async function main() {
                 if (!(await ensureLibrary())) {
                     showError(
@@ -1231,13 +1314,11 @@
                 }
                 let data;
                 try {
-                    const response = await fetch("../data/perf-chart.json", { cache: "no-store" });
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                    data = await response.json();
+                    data = await loadPayload();
                 } catch (error) {
                     showError(
                         "数据没加载出来",
-                        `读 ../data/perf-chart.json 失败（${error.message}）：要么文件还没生成，` +
+                        `两份数据都没读到（${error.message}）：要么文件还没生成，` +
                             "要么页面是直接用 file:// 打开的（fetch 会被 CORS 挡住）。",
                         "cd " +
                             "<仓库根> && bun run scripts/perf/gen-chart-data.ts\n" +
@@ -1247,9 +1328,10 @@
                     return;
                 }
                 payload = data;
-                document.getElementById("pick-rule").textContent =
-                    `生成于 ${data.generatedAt}；${data.pickRule}；产物目录 ${data.sourceDir}。` +
-                    "换数据重跑：bun run scripts/perf/gen-chart-data.ts（可加 --pick <runId> 指定某一次运行）。";
+                // 两处各一句话：表格下面说「画的是哪几次运行」，页脚说数据出处。
+                document.getElementById("pick-rule").textContent = `${data.pickRule}。`;
+                document.getElementById("data-meta").textContent =
+                    `数据生成于 ${data.generatedAt} · 产物 ${data.sourceDir}`;
                 document.getElementById("app").hidden = false;
                 // 等图例图标加载完再画第一版图：Chart.js 不会因为图标后到而自己重画。
                 await logosReady;
