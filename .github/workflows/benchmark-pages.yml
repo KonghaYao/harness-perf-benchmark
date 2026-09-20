@@ -17,12 +17,12 @@
 #     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
 #     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
 #     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
-#   - 八家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
+#   - 九家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
 #   - opencode **v1** 已退出排名，这里不装、不跑；v2 是另一家（npm 包 `@opencode/cli`，bin 名
 #     `opencode2`），在排名里，沙盒是 playground/opencode2。两者同名不同代，别混。
-#   - Antigravity CLI（agy）是唯一的**脚本装**的第二家：peri 走 GitHub release，它走官方的
-#     install.sh（下载到 ~/.local/bin）。两家都必须装成，装不上这一趟就整趟失败——线上继续挂
-#     上一批的站点，不会悄悄少一条曲线（八条曲线里少一条比整个榜单停更是更坏的失真）。
+#   - peri 走 GitHub release，Antigravity CLI（agy）与 Hermes Agent（hermes）走它们各自的官方
+#     install.sh（都装到 ~/.local/bin）。三家都必须装成，装不上这一趟就整趟失败——线上继续挂
+#     上一批的站点，不会悄悄少一条曲线（九条曲线里少一条比整个榜单停更是更坏的失真）。
 
 name: benchmark · gh-pages
 
@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       turns:
-        description: 长剧本轮数（pi 自动 +33、agy 自动 +4、opencode2 自动 +1：它们的压缩/标题请求会多吃条目）
+        description: 长剧本轮数（pi 自动 +33、agy 自动 +4、opencode2 自动 +1、hermes 自动 +2：它们的压缩/标题请求会多吃条目）
         default: "100"
       repeats:
         description: 每家跑几次（图表取端到端时长居中的那一次）
@@ -73,7 +73,7 @@ concurrency:
 
 jobs:
   bench-and-publish:
-    # 整批 24 次运行（八家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
+    # 整批 27 次运行（九家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
     timeout-minutes: 150
     runs-on: ${{ github.event.inputs.runner || 'macos-latest' }}
     environment:
@@ -152,7 +152,7 @@ jobs:
             echo "- 批次配置：轮数 ${TURNS} · 每家 ${REPEATS} 次 · runner \`${RUNNER}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: 装 harness（peri + 六家 npm CLI）
+      - name: 装 harness（peri + 六家 npm CLI + agy / hermes 官方脚本）
         if: steps.decide.outputs.bench == '1'
         env:
           PERI_INSTALL_VERSION: ${{ github.event.inputs.peri_version }}
@@ -204,10 +204,28 @@ jobs:
           "$HOME/.local/bin/agy" --version
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      # Hermes Agent（Nous Research）也只有官方一个安装脚本：它拉仓库到 ~/.hermes/hermes-agent、
+      # 建 Python venv（uv）、装 Node 侧依赖（node-pty 要现编，runner 上有 Xcode CLT 就够），
+      # 最后把启动壳放到 ~/.local/bin/hermes。四个开关让它能无人值守跑完：跳过交互式 setup 与
+      # 浏览器/Computer Use 两套可选组件（那两套对压测无用，装了只是拖时间）。与 agy 同类，
+      # **没有钉版本的参数**，CI 每次拿当天最新版；版本号只留在下一步的清单里。
+      # 沙盒与本步无关：HERMES_HOME、provider 配置、死代理都是 playground/hermes/perf-demo.ts
+      # 在起 harness 时注入的（deps.harnessEnv），这里只需要一个能跑的 hermes。
+      - name: 装 Hermes Agent（hermes：官方脚本装到 ~/.local/bin）
+        if: steps.decide.outputs.bench == '1'
+        run: |
+          set -euo pipefail
+          # 与 peri / agy 那两步同一条纪律：先落盘再执行，脚本本身能进日志。
+          curl -fsSL -o /tmp/hermes-install.sh https://hermes-agent.nousresearch.com/install.sh
+          bash /tmp/hermes-install.sh --skip-setup --skip-browser --skip-computer-use --non-interactive
+          # 自查：装完确认壳能跑（真倒在下载/建 venv/装依赖上，这步会先失败）。
+          "$HOME/.local/bin/hermes" --version
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
       - name: 报一下装到了什么版本
         if: steps.decide.outputs.bench == '1'
         run: |
-          for bin in peri agy claude codex pi dsh mcode opencode2; do
+          for bin in peri agy claude codex pi dsh mcode opencode2 hermes; do
             printf '%-8s %s\n' "${bin}" "$(command -v "${bin}" || echo '（不在 PATH 里）')"
           done
           peri --version || true
@@ -220,8 +238,9 @@ jobs:
           # v2 的版本号自己带名字（实测 `opencode v2.0.10`），打印出来正好当「装的是 v2 不是 v1」
           # 的现场证据——v1 只输出一个裸的 `1.17.12`。
           opencode2 --version || true
+          hermes --version || true
 
-      - name: 生成剧本（八份，按各家工具形状）
+      - name: 生成剧本（九份，按各家工具形状）
         if: steps.decide.outputs.bench == '1'
         env:
           TURNS: ${{ github.event.inputs.turns || '100' }}
@@ -247,8 +266,15 @@ jobs:
           # = 标题 1 + 工具轮 100 + 收尾 1）。它不像 pi 那样压缩、也没有 peri 的预测请求。
           gen --turns "$((TURNS + 1))" --tool shell \
             --out data/scenarios/long-run-opencode2.json
+          # hermes：shell 工具叫 terminal、参数 {command}；它有两笔自己的开销，都要留出条目——
+          # 会话标题生成（stream=false、无 tools；与主请求几乎同时发出、谁先不定）与途中一次
+          # 上下文压缩（约 170 条消息时那条 "You are a summarization agent creating a context
+          # checkpoint."，压完历史剩 21 条、紧接着一条重述主请求，前后两条都取号）。
+          # 实测 100 轮要 102 轮剧本（104 条 = 102 + 2 条收尾），故 +2。
+          gen --turns "$((TURNS + 2))" --tool terminal \
+            --out data/scenarios/long-run-hermes.json
 
-      - name: 跑批次（八家串行，每家 repeats 次）
+      - name: 跑批次（九家串行，每家 repeats 次）
         if: steps.decide.outputs.bench == '1'
         env:
           REPEATS: ${{ github.event.inputs.repeats || '3' }}
@@ -270,7 +296,7 @@ jobs:
             return 0
           }
           for round in $(seq 1 "${REPEATS}"); do
-            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2; do
+            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes; do
               echo "::group::第 ${round} 轮 · ${harness}"
               run_one "${harness}"
               echo "::endgroup::"

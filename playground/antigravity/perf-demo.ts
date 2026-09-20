@@ -14,7 +14,7 @@
  *   下无处可批 → 需要审批的工具被**软拒**（跑得下去，但白费一轮），所以固定带 skip-permissions，
  *   与 Claude Code 那份同理，剧本只放只读命令；
  * - 线协议是 **Google Gemini API**（不是 OpenAI 兼容）：`POST /v1beta/models/{model}:streamGenerateContent?alt=sse`，
- *   mock 侧由 src/gemini.ts 应答。**这也是八家里唯一走这个协议的**——它不吃 base URL 上的
+ *   mock 侧由 src/gemini.ts 应答。**这也是九家里唯一走这个协议的**——它不吃 base URL 上的
  *   `/v1/chat/completions`，配错端点的症状是启动即报 404；
  * - 隔离靠 **HOME**（本目录下的 .home/）：配置在 `$HOME/.gemini/antigravity-cli/settings.json`，
  *   连同凭据缓存、会话状态一起落在沙盒里。**只改某个 config dir 是不够的**（Claude Code 的

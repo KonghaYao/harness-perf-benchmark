@@ -1,4 +1,4 @@
-# 压测对比：六种 harness（opencode v1 已退出排名；Antigravity CLI 与 opencode v2 已接入、尚未并入批次）
+# 压测对比：六种 harness（opencode v1 已退出排名；Antigravity CLI、opencode v2 与 Hermes Agent 已接入、尚未并入批次）
 
 > **opencode v1 已退出排名（2026-09-19 起）**
 >
@@ -47,6 +47,7 @@ harness 走完剧本、收到收尾响应后**自行退出**——回答的是�
 | MiniMax Code（`mcode`） | 0.4.12 | OpenAI Chat Completions | 沙盒 `config.yaml` 的 `custom_provider.*.options.baseURL` + `--model custom_provider:llm-mock/llm-mock` | `MINIMAX_DATA_DIR` |
 | Antigravity CLI（`agy`）（**新接入，本批未跑**） | 1.2.7（PATH） | **Google Gemini API** | `GOOGLE_GEMINI_BASE_URL` + 沙盒 `settings.json` 的 `modelProvider: "gemini"` | `HOME` |
 | opencode v2（`opencode2`）（**新接入，本批未跑**） | 2.0.10 | OpenAI Chat Completions | 随 cwd 的 `opencode.json` + `{env:LLM_MOCK_BASE_URL}`，命令带 `--standalone` | `XDG_*` + 死代理 |
+| Hermes Agent（`hermes`）（**新接入，本批未跑**） | 0.21.3（2026.9.14，官方脚本装到 `~/.local/bin`） | OpenAI Chat Completions | 沙盒 `config.yaml` 的 `model.provider: custom` + `base_url`（不吃环境变量插值） | `HERMES_HOME` |
 
 约定：每个 harness 都在自己的 playground 沙盒里、用同一份剧本跑
 （`cd playground/<名> && bun perf-demo.ts …`），剧本由同一个生成器现造、工具形状按各家实测；
@@ -309,6 +310,64 @@ v1 已退出排名（见开头那个框），这条是新的一项。产品细�
 - 与 v1 的对照只能看量级：v1 退出排名时的读数是端到端 **38.6s**（那是另一批次、负载更重），
   v2 在这一批是 9.1s——**别把两批的秒数相减**。要把 v2 并入榜单得整批重跑（含它共 8 家 × 3 次）；
   CI 的 workflow 已经带上它（装包与跑批两处），下一次 CI 批次就是这个形态。
+
+## Hermes Agent（`hermes`）：已接入，**尚未并入批次**
+
+> **它不在上面那批里，下面的读数不能与批次表格并列**——理由与上两节相同：3 次读数跑于
+> 2026-09-20 14:45~14:46（`--label hermes-probe`），与第五批隔了一天，本机 1 分钟 load
+> **4.1~4.3**（第五批是 2.9~3.8）。跨批次**只能比 CU**，百分制分数与其余指标都不可比
+> （分数是批内相对值）。
+
+`hermes -z`（Nous Research 的 Hermes Agent，v0.21.3 / 2026.9.14，官方 `install.sh` 装到
+`~/.local/bin/hermes`）是 2026-09-20 接入的第 9 家，走 **OpenAI Chat Completions**
+（与 peri / pi / dsh / mcode / opencode2 同协议）。沙盒、provider 注入与工具形状在 `CLAUDE.md`
+的「与 harness 集成」，这里只放读数（同一份剧本、三次串行）：
+
+| 次 | runId | 端到端 | 启动 · 运转 · 收尾 | CU | 峰值 RSS · CPU |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `20260920-144542` | 10.7s | 5.9 · 4.8 · 0.1 | 10.587 | 203.3MB · 134.2% |
+| 2 | `20260920-144556`（中位） | 10.8s | 6.0 · 4.7 · 0.1 | 10.706 | 201.1MB · 131.8% |
+| 3 | `20260920-144610` | 11.0s | 6.2 · 4.7 · 0.1 | 10.918 | 203.3MB · 133.0% |
+
+- **三次都自行退出**（退出码 0、不用强杀），收尾 **0.06~0.11s**：主流程吃到尾部那条「任务结束」
+  纯文本即收，没有 peri 的 5s 等待、也没有 Codex 那种退出期网络超时；
+  **重复性很好**（端到端 ±1.4%、CU ±2%，比 agy 的 ±4%、opencode2 的 ±7% 都稳）；
+- **它的钱花在启动段，而且启动段在「跑满一个核」**：首个请求前固定 **5.9~6.2s**，
+  逐拍采样在这段里是**从首次采样（t≈0.3s）起 CPU 就贴着 100%**（99.7~104.4%，不是空等）、
+  RSS 前 3 秒恒定在 102~110MB（第 5 秒才涨到 135~174MB）。整段 5.43~5.67 核·秒 ≈ **0.93 核 × 6s**，
+  按 1:1 折 **6.10~6.38 CU——占整段 CU 的 58%**（运转段 100 轮只占 40%：4.25~4.44 CU）。
+  这是本项目测过的最大的启动段（此前最贵的是 MiniMax Code 1.22s / 1.69 CU），三次完全一致；
+  它自己的 `logs/agent.log` 在这段里只在起进程后约 0.3s 记了三行「注册 browser 插件」，
+  之后到首个请求之间没有任何输出——**这 5.7s 既不是 mock 的（还没有请求）、也不是解释器冷启动**
+  （`hermes --version` 0.25s）；死代理与否也不改变它（CLAUDE.md 里 7.87s vs 7.83s 的对照）。
+  根因没定位到底，照实记成「Hermes 的固定成本」；
+- **口径上它与 dsh 同类**：`samples.csv` 的 `procs` 列**恒为 1**（执行工具命令时拉起的 shell
+  太短命、采样打不到），RSS 均值 147~148MB / 峰值 201~203MB 都是主进程自己的；
+  那 100 个工具 shell 的账记在**已回收子进程计数器**上——1.26~1.35 核·秒（占整段 CPU 的 14%）；
+- **消费规律：104 条剧本 = 100 个工具轮**，两笔手续费都要算进条数——
+  1. **会话标题生成**（`stream=false`、`messages=2`、无 tools，system 是 "You name chat sessions."）
+     与主请求几乎同时发出，**顺序不定**（5 次实测 3 次标题在前、2 次主请求在前），合计吃掉开头一条；
+  2. 途中**一次上下文压缩**：上下文涨到约 170 条消息时插一条 `messages=1`、
+     `last=user:"You are a summarization agent creating a context checkpoint."`，随后历史被压到
+     21 条，紧接着是一条把原任务重述一遍的主请求（`messages=21`）——**前后两条都取号**。
+  所以 `--turns 102`（102 轮 + 2 条收尾 = 104 条）正好 100 个工具轮，`--turns 101`（103 条）只有 99 轮。
+  本轮 103 个请求的构成：1 条主请求 + 1 条标题 + 1 条压缩摘要 + 1 条压缩后的重述 +
+  **99 条带工具结果的续跑请求**——比轮数少 1，是因为压缩前那一轮的工具结果被折进了摘要、
+  没有再单独回传（所以**数轮数别看 `last=tool` 的条数**，要看剧本被执行到第几条）；
+  另外主流程收尾**之后**它还可能再发一条技能库复盘（`last=user:"Review the conversation above and
+  update the skill library."`），落在尾部那条**空白**收尾上（与 peri 的预测请求同一个位置）——
+  实测 4 次里发了 1 次（那次请求数 104），发不发都不占轮次，所以那个空白条对它也有用；
+- **CU 10.6~10.9**：跨批次口径比，是第五批最省的 pi（1.271）的约 **8 倍**、Codex（1.383）的约
+  **7.7 倍**，比同一天测的 opencode2（8.4~9.6）还贵一档，离 MiniMax Code（31.995）那一端仍远。
+  拆开看 **CPU 项 9.03~9.32 核·秒**（整段均值 72.6~73.1%、峰值 131.8~134.2%，它有短暂的
+  多线程并发）、**内存项只占 15%**（1.56~1.60 GB·秒 = 1595~1635 MB·秒，RSS 均值 148MB 与
+  pi 的 186MB 同档）——**它贵在「CPU × 时间」，不是贵在内存**；
+- 要把它并入榜单，得**整批重跑**（带同一个 `--label`，含它共 9 家 × 3 次）：CU 之外的指标都只在
+  批内可比。CI 的 workflow 已经带上它（装 hermes + 生成自家剧本 + 跑批三处），下一次 CI 批次就是
+  这个形态。图表页现在**会画出它**——`gen-chart-data.ts` 默认收 `data/runs` 下最近的运行；跨批混画
+  由页面自己兜着：payload 里每次运行都带 `--label`，只要图上出现两个以上的批次，页尾的告警行就会
+  点名是哪几家、哪个 label，并说明分数只在批内可比（并入批次后这行自动消失）。只想看批次内排名
+  就照旧用 `--exclude hermes` 生成数据（与 `--exclude antigravity` 同一个用法）。
 
 ## 统一计分（**Beta**）：CPU 与内存 1:1
 

@@ -138,6 +138,7 @@ describe("isLongRunScript", () => {
             // 带数字的更要认（opencode2）：只写 [a-z-]* 会让它整条曲线静默消失
             "long-run-opencode2.json",
             "long-run-antigravity.json",
+            "long-run-hermes.json",
         ]) {
             expect(isLongRunScript(`/repo/data/scenarios/${name}`)).toBe(true);
         }

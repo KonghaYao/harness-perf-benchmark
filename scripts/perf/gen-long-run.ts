@@ -46,7 +46,7 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
   --delay-ms <n>        首包前延迟毫秒（默认 0）
   --tool <name>         工具名（默认 Bash；--args exec / commandline 时各有各的默认，见下）
   --args <shape>        工具参数形状（默认 command）:
-                          command              {command}                peri / opencode / Claude Code / MiniMax Code / opencode2
+                          command              {command}                peri / opencode / Claude Code / MiniMax Code / opencode2 / hermes
                           command+description  {command, description}   pi / dsh
                           exec                 裸 JavaScript 源码        codex（custom 工具）
                           commandline          {CommandLine, Cwd, …}    agy（Antigravity CLI）
@@ -85,16 +85,35 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     # （v1 的 bash 没了）、参数只要 {command}。它开局先发一条会话标题生成请求
     # （messages=2、无 tools，system 写着 "You are a title generator"），比主流程还早，
     # 同样吃条目，所以 +1：101 轮实测 102 条请求 = 标题 1 + 工具轮 100 + 收尾 1。
+  bun run scripts/perf/gen-long-run.ts --turns 102 --tool terminal \\
+    --out data/scenarios/long-run-hermes.json
+    # Hermes Agent（Nous Research）：shell 工具叫 **terminal**、参数 {command}（与其余各家同形）。
+    # 它有两笔自己的开销，都要算进条数，所以 +2：
+    #   1. **会话标题生成**（stream=false、messages=2、无 tools，system 是 "You name chat
+    #      sessions."）与主请求几乎同时发出、谁先不定（5 次实测 3 次标题在前、2 次主请求在前），
+    #      合计吃掉开头那一条；
+    #   2. 途中一次**上下文压缩**：上下文涨到约 170 条消息时插一条 messages=1、
+    #      last=user:"You are a summarization agent creating a context checkpoint."，
+    #      随后历史被压到 21 条、紧接着一条把原任务重述的主请求——**前后两条都取号**。
+    # 102 轮实测 103 条请求 = 主请求 1 + 标题 1 + 压缩摘要 1 + 压缩后重述 1 + 带工具结果的续跑 99
+    # = **100 个工具轮**（少一条只有 99 轮）。带工具结果的续跑比轮数少 1，是因为压缩前那一轮的
+    # 工具结果被折进了摘要、没有单独回传：想数轮数要看剧本被执行到第几条，别数 last=tool。
+    # 主流程收尾之后它**还可能**再发一条技能库复盘（"Review the conversation above and update
+    # the skill library."，同一剧本 4 次里发了 1 次），落在尾部那条空白上——与 peri 的预测请求
+    # 同一个位置，所以那条空白对 hermes 也有用；发不发都不影响工具轮数。
 
-  各家自己的辅助请求都会消费条目（opencode / dsh / agy / opencode2 的标题生成、
-  pi 与 agy 的压缩摘要），所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看
+  各家自己的辅助请求都会消费条目（opencode / dsh / agy / opencode2 / hermes 的标题生成、
+  pi · agy · hermes 的压缩摘要），所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看
   mock.log 里是谁在取号。各家要跑到 100 轮的实际轮数：peri 100 · opencode 100 ·
   Claude Code 100 · codex 100 · dsh 100 · mcode 100 · **pi 133**（压缩从约 140 条消息起
-  每轮多吃一条）· **agy 104** · **opencode2 101**（标题请求吃第一条）。
+  每轮多吃一条）· **agy 104** · **opencode2 101**（标题请求吃第一条）· **hermes 102**
+  （标题与主请求抢开头那一条 + 压缩前后各一条）。
   剧本尾部固定两条收尾（轮数之外）：主流程的「任务结束」文本 + 给 peri 预测请求的空白
   响应（后者消掉 peri 固定 5.0s 的收尾等待，机制见 docs/perf-compare.md）。
-  注：agy 与 opencode2 的标题请求都在**主流程之前**（序列第一条），尾部那两条收尾它们只用到
-  第一条——两家都没有 peri 那样的预测请求，多出来的一条不会被消费，留着只在各家共用同一份
+  注：agy / opencode2 的标题请求在**主流程之前**（序列第一条），尾部那两条收尾它们只用到
+  第一条；hermes 的标题与主请求几乎同时发出（谁先不定），同样只用到第一条；
+  peri 的预测与 hermes 的技能库复盘在**主流程之后**，正好落在第二条空白上——多出来的一条
+  不会被浪费，留着只在各家共用同一份
   生成器时无害。
 
 配套运行（各 playground 的 perf-demo.ts 默认剧本已指向自家那份；timeout 只作兜底，
@@ -160,6 +179,7 @@ const delayMs = positiveInt(values["delay-ms"], "--delay-ms", 0);
  *   pi 0.85.1                                     bash                    {command}
  *   dsh 0.1.5-rc.2                                bash                    {command, description}
  *   agy 1.2.7                                     run_command             {CommandLine, Cwd, …}
+ *   hermes 0.21.3                                 terminal                {command}
  * opencode v2 的 shell 工具就叫 `shell`（v1 的 `bash` 没了）：名字换了，形状还是 {command}。
  * 注意 v1（opencode）与 v2（opencode2）是**两个 harness**，各自一份剧本，别把这份形状混过去。
  * dsh 的 description 是**必填**：缺了会被工具自己拒掉
@@ -169,9 +189,18 @@ const delayMs = positiveInt(values["delay-ms"], "--delay-ms", 0);
  * 拒掉（tool result: missing properties 'Cwd', 'WaitMsBeforeAsync', 'toolSummary', 'toolAction'），
  * 五项都要给全，形状见 toolCall()。
  */
-type ArgShape = "command" | "command+description" | "exec" | "commandline";
+type ArgShape =
+    | "command"
+    | "command+description"
+    | "exec"
+    | "commandline";
 
-const ARG_SHAPES: readonly ArgShape[] = ["command", "command+description", "exec", "commandline"];
+const ARG_SHAPES: readonly ArgShape[] = [
+    "command",
+    "command+description",
+    "exec",
+    "commandline",
+];
 
 function argShapeOf(raw: string | undefined, tool: string): ArgShape {
     // `--tool exec` 是 codex 那条老用法，保持兼容：没给 --args 时按 exec 形状走。
@@ -181,7 +210,7 @@ function argShapeOf(raw: string | undefined, tool: string): ArgShape {
 }
 
 const argShape = argShapeOf(values.args, values.tool ?? "Bash");
-// exec / run_command 是 codex 与 agy 各自的工具名，形状定了名字就没有第二个选择。
+// exec / run_command 是 codex、agy 各自的工具名，形状定了名字就没有第二个选择。
 const toolName =
     argShape === "exec"
         ? "exec"

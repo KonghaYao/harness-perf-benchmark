@@ -36,6 +36,7 @@ export const DISPLAY_NAMES: Readonly<Record<string, string>> = {
     dsh: "dsh",
     "minimax-code": "MiniMax Code",
     antigravity: "Antigravity CLI",
+    hermes: "Hermes Agent",
 };
 
 /** 展示名：认识的给规范写法，不认识的原样用 id。 */

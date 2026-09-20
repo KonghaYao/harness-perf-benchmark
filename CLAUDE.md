@@ -11,7 +11,7 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 
 | 端点 | 协议 | 谁在用 |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、opencode2、pi、dsh、MiniMax Code、脚本自测 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、opencode2、pi、dsh、MiniMax Code、Hermes Agent、脚本自测 |
 | `POST /v1/messages` | Anthropic Messages | Claude Code |
 | `POST /v1/responses` | OpenAI Responses | Codex |
 | `POST /v1beta/models/{model}:generateContent` | Google Gemini API | Antigravity CLI |
@@ -19,7 +19,7 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 两个用途：
 
 - **性能压测**：以脚本控制的节奏驱动 harness（peri / Claude Code / Codex / pi / dsh / MiniMax Code /
-  Antigravity CLI / opencode2；opencode **v1** 已退出排名、不再跑，见「与 harness 集成」开头），测量
+  Antigravity CLI / opencode2 / Hermes Agent；opencode **v1** 已退出排名、不再跑，见「与 harness 集成」开头），测量
   harness 进程自身的 CPU / 内存开销（不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
@@ -39,6 +39,7 @@ cd playground/deepseek    && bun perf-demo.ts --timeout-ms 600000   # dsh 沙盒
 cd playground/minimax-code && bun perf-demo.ts --timeout-ms 600000  # MiniMax Code（mcode）沙盒
 cd playground/antigravity && bun perf-demo.ts --timeout-ms 600000   # Antigravity CLI（agy）沙盒
 cd playground/opencode2   && bun perf-demo.ts --timeout-ms 600000   # opencode v2（bin 名 opencode2）沙盒
+cd playground/hermes      && bun perf-demo.ts --timeout-ms 600000   # Hermes Agent（hermes）沙盒
 # cd playground/opencode  && bun perf-demo.ts --timeout-ms 600000   # opencode v1 已退出排名：代码保留，常规批次不再跑
 ```
 
@@ -62,7 +63,12 @@ cd playground/opencode2   && bun perf-demo.ts --timeout-ms 600000   # opencode v
   `config.yaml`（mcode 的 `baseURL` 不吃环境变量插值，与 pi 同理）；
 - `playground/antigravity`：`HOME` 指向沙盒（`$HOME/.gemini/antigravity-cli/settings.json` 里选
   `modelProvider: gemini`），端点靠 `GOOGLE_GEMINI_BASE_URL`、凭据靠 `GEMINI_API_KEY` 假值
-  （agy 的 provider 配置与登录态都只按 HOME 找，与 Claude Code 同理）。
+  （agy 的 provider 配置与登录态都只按 HOME 找，与 Claude Code 同理）；
+- `playground/hermes`：`HERMES_HOME` 指向沙盒（config.yaml / .env / sessions / state.db / skills
+  全从这里找），provider（`model.provider: custom` + `base_url`）按本次端口重写那份 `config.yaml`
+  （没有环境变量插值这一说，与 pi / mcode 同理）。**代码不在 HERMES_HOME 下**——官方安装脚本把仓库
+  放在 `~/.hermes/hermes-agent`、`~/.local/bin/hermes` 是固定指向它的启动壳，所以换 HERMES_HOME
+  只换数据、不动代码。
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
 并打印两个候选后端的开销与分辨率）。想把「CPU 与内存」混成一个可比的数（谁跑完同一部剧本烧的资源
@@ -90,6 +96,8 @@ bun run scripts/perf/gen-long-run.ts --turns 104 --args commandline \
   --out data/scenarios/long-run-antigravity.json  # agy：run_command + 五项参数；104 条 = 100 轮 + 标题 1 + 压缩 3
 bun run scripts/perf/gen-long-run.ts --turns 101 --tool shell \
   --out data/scenarios/long-run-opencode2.json  # opencode v2：shell 工具 + {command}；101 条 = 100 轮 + 标题 1
+bun run scripts/perf/gen-long-run.ts --turns 102 --tool terminal \
+  --out data/scenarios/long-run-hermes.json  # hermes：terminal 工具 + {command}；104 条 = 102 轮 + 2 条收尾 → 100 个工具轮（标题与压缩各吃掉一条轮次）
 
 cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 ```
@@ -109,12 +117,13 @@ Codex 那笔还顺带说明了「收尾零 CPU 的空等照样花钱」——它
 值 1.76 CU（占当时总 CU 的 53%），修完名次从第四升到第二。见「已知限制与坑」与 `docs/perf-compare.md`。
 注意**「剧本轮数」与「harness 实际执行的轮数」可能不等**：各家自己的辅助请求（标题生成、上下文
 压缩）也消费剧本条目，100 条剧本下 opencode / dsh 实测只跑到 99 轮、pi 要 135 条（`--turns 133`）
-才够跑满 100 轮、opencode2 要 103 条（`--turns 101`）（数法：`mock.log` 里带工具结果的请求有几条）。
+才够跑满 100 轮、opencode2 要 103 条（`--turns 101`）、hermes 要 104 条（`--turns 102`，见
+「与 harness 集成」的消费规律）（数法：`mock.log` 里带工具结果的请求有几条）。
 生成器写的条目数是 `轮数 + 2`（两条收尾，见上），peri 那条「预测下一步输入」就落在最后那条空白上。
 
 产物落在**一次运行一个目录**里：`data/runs/<harness>/<runId>/`（`--out-dir` 可改，`data/` 已在
 .gitignore 里），`<harness>` 是 `peri` / `opencode` / `opencode2` / `claude-code` / `codex` / `pi` /
-`dsh` / `minimax-code` / `antigravity` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
+`dsh` / `minimax-code` / `antigravity` / `hermes` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
 `claude-code`、`mcode` → `minimax-code`、`agy` → `antigravity`，见 `scripts/perf/harness-id.ts`），
 `<runId>` 形如 `20260919-140136`（同秒第二次运行加 `-2` 后缀）：
 
@@ -301,6 +310,7 @@ bun run scripts/perf/run.ts --script data/scenarios/long-run.json --exhausted st
 cd playground/claude-code && bun perf-demo.ts       # 换成 Claude Code 压测（默认剧本由 demo 自带）
 cd playground/antigravity && bun perf-demo.ts       # Antigravity CLI（agy）压测
 cd playground/opencode2   && bun perf-demo.ts       # opencode v2（`npm i -g @opencode/cli`）压测
+cd playground/hermes      && bun perf-demo.ts       # Hermes Agent（Nous Research，官方 install.sh）压测
 bun run scripts/perf/verify.ts                      # 采样口径验证实验
 bun test                                            # 全部测试
 bun run typecheck                                   # tsc --noEmit（含 scripts/ 与 playground/）
@@ -488,9 +498,9 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
 - 工具名 **`bash`**（小写，同 pi）且参数只要 `{command}`（`timeout` 可选），所以剧本用
   `gen-long-run.ts --tool bash`（默认 `--args command`）生成；实测 `bash` 工具**没有**
   `description` 那种必填参数，也没有 dsh 的审批等待；
-- **消费规律是八家里最干净的**：100 轮剧本实收 **101 条 = 100 轮 + 尾部收尾**，没有标题生成、
-  没有上下文压缩、没有预测请求（对比：pi 要 135 条、agy 要 106 条、opencode2 要 103 条、dsh 的
-  标题请求会吃第 2 条）——实测 3 次
+- **消费规律是九家里最干净的**：100 轮剧本实收 **101 条 = 100 轮 + 尾部收尾**，没有标题生成、
+  没有上下文压缩、没有预测请求（对比：pi 要 135 条、agy 要 106 条、hermes 要 104 条、opencode2
+  要 103 条、dsh 的标题请求会吃第 2 条）——实测 3 次
   端到端 19.6~20.2s（启动 1.3s · 运转 18.2s · 收尾 0.25s）、CU 21.29~22.06（**已并入常规批次**，
   与其余五家同批测得，见 `docs/perf-compare.md`）；
 - 启动时会刷新模型目录（`models.dev/api.json` → `filecdn.minimax.chat`），落成沙盒里
@@ -543,9 +553,60 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
 - **本地这批读数还是「单跑」的**：`data/runs/antigravity/` 里的产物带 `--label agy-probe`，与第五批
   （`codex-proxy-fix`）隔了一夜，图表页会画出它们并在页尾告警「混批」（机制见「统一计分」那节的
   「一张图不许混批」）。**CI 的 harness 清单已经加上它**（装 agy 与跑批两处，见
-  `.github/workflows/benchmark-pages.yml`）：下一次 CI 批次就是八家同批的读数（agy 与 opencode2
-  都在里面），发布出去的那张图自然不会有混批告警（线上站点的数据是 CI 自己现跑现生成的，
+  `.github/workflows/benchmark-pages.yml`）：下一次 CI 批次就是同批的读数（agy、opencode2 与
+  hermes 都在里面），发布出去的那张图自然不会有混批告警（线上站点的数据是 CI 自己现跑现生成的，
   本地 `data/runs` 进不去）。
+
+### Hermes Agent（`hermes`）
+
+- 二进制从 PATH 找（`Bun.which("hermes")`，实测 **v0.21.3 / 2026.9.14**，官方 `install.sh` 装到
+  `~/.local/bin/hermes`）；harness 命令是 `hermes --yolo -z '<prompt>'`：`-z`/`--oneshot` 是官方的
+  **脚本化一次性入口**（单 prompt 进、最终回答出，stdout 上不带 banner/spinner/工具预览），
+  `--yolo` 是全局选项、关掉危险命令的审批——headless 下无人可批，与 Claude Code / agy / mcode 同理，
+  剧本自觉只放只读命令；
+- 走 **OpenAI Chat Completions**（`POST {base_url}/chat/completions`，主流程 `stream: true`），
+  与 peri / opencode / pi / dsh / mcode 同协议；
+- 隔离靠 **`HERMES_HOME`** 指向沙盒（`playground/hermes/.hermes/`）：`config.yaml`、`.env`、
+  `sessions/`、`state.db`、`skills/`、`logs/` 全从它找（官方安装脚本自己的 `--hermes-home` 就是它）。
+  **代码不随 HERMES_HOME 走**：`~/.local/bin/hermes` 是个把 `~/.hermes/hermes-agent` 写死的启动壳，
+  所以换 HERMES_HOME 只换数据、不动代码（实测）；
+- **provider 只能靠配置文件**：`model.provider: custom` + `model.base_url` + `model.default`
+  （形状取自官方模板 `cli-config.yaml.example` 与它自己 eval 里的 mock 配置），**不吃环境变量插值**，
+  所以 demo 每次按本次端口重写沙盒里的 `config.yaml`（与 pi 的 models.json、mcode 的 config.yaml 同理）；
+  `.env` 里给个假 `OPENAI_API_KEY`（mock 不校验鉴权）；
+- 环境变量沿用它自己 eval（`evals/codebase_navigability/runtime_bench.py`）的那套：
+  `HERMES_SKIP_UPDATE_CHECK=1`（跳启动时的版本检查）、`NO_COLOR=1`、`TERM=dumb`；另加**死代理**
+  （`HTTPS_PROXY=http://127.0.0.1:9` + `NO_PROXY` 保住本地 mock，与 codex / agy 同一套路）。
+  死代理**实测不是必需的**：拿「黑洞代理」（接连接不回包）与死代理对跑，启动 7.87s vs 7.83s，
+  没有差别——说明它的启动不依赖外部网络，留着是挡运行期可能出现的遥测/目录请求；
+- 工具形状：shell 工具叫 **`terminal`**、参数 `{command}` 必填（另有 background / timeout / workdir /
+  pty / notify 可选），所以默认剧本是自家那份 `data/scenarios/long-run-hermes.json`
+  （`gen-long-run.ts --tool terminal` 生成）；
+- **消费规律（两笔手续费 + 一次可选收尾，都要算进剧本条数；实测 `--turns 102` = 104 条 → 100 个
+  工具轮）**：
+  1. **会话标题生成**（`stream=false`、`messages=2`、无 tools，system 是 "You name chat
+     sessions."）与主请求**几乎同时发出、谁先不定**（5 次实测 3 次标题在前、2 次主请求在前），
+     合计吃掉开头那一条——与 opencode2 / agy 的标题请求同类（那两家固定在第一条，它这里不定）；
+  2. 途中**一次上下文压缩**：上下文涨到约 170 条消息时插一条
+     `messages=1`、`last=user:"You are a summarization agent creating a context checkpoint."`，
+     随后历史被压到 21 条，紧接着一条把原任务重述的主请求（`messages=21`，
+     `last=user:"[STILL IN PROGRESS — this is the active request, restated af…"`）
+     ——**前后两条都取号**，与 pi / agy 的压缩同类；
+  3. 主流程吃到收尾文本**之后**还可能再发一条技能库复盘
+     （`last=user:"Review the conversation above and update the skill library."`）——它落在尾部那条
+     **空白**收尾上（与 peri 的预测请求同一个位置），所以那个空白条对 hermes 也有用。实测它**不是
+     每次都发**（同一剧本 4 次运行里 1 次发了，那次请求数 104），发不发都不影响轮数。
+  实测 `--turns 102`（104 条）正好 100 个工具轮；少一条（`--turns 101`，103 条）就只有 99 轮。
+  **数轮数别看 `last=tool` 的条数**：本轮 103 个请求里带工具结果的只有 99 条，比轮数少 1，
+  因为压缩前那一轮的工具结果被折进了摘要、没有再单独回传（要看剧本被执行到第几条）；
+- **启动段偏大：首个请求前固定 ~6s，且这段在跑满一个核**——逐拍实测从首次采样（t≈0.3s）起 CPU
+  就贴着 **100%**（99.7~104.4%，不是空等）、RSS 前 3 秒恒定在 102~110MB（第 5 秒才涨到 135~174MB），
+  整段 5.43~5.67 核·秒 ≈ 0.93 核 × 6s，按 1:1 折 **6.1~6.4 CU、占整段 CU 的 58%**（运转段 100 轮
+  只占 40%）。`hermes --version` 只要 0.25s，所以不是解释器冷启动；它自己的 `logs/agent.log` 在这段
+  里只在起进程后约 0.3s 记了三行「注册 browser 插件」，之后到首个请求之间没有输出，死代理与否也不
+  改变它（见上一条）——**根因没定位到底，照实记成它的固定成本**。三次读数完全一致（端到端
+  10.7~11.0s、RSS 均值 147~148MB / 峰值 201~203MB、CU 10.6~10.9），详细读数见 `docs/perf-compare.md`；
+- 自行收尾时 `harness.log` 里有完整最终回答（退出码 0），与 pi / peri 被强杀时的空文件不同。
 
 ## 已知限制与坑（压测相关）
 
@@ -577,7 +638,12 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
   "conversation title generator"），压缩摘要每约 32 个请求插一条（`last=user:"Your main task now is
   to generate a continuation summary of …"`），所以 100 轮要 104 条剧本；**opencode2 只有标题那一条**
   ——序列第一条就是它（"You are a title generator"，`messages=2`、无 tools），之后 100 轮内没有压缩
-  请求，所以 100 轮要 101 条剧本；
+  请求，所以 100 轮要 101 条剧本；**hermes 三处都有**——标题（`stream=false`、无 tools）与主请求
+  几乎同时发出、**谁先不定**（5 次实测 3 次标题在前、2 次主请求在前，合计仍只吃掉开头一条）、
+  途中一次压缩（约 170 条消息时 `last=user:"You are a summarization agent creating a context
+  checkpoint."`，随后历史压到 21 条）、主流程收尾之后还可能发一条技能库复盘
+  （"Review the conversation above and update the skill library."，落在尾部那条空白上，且**不是每次
+  都发**），所以 100 轮要 104 条剧本（`--turns 102`）；
   Claude Code / Codex 本次没见到。脚本不足时先看 `*-mock.log` 里
   是谁在取号（每行都有 `messages=` / `input=` 与末条消息的角色），症状是「明明在正常工作，
   却提前收到收尾文本」；
