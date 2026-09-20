@@ -11,7 +11,7 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 
 | 端点 | 协议 | 谁在用 |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、opencode2、pi、dsh、MiniMax Code、Hermes Agent、脚本自测 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、opencode2、pi、dsh、MiniMax Code、Hermes Agent、Cline、脚本自测 |
 | `POST /v1/messages` | Anthropic Messages | Claude Code |
 | `POST /v1/responses` | OpenAI Responses | Codex |
 | `POST /v1beta/models/{model}:generateContent` | Google Gemini API | Antigravity CLI |
@@ -19,8 +19,8 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 两个用途：
 
 - **性能压测**：以脚本控制的节奏驱动 harness（peri / Claude Code / Codex / pi / dsh / MiniMax Code /
-  Antigravity CLI / opencode2 / Hermes Agent；opencode **v1** 已退出排名、不再跑，见「与 harness 集成」开头），测量
-  harness 进程自身的 CPU / 内存开销（不采 GPU）；
+  Antigravity CLI / opencode2 / Hermes Agent / Cline；opencode **v1** 已退出排名、不再跑，见
+  「与 harness 集成」开头），测量 harness 进程自身的 CPU / 内存开销（不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
 ## 压测工作流（已实现）
@@ -40,6 +40,7 @@ cd playground/minimax-code && bun perf-demo.ts --timeout-ms 600000  # MiniMax Co
 cd playground/antigravity && bun perf-demo.ts --timeout-ms 600000   # Antigravity CLI（agy）沙盒
 cd playground/opencode2   && bun perf-demo.ts --timeout-ms 600000   # opencode v2（bin 名 opencode2）沙盒
 cd playground/hermes      && bun perf-demo.ts --timeout-ms 600000   # Hermes Agent（hermes）沙盒
+cd playground/cline       && bun perf-demo.ts --timeout-ms 600000   # Cline（cline）沙盒
 # cd playground/opencode  && bun perf-demo.ts --timeout-ms 600000   # opencode v1 已退出排名：代码保留，常规批次不再跑
 ```
 
@@ -69,6 +70,10 @@ cd playground/hermes      && bun perf-demo.ts --timeout-ms 600000   # Hermes Age
   （没有环境变量插值这一说，与 pi / mcode 同理）。**代码不在 HERMES_HOME 下**——官方安装脚本把仓库
   放在 `~/.hermes/hermes-agent`、`~/.local/bin/hermes` 是固定指向它的启动壳，所以换 HERMES_HOME
   只换数据、不动代码。
+- `playground/cline`：`--config` / `--data-dir` / `--hooks-dir` 三个位置参数都指到沙盒，
+  provider 按本次端口写进 `<沙盒>/data/settings/providers.json`（不吃环境变量插值，与 pi / mcode /
+  hermes 同理）。**不用换 HOME**（实测用户级 `~/.cline` 抢不走配置）；**也不注入死代理**——实测那样
+  反而把它拖慢 4~5 倍（见「与 harness 集成」的 Cline 一节）。
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
 并打印两个候选后端的开销与分辨率）。想把「CPU 与内存」混成一个可比的数（谁跑完同一部剧本烧的资源
@@ -98,6 +103,8 @@ bun run scripts/perf/gen-long-run.ts --turns 101 --tool shell \
   --out data/scenarios/long-run-opencode2.json  # opencode v2：shell 工具 + {command}；101 条 = 100 轮 + 标题 1
 bun run scripts/perf/gen-long-run.ts --turns 102 --tool terminal \
   --out data/scenarios/long-run-hermes.json  # hermes：terminal 工具 + {command}；104 条 = 102 轮 + 2 条收尾 → 100 个工具轮（标题与压缩各吃掉一条轮次）
+bun run scripts/perf/gen-long-run.ts --turns 101 --args commands \
+  --out data/scenarios/long-run-cline.json  # cline：run_commands 工具 + **字符串数组** {commands:[…]}；103 条 = 101 轮 + 2 条收尾 → 100 个工具轮（压缩吃掉一条）
 
 cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 ```
@@ -117,13 +124,14 @@ Codex 那笔还顺带说明了「收尾零 CPU 的空等照样花钱」——它
 值 1.76 CU（占当时总 CU 的 53%），修完名次从第四升到第二。见「已知限制与坑」与 `docs/perf-compare.md`。
 注意**「剧本轮数」与「harness 实际执行的轮数」可能不等**：各家自己的辅助请求（标题生成、上下文
 压缩）也消费剧本条目，100 条剧本下 opencode / dsh 实测只跑到 99 轮、pi 要 135 条（`--turns 133`）
-才够跑满 100 轮、opencode2 要 103 条（`--turns 101`）、hermes 要 104 条（`--turns 102`，见
-「与 harness 集成」的消费规律）（数法：`mock.log` 里带工具结果的请求有几条）。
+才够跑满 100 轮、opencode2 要 103 条（`--turns 101`）、hermes 要 104 条（`--turns 102`）、
+cline 要 103 条（`--turns 101`，见「与 harness 集成」的消费规律）（数法：`mock.log` 里带工具结果
+的请求有几条）。
 生成器写的条目数是 `轮数 + 2`（两条收尾，见上），peri 那条「预测下一步输入」就落在最后那条空白上。
 
 产物落在**一次运行一个目录**里：`data/runs/<harness>/<runId>/`（`--out-dir` 可改，`data/` 已在
 .gitignore 里），`<harness>` 是 `peri` / `opencode` / `opencode2` / `claude-code` / `codex` / `pi` /
-`dsh` / `minimax-code` / `antigravity` / `hermes` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
+`dsh` / `minimax-code` / `antigravity` / `hermes` / `cline` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
 `claude-code`、`mcode` → `minimax-code`、`agy` → `antigravity`，见 `scripts/perf/harness-id.ts`），
 `<runId>` 形如 `20260919-140136`（同秒第二次运行加 `-2` 后缀）：
 
@@ -155,6 +163,10 @@ Codex 那笔还顺带说明了「收尾零 CPU 的空等照样花钱」——它
   harness 每轮工具调用拉起的 shell 只活几十毫秒，实测默认口径只捕获到它的 33%。这些都是**被回收**
   的子进程，其 CPU 会累加进父进程 rusage 的 `ri_child_user_time` / `ri_child_system_time`
   （实测钉死偏移 96/104，**单位同样是 Mach tick**），差分即得 `child_cpu_pct` 列。
+  **这条通道只对「根进程直接拉起的子进程」有效**：子进程再拉起的孙进程（cline 就是这种形状——
+  启动壳 → 单文件二进制 → 每轮一个 shell）记在**子进程**的计数器上，采样器不读它，于是那一笔
+  两头都漏（既不在进程树里、也不在 `child_cpu_pct` 里），口径上是个下界，见「与 harness 集成」的
+  Cline 一节；
   它与 `tree_cpu_pct` 是两套互补的下界、**可能重叠，不能相加**，计分时取两者较大者；
 - 采样数据先进内存、每 1s 落盘一次，避免每拍同步 I/O 干扰被测对象。
 
@@ -311,6 +323,7 @@ cd playground/claude-code && bun perf-demo.ts       # 换成 Claude Code 压测�
 cd playground/antigravity && bun perf-demo.ts       # Antigravity CLI（agy）压测
 cd playground/opencode2   && bun perf-demo.ts       # opencode v2（`npm i -g @opencode/cli`）压测
 cd playground/hermes      && bun perf-demo.ts       # Hermes Agent（Nous Research，官方 install.sh）压测
+cd playground/cline       && bun perf-demo.ts       # Cline（`npm i -g cline`）压测
 bun run scripts/perf/verify.ts                      # 采样口径验证实验
 bun test                                            # 全部测试
 bun run typecheck                                   # tsc --noEmit（含 scripts/ 与 playground/）
@@ -498,9 +511,9 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
 - 工具名 **`bash`**（小写，同 pi）且参数只要 `{command}`（`timeout` 可选），所以剧本用
   `gen-long-run.ts --tool bash`（默认 `--args command`）生成；实测 `bash` 工具**没有**
   `description` 那种必填参数，也没有 dsh 的审批等待；
-- **消费规律是九家里最干净的**：100 轮剧本实收 **101 条 = 100 轮 + 尾部收尾**，没有标题生成、
+- **消费规律是十家里最干净的**：100 轮剧本实收 **101 条 = 100 轮 + 尾部收尾**，没有标题生成、
   没有上下文压缩、没有预测请求（对比：pi 要 135 条、agy 要 106 条、hermes 要 104 条、opencode2
-  要 103 条、dsh 的标题请求会吃第 2 条）——实测 3 次
+  与 cline 各要 103 条、dsh 的标题请求会吃第 2 条）——实测 3 次
   端到端 19.6~20.2s（启动 1.3s · 运转 18.2s · 收尾 0.25s）、CU 21.29~22.06（**已并入常规批次**，
   与其余五家同批测得，见 `docs/perf-compare.md`）；
 - 启动时会刷新模型目录（`models.dev/api.json` → `filecdn.minimax.chat`），落成沙盒里
@@ -553,8 +566,8 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
 - **本地这批读数还是「单跑」的**：`data/runs/antigravity/` 里的产物带 `--label agy-probe`，与第五批
   （`codex-proxy-fix`）隔了一夜，图表页会画出它们并在页尾告警「混批」（机制见「统一计分」那节的
   「一张图不许混批」）。**CI 的 harness 清单已经加上它**（装 agy 与跑批两处，见
-  `.github/workflows/benchmark-pages.yml`）：下一次 CI 批次就是同批的读数（agy、opencode2 与
-  hermes 都在里面），发布出去的那张图自然不会有混批告警（线上站点的数据是 CI 自己现跑现生成的，
+  `.github/workflows/benchmark-pages.yml`）：下一次 CI 批次就是同批的读数（agy、opencode2、
+  hermes 与 cline 都在里面），发布出去的那张图自然不会有混批告警（线上站点的数据是 CI 自己现跑现生成的，
   本地 `data/runs` 进不去）。
 
 ### Hermes Agent（`hermes`）
@@ -608,14 +621,68 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
   10.7~11.0s、RSS 均值 147~148MB / 峰值 201~203MB、CU 10.6~10.9），详细读数见 `docs/perf-compare.md`；
 - 自行收尾时 `harness.log` 里有完整最终回答（退出码 0），与 pi / peri 被强杀时的空文件不同。
 
+### Cline（`cline`）
+
+- 二进制从 PATH 找（`Bun.which("cline")`，实测 **3.0.62**，`npm i -g cline`；官方仓库 `cline/cline`
+  的 `apps/cli`，产品站 cline.bot 是营销页、issue 区在仓库）；harness 命令是
+  `cline --config <沙盒> --data-dir <沙盒>/data --hooks-dir <沙盒>/hooks -c <work-dir> -P openai-compatible -m llm-mock '<prompt>'`：
+  位置参数就是任务文本，默认进 act 模式、**自动批准所有工具**（`--auto-approve` 默认 true，
+  headless 下没有确认弹窗），剧本自觉只放只读命令；
+- 走 **OpenAI Chat Completions**（`POST {baseURL}/chat/completions`、`stream: true`，带
+  `stream_options.include_usage` 与 `tool_choice: "auto"`），与 peri / pi / dsh / mcode / hermes
+  同协议；provider 用内置的 `openai-compatible` 那支，`/chat/completions` 由它自己拼，所以配置里的
+  baseUrl **要带 `/v1`**；
+- 隔离靠 **`--config` + `--data-dir` + `--hooks-dir`** 三个位置参数（默认分别是 `~/.cline`、
+  `~/.cline/data`、`~/.cline/hooks`）：provider 配置、会话库、缓存、hooks 全落沙盒。
+  **不用换 HOME**——实测在 `$HOME/.cline` 放一份指向死端口的 provider 配置当诱饵，demo 的命令照样
+  打到 mock（这一点与 Claude Code / agy 相反，那两家的用户级配置只按 HOME 找）；
+- **provider 配置只能靠文件**：`<data-dir>/settings/providers.json`（`cline auth --provider
+  openai-compatible --baseurl … --modelid …` 写出来的那份），不吃 base URL 的环境变量插值，所以
+  demo 每次按本次端口重写它（与 pi 的 models.json、mcode 的 config.yaml、hermes 的 config.yaml 同理）。
+  **手写这份就够**，不必调 `cline auth` 子进程（那会多起一个进程 + 一次外部请求，启动段不该混进这些）；
+  apiKey 给假值即可（mock 不校验鉴权）；
+- **不给它注入死代理**（Codex / agy 那份）：实测 HTTPS 出口指到 `127.0.0.1:9` 之后，5 轮小剧本的
+  端到端从 1.7~2.2s 涨到 8~10s（它对着代理重试）；它自己要的外部请求只有 feature-flags 拉取（落成
+  沙盒里的 `cache/feature-flags.json`，首次之后走缓存、不阻塞主流程）。demo 只关遥测与自升级检查
+  （`DISABLE_TELEMETRY=1` / `CLINE_NO_AUTO_UPDATE=1`），再加 `NO_PROXY` 保住本地直连；
+- **位置参数含空白才被当 prompt**：3.0.62 的解析是 `/\s/.test(arg)`，不含空白就落进「当子命令解析」
+  的分支、报 `Unknown command or unquoted prompt` 并以 1 退出。仓库默认 prompt 是中文、没有空格，
+  所以 demo 补一个尾随空格（只进 messages 首条 user，不影响读数）；
+- 工具集 26 个，shell 工具叫 **`run_commands`**、参数是**字符串数组** `{commands: [...]}`（schema 里
+  required 只有 commands、items 是 string）——**十家里唯一的数组形状**，所以剧本用
+  `gen-long-run.ts --args commands` 生成，自家那份是 `data/scenarios/long-run-cline.json`；
+- **消费规律：一次上下文压缩吃掉一条剧本**（默认 `--compaction agentic`）：一次 prompt 起步就是主请求
+  （`messages=2`：system + user，**没有标题生成那一步**），之后每轮工具调用一条主请求；上下文长到阈值
+  时它把当轮换成一条「续写摘要」请求（`messages=2`、`last=user:"Summarize this session for
+  continuation. Be concise and fact…"`，**响应被当摘要用掉、当轮工具调用不再执行**），随后带着压缩后的
+  上下文（实测 `messages=40`）把最后一个工具结果再发一次。标准剧本（100 轮 × 4KB）实测**每约 90 轮
+  触发 1 次**：`--turns 101`（103 条）实耗 **102 条请求 = 100 个工具轮 + 1 条压缩 + 1 条收尾**，
+  尾部那条空白收尾它用不到（没有 peri 那种预测请求）；200 轮实测 2 次，所以条数按「每 100 轮 +1、
+  向上取整」留（CI 里写的就是 `TURNS + (TURNS + 99) / 100`）；
+- **它是「Node 启动壳 + 真干活的子进程」**：npm 的 bin 是个解析器脚本（Node，约 60MB RSS、CPU 近 0），
+  真干活的是它 spawn 出来的单文件二进制（进程树 `procs` 峰值 2，**97% 的 CPU 记在那一个子进程上**）
+  ——与 Codex / opencode2 同类，这正是计分口径固定用**进程树**的又一个理由；
+- **口径缺口：它的 CU 是下界**。工具命令由那个子进程再拉一个短命 shell（实测拿 `sleep 2` 当命令，
+  `procs` 能顶到 3），这些 shell 活不过进程树的 2s 刷新窗口，CPU 又记在**子进程**（不是根进程）的
+  `ri_child_*` 计数器上，而采样器只读**根进程**的计数器 → 这一小笔既没进 `tree_cpu_pct` 也没进
+  `child_cpu_pct`。按本机 `sh -c` 的单价粗估（实测 2~3ms/次 × 100 轮 ≈ 0.2~0.3 核·秒，约占它整段
+  CPU 的两成），读它的 CU 时按此上修、别当精确值；
+- **收尾段固定 1.6~1.9s 零请求，而且它很贵**（三次实测）：主流程吃到尾部那条纯文本即自行退出
+  （退出码 0），但退出前有约 1.8s 不发任何请求的空档——与 peri 的 5.0s、Codex 的 10.1s 同类，
+  只是量级小得多，根因没查到底，照实记成它的固定成本。它**占整段 CU 的 33%~43%**
+  （1.12~1.47 CU，几乎全是内存面积：这 1.8s 顶着约 700MB 常驻）——与 Codex 那笔 10s 空等一样，
+  是「零 CPU 的空等照样花钱」的又一个实例，读它的 CU 时别只看运转段；
+- `harness.log` 有内容（自行收尾时 stdout 里是最终回答）；每次请求 stderr 上会带一条 AI SDK 的
+  `Deprecated: "providerOptions key 'openai-compatible'"` 警告，是它自己包里的用法告警，不影响读数。
+
 ## 已知限制与坑（压测相关）
 
 - **`--max-turns` 在 peri 的 `-p` 模式下是空操作**，所以压测时长由 `--timeout-ms` 兜底，
   而不是轮数；`--turns` 只是原样透传给 harness；
 - **peri 在 `-p` 模式下只在退出时 flush 输出**：被超时强杀时 `<runId>-harness.log` 会是空文件
   （工具会在 perf.log 里写明原因）；自行收敛时该文件有内容。**pi 同样如此**（实测自行收尾时
-  harness.log 有完整回答，loop 剧本被强杀时为空）。**opencode / opencode2 / Claude Code / dsh 是持续流式的**，
-  被强杀也留有输出；
+  harness.log 有完整回答，loop 剧本被强杀时为空）。**opencode / opencode2 / Claude Code / dsh /
+  cline 是持续流式的**，被强杀也留有输出；
 - 若 peri 报 `workspace identity changed; explicit relinking is required`，那是 `~/.peri/threads/threads.db`
   里该目录的 workspace 记录过期（注册时的 discovery 快照与现状不符），与本仓库无关；
   `perf-demo.ts` 默认换用沙盒内的库绕开，run.ts 则要手动传
@@ -643,7 +710,9 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
   途中一次压缩（约 170 条消息时 `last=user:"You are a summarization agent creating a context
   checkpoint."`，随后历史压到 21 条）、主流程收尾之后还可能发一条技能库复盘
   （"Review the conversation above and update the skill library."，落在尾部那条空白上，且**不是每次
-  都发**），所以 100 轮要 104 条剧本（`--turns 102`）；
+  都发**），所以 100 轮要 104 条剧本（`--turns 102`）；**cline 是压缩那一路**——没有标题生成，
+  但默认 `--compaction agentic`，实测每约 90 轮把当轮换成一条 `messages=2` 的续写摘要请求
+  （"Summarize this session for continuation…"），所以 100 轮要 103 条剧本（`--turns 101`）；
   Claude Code / Codex 本次没见到。脚本不足时先看 `*-mock.log` 里
   是谁在取号（每行都有 `messages=` / `input=` 与末条消息的角色），症状是「明明在正常工作，
   却提前收到收尾文本」；

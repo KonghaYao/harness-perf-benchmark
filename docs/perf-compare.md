@@ -1,4 +1,4 @@
-# 压测对比：六种 harness（opencode v1 已退出排名；Antigravity CLI、opencode v2 与 Hermes Agent 已接入、尚未并入批次）
+# 压测对比：六种 harness（opencode v1 已退出排名；Antigravity CLI、opencode v2、Hermes Agent 与 Cline 已接入、尚未并入批次）
 
 > **opencode v1 已退出排名（2026-09-19 起）**
 >
@@ -48,6 +48,7 @@ harness 走完剧本、收到收尾响应后**自行退出**——回答的是�
 | Antigravity CLI（`agy`）（**新接入，本批未跑**） | 1.2.7（PATH） | **Google Gemini API** | `GOOGLE_GEMINI_BASE_URL` + 沙盒 `settings.json` 的 `modelProvider: "gemini"` | `HOME` |
 | opencode v2（`opencode2`）（**新接入，本批未跑**） | 2.0.10 | OpenAI Chat Completions | 随 cwd 的 `opencode.json` + `{env:LLM_MOCK_BASE_URL}`，命令带 `--standalone` | `XDG_*` + 死代理 |
 | Hermes Agent（`hermes`）（**新接入，本批未跑**） | 0.21.3（2026.9.14，官方脚本装到 `~/.local/bin`） | OpenAI Chat Completions | 沙盒 `config.yaml` 的 `model.provider: custom` + `base_url`（不吃环境变量插值） | `HERMES_HOME` |
+| Cline（`cline`）（**新接入，本批未跑**） | 3.0.62 | OpenAI Chat Completions | 沙盒 `settings/providers.json` 里的 `openai-compatible` provider + `-P` / `-m` 显式点名（配置不吃环境变量插值） | `--config` / `--data-dir` / `--hooks-dir`（**不用换 HOME**） |
 
 约定：每个 harness 都在自己的 playground 沙盒里、用同一份剧本跑
 （`cd playground/<名> && bun perf-demo.ts …`），剧本由同一个生成器现造、工具形状按各家实测；
@@ -368,6 +369,62 @@ v1 已退出排名（见开头那个框），这条是新的一项。产品细�
   由页面自己兜着：payload 里每次运行都带 `--label`，只要图上出现两个以上的批次，页尾的告警行就会
   点名是哪几家、哪个 label，并说明分数只在批内可比（并入批次后这行自动消失）。只想看批次内排名
   就照旧用 `--exclude hermes` 生成数据（与 `--exclude antigravity` 同一个用法）。
+
+## Cline（`cline`）：已接入，**尚未并入批次**
+
+> **它不在上面那批里，下面的读数不能与批次表格并列**——理由与上三节相同：3 次读数跑于
+> 2026-09-20 15:15（`--label cline-probe`，本机 1 分钟 load 2.5 左右），与第五批隔了一天。
+> 跨批次**只能比 CU**，百分制分数与其余指标都不可比（分数是批内相对值）。
+
+`cline`（npm `cline@3.0.62`，官方仓库 `cline/cline` 的 `apps/cli`）是 2026-09-20 接入的第 10 家，
+走 **OpenAI Chat Completions**（与 peri / pi / dsh / mcode / hermes 同协议）。沙盒、provider 注入、
+工具形状与消费规律在 `CLAUDE.md` 的「与 harness 集成」，这里只放读数（同一份剧本、三次串行）：
+
+| 次 | runId | 端到端 | 启动 · 运转 · 收尾 | CU | 峰值 RSS · CPU |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `20260920-151500`（中位） | 5.1s | 0.9 · 2.3 · 1.9 | 3.397 | 706.1MB · 138.4% |
+| 2 | `20260920-151508` | 4.8s | 0.8 · 2.4 · 1.6 | 3.381 | 707.7MB · 124.5% |
+| 3 | `20260920-151516` | 5.2s | 0.9 · 2.5 · 1.8 | 3.814 | 704.3MB · 142.3% |
+
+- **三次都自行退出**（退出码 0、不用强杀），端到端 **4.8~5.2s**：启动 **0.8~0.9s**、运转
+  **2.3~2.5s**、收尾 **1.6~1.9s**——**收尾段是零请求的固定等待**（`idleTail`，约占总时长三分之一），
+  与 peri 的 5.0s、Codex 的 10.1s 同类、量级小得多：主流程吃到尾部那条纯文本就收工了，但那之后
+  还有约 1.8s 不发任何请求。根因没查到底，照实记成它的固定成本（换 load 重跑也在同一量级，
+  三次 1.6 / 1.8 / 1.9s）；
+- **这笔空等很贵：它占整段 CU 的 33%~43%**（分段积分：启动 0.08 CU / 2% · 运转 1.78~2.26 CU /
+  52%~62% · **收尾 1.12~1.47 CU / 33%~43%**）。收尾段几乎全是内存面积——那 1.8s 里 CPU 已经熄了
+  （0.08~0.16 核·秒），但 RSS 还留着约 700MB 常驻，1:1 口径下就是 1.0~1.3 GB·秒。这与 Codex
+  修复前那笔 10s 空等是同一个教训：**零 CPU 的空等照样花钱**，而且这笔钱记在内存项上（它的内存项
+  占整段 CU 的 62%~66%，大半来自这里）；
+- **它是「Node 启动壳 + 真干活的子进程」**：npm 的 bin 是个解析器脚本（整段 RSS 60MB、CPU 近 0），
+  真干活的是它 spawn 出来的单文件二进制（`samples.csv` 的 `procs` 列在 1~2 之间，30/50 拍是 2）。
+  拆开看 CPU：**根进程 0.035 核·秒、子进程 1.13~1.43 核·秒——97% 在子进程里**，与 Codex / opencode2
+  同类，也正是计分口径固定用**进程树**的原因；
+- **它的 CU 是下界（口径缺口，读的时候要上修）**：工具命令由那个子进程再拉一个短命 shell
+  （拿 `sleep 2` 当命令做探针，`procs` 能顶到 3，可见形状），这些 shell 活不过进程树的 2s 刷新窗口，
+  其 CPU 又记在**子进程**（不是根进程）的 `ri_child_*` 计数器上——而采样器只读**根进程**的计数器，
+  于是这一笔既没进 `tree_cpu_pct` 也没进 `child_cpu_pct`。按本机 `sh -c` 的单价粗估
+  （实测 2~3ms/次 × 100 轮 ≈ 0.2~0.3 核·秒，约占它整段 CPU 的两成），真实值应略高于表中 CU。
+  这与 dsh / agy / hermes 的「记在计数器上」正好相反——那几家的 shell 是**根进程**的子进程、
+  所以兜得住；
+- **消费规律：一次上下文压缩吃掉一条剧本**（默认 `--compaction agentic`）。102 条请求的构成：
+  1 条初始（`messages=2`，system + user）、99 条带工具结果的续跑、**1 条压缩摘要**
+  （`messages=2`、`last=user:"Summarize this session for continuation. Be concise and fact…"`，
+  响应被当摘要用掉、当轮工具调用不再执行）、1 条压缩后带着最后一个工具结果的续跑（`messages=40`）
+  ——**100 个工具轮 + 1 条压缩 + 1 条收尾**，没有标题生成那一步（与 opencode2 / dsh / agy / hermes
+  都不同）。所以 100 轮要 **103 条剧本**（`--turns 101`，`101 + 2 条收尾`）；200 轮实测压缩 2 次，
+  条数按「每 100 轮 +1、向上取整」留；
+- **CU 3.38~3.81**（±8%）：跨批次口径比，与第五批的 dsh（3.101）同一档、比 Claude Code（2.828）
+  略贵，离 MiniMax Code（31.995）那一端还远。拆开看**内存项占 62%~66%**（RSS 均值 440~458MB、
+  峰值约 706MB）——比 pi（186MB）、agy（207MB）、hermes（147MB）都重，落在 opencode2
+  （484~576MB）那一档；**CPU 项只有 1.16~1.47 核·秒**，所以它的账主要是「几百 MB 常驻 × 5 秒」；
+- 峰值 CPU **124.5%~142.3%**：它有多线程并发（主进程某一拍 35%，其余在子进程），所以进程树的
+  瞬时值会越过单核；三次的 1 分钟 load 都在 2.5 上下，重复性端到端 ±4%、CU ±8%（与 opencode2
+  的 ±7% 同档，比 agy 的 ±4% 散一点）；
+- 要把它并入榜单，得**整批重跑**（带同一个 `--label`，含它共 10 家 × 3 次）：CU 之外的指标都只在
+  批内可比。CI 的 workflow 已经带上它（装 cline + 生成自家剧本 + 跑批三处），下一次 CI 批次就是
+  这个形态。图表页现在**会画出它**——`gen-chart-data.ts` 默认收 `data/runs` 下最近的运行；跨批混画
+  由页面自己兜着（机制见上一节）。只想看批次内排名就照旧用 `--exclude cline` 生成数据。
 
 ## 统一计分（**Beta**）：CPU 与内存 1:1
 

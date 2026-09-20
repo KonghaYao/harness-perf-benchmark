@@ -519,11 +519,16 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 // Olive: every other hue is taken (red / blue / orange / green / purple / magenta /
                 // cyan), and Antigravity's own yellow (#FFE432) is a line that vanishes on white.
                 antigravity: "#7d9c00",
+                // Copper: by the time Cline joined, red / blue (x2) / orange / green / purple /
+                // magenta / cyan / olive were all spoken for. The mark Cline ships is a
+                // `currentColor` glyph, so there is no vendor colour to inherit either — copper is
+                // picked to stay clear of the orange and the olive it sits between.
+                cline: "#8a5a2b",
                 // Graphite: by the time Hermes joined, every hue band was spoken for (rose / blue
-                // x2 / orange / green / purple / magenta / cyan / olive), and the mark it ships is
-                // `currentColor` too, so there is no vendor colour to inherit. The neutral slate is
-                // the one value nothing else on the chart uses, and it stays legible on white
-                // instead of reading as a disabled series.
+                // x2 / orange / green / purple / magenta / cyan / olive / copper), and the mark it
+                // ships is `currentColor` too, so there is no vendor colour to inherit. The neutral
+                // slate is the one value nothing else on the chart uses, and it stays legible on
+                // white instead of reading as a disabled series.
                 hermes: "#5a6472",
             };
             const PALETTE = Object.values(COLORS);
@@ -532,9 +537,9 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
              * Vendor icons, kept in logos/ next to this page (relative paths — the page has to be
              * served from the repo root to find them, so don't make them absolute). Sources and
              * licences:
-             *   claude-code / codex / dsh / minimax-code / opencode / antigravity / hermes ← @lobehub/icons-static-svg
+             *   claude-code / codex / dsh / minimax-code / opencode / antigravity / cline / hermes ← @lobehub/icons-static-svg
              *     (MIT); the <title> inside each SVG has been checked to read "Claude Code", "Codex",
-             *     "DeepSeek", "Minimax", "opencode", "Antigravity" and "Hermes Agent";
+             *     "DeepSeek", "Minimax", "opencode", "Antigravity", "Cline" and "Hermes Agent";
              *   pi ← https://pi.dev/logo-auto.svg, the logo the pi README points at;
              *   peri ← our own brand mark, perihelion/images/img_peri_silver_flat_logo_s01.png
              *     (cropped to the mark, scaled to 64px).
@@ -556,6 +561,7 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 dsh: "logos/dsh.svg",
                 "minimax-code": "logos/minimax-code.svg",
                 antigravity: "logos/antigravity.svg",
+                cline: "logos/cline.svg",
                 // "Hermes Agent" per the <title> inside it (lobehub ships the product's own mark).
                 hermes: "logos/hermes.svg",
             };
@@ -580,6 +586,9 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 // source, so this points at the product page (the CLI's own page is a post under
                 // /blog/) and the install command lives in CLAUDE.md.
                 antigravity: "https://antigravity.google/",
+                // The CLI lives in the monorepo's apps/cli (the product page is cline.bot, which is
+                // the marketing site; the code — and the issue tracker — are here).
+                cline: "https://github.com/cline/cline",
                 hermes: "https://github.com/NousResearch/hermes-agent",
             };
 

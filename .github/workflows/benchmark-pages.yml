@@ -17,12 +17,12 @@
 #     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
 #     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
 #     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
-#   - 九家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
+#   - 十家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
 #   - opencode **v1** 已退出排名，这里不装、不跑；v2 是另一家（npm 包 `@opencode/cli`，bin 名
 #     `opencode2`），在排名里，沙盒是 playground/opencode2。两者同名不同代，别混。
 #   - peri 走 GitHub release，Antigravity CLI（agy）与 Hermes Agent（hermes）走它们各自的官方
 #     install.sh（都装到 ~/.local/bin）。三家都必须装成，装不上这一趟就整趟失败——线上继续挂
-#     上一批的站点，不会悄悄少一条曲线（九条曲线里少一条比整个榜单停更是更坏的失真）。
+#     上一批的站点，不会悄悄少一条曲线（十条曲线里少一条比整个榜单停更是更坏的失真）。
 
 name: benchmark · gh-pages
 
@@ -30,7 +30,7 @@ on:
   workflow_dispatch:
     inputs:
       turns:
-        description: 长剧本轮数（pi 自动 +33、agy 自动 +4、opencode2 自动 +1、hermes 自动 +2：它们的压缩/标题请求会多吃条目）
+        description: 长剧本轮数（pi 自动 +33、agy 自动 +4、opencode2 自动 +1、hermes 自动 +2、cline 自动 +⌈n/100⌉：它们的压缩/标题请求会多吃条目）
         default: "100"
       repeats:
         description: 每家跑几次（图表取端到端时长居中的那一次）
@@ -73,7 +73,7 @@ concurrency:
 
 jobs:
   bench-and-publish:
-    # 整批 27 次运行（九家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
+    # 整批 30 次运行（十家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
     timeout-minutes: 150
     runs-on: ${{ github.event.inputs.runner || 'macos-latest' }}
     environment:
@@ -152,7 +152,7 @@ jobs:
             echo "- 批次配置：轮数 ${TURNS} · 每家 ${REPEATS} 次 · runner \`${RUNNER}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
-      - name: 装 harness（peri + 六家 npm CLI + agy / hermes 官方脚本）
+      - name: 装 harness（peri + 七家 npm CLI + agy / hermes 官方脚本）
         if: steps.decide.outputs.bench == '1'
         env:
           PERI_INSTALL_VERSION: ${{ github.event.inputs.peri_version }}
@@ -174,7 +174,7 @@ jobs:
           fi
           "$HOME/.peri/peri" --version
           echo "${HOME}/.peri" >> "${GITHUB_PATH}"
-          # 其余六家都在 npm 上。注意 `@opencode/cli` 是 opencode **v2**，它的 bin 里同时有
+          # 其余七家都在 npm 上。注意 `@opencode/cli` 是 opencode **v2**，它的 bin 里同时有
           # `opencode` 与 `opencode2` 两个名字；v1 已退出排名、这里不装，所以那个 `opencode`
           # 不会被谁用到（真要复测 v1，playground/opencode 的 demo 认版本号，不是 1.x 会直接报错）。
           npm i -g \
@@ -183,7 +183,8 @@ jobs:
             @earendil-works/pi-coding-agent \
             @deepseek-ai/dsh \
             @minimax-ai/code \
-            @opencode/cli
+            @opencode/cli \
+            cline
 
       # agy 只有官方一个安装脚本：它查一份平台清单（darwin_arm64 等）→ 下载约 180MB 的
       # 单文件二进制 → 校验 SHA-512 → 落到 ~/.local/bin/agy。脚本自己不改 PATH，所以下面
@@ -225,7 +226,7 @@ jobs:
       - name: 报一下装到了什么版本
         if: steps.decide.outputs.bench == '1'
         run: |
-          for bin in peri agy claude codex pi dsh mcode opencode2 hermes; do
+          for bin in peri agy claude codex pi dsh mcode opencode2 hermes cline; do
             printf '%-8s %s\n' "${bin}" "$(command -v "${bin}" || echo '（不在 PATH 里）')"
           done
           peri --version || true
@@ -239,8 +240,9 @@ jobs:
           # 的现场证据——v1 只输出一个裸的 `1.17.12`。
           opencode2 --version || true
           hermes --version || true
+          cline --version || true
 
-      - name: 生成剧本（九份，按各家工具形状）
+      - name: 生成剧本（十份，按各家工具形状）
         if: steps.decide.outputs.bench == '1'
         env:
           TURNS: ${{ github.event.inputs.turns || '100' }}
@@ -273,8 +275,17 @@ jobs:
           # 实测 100 轮要 102 轮剧本（104 条 = 102 + 2 条收尾），故 +2。
           gen --turns "$((TURNS + 2))" --tool terminal \
             --out data/scenarios/long-run-hermes.json
+          # cline：shell 工具叫 run_commands、参数是**字符串数组** {commands: [...]}（唯一的数组
+          # 形状）。它的**上下文压缩会吃掉一条剧本**——默认 --compaction agentic，长到阈值时把
+          # 当轮换成一条 "Summarize this session for continuation…" 请求（messages=2），响应被当
+          # 摘要用掉、当轮的工具调用不再执行。实测标准剧本（每轮 4KB）每约 90 轮触发一次：
+          # --turns 101（103 条）实测 102 条请求 = 1 条初始 + 99 条带工具结果的续跑 + 1 条压缩 +
+          # 1 条压缩后续跑 = **100 个工具轮**；200 轮实测压缩 2 次。所以按「每 100 轮 +1、
+          # 向上取整」留条目。
+          gen --turns "$((TURNS + (TURNS + 99) / 100))" --args commands \
+            --out data/scenarios/long-run-cline.json
 
-      - name: 跑批次（九家串行，每家 repeats 次）
+      - name: 跑批次（十家串行，每家 repeats 次）
         if: steps.decide.outputs.bench == '1'
         env:
           REPEATS: ${{ github.event.inputs.repeats || '3' }}
@@ -296,7 +307,7 @@ jobs:
             return 0
           }
           for round in $(seq 1 "${REPEATS}"); do
-            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes; do
+            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes cline; do
               echo "::group::第 ${round} 轮 · ${harness}"
               run_one "${harness}"
               echo "::endgroup::"

@@ -50,6 +50,7 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
                           command+description  {command, description}   pi / dsh
                           exec                 裸 JavaScript 源码        codex（custom 工具）
                           commandline          {CommandLine, Cwd, …}    agy（Antigravity CLI）
+                          commands             {commands: [command]}    cline（Cline CLI）
   --cwd <path>          commandline 形状里 Cwd 的值（默认 playground/antigravity，相对仓库根）
   --out <path>          输出路径（默认 data/scenarios/long-run.json，相对仓库根）
   -h, --help            显示本帮助
@@ -101,17 +102,28 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     # 主流程收尾之后它**还可能**再发一条技能库复盘（"Review the conversation above and update
     # the skill library."，同一剧本 4 次里发了 1 次），落在尾部那条空白上——与 peri 的预测请求
     # 同一个位置，所以那条空白对 hermes 也有用；发不发都不影响工具轮数。
+  bun run scripts/perf/gen-long-run.ts --turns 101 --args commands \\
+    --out data/scenarios/long-run-cline.json
+    # Cline（npm cline@3.0.62，官方仓库 cline/cline 的 apps/cli）：shell 工具叫 **run_commands**、
+    # 参数是**字符串数组** {commands: [...]}（十家里唯一的数组形状），所以必须 --args commands。
+    # 它没有标题生成，但**上下文压缩会吃掉一条剧本**（默认 --compaction agentic）：上下文长到阈值
+    # 时把当轮换成一条「续写摘要」请求（messages=2、
+    # last=user:"Summarize this session for continuation. Be concise and fact…"），响应被当摘要
+    # 用掉、当轮工具调用不再执行，随后带着压缩后的上下文继续。标准剧本（每轮 4KB）实测每约 90 轮
+    # 触发一次：101 轮（103 条）实测 102 条请求 = 1 条初始 + 99 条带工具结果的续跑 + 1 条压缩 +
+    # 1 条压缩后续跑 = **100 个工具轮**。200 轮实测压缩 2 次，所以按「每 100 轮 +1、向上取整」留。
 
   各家自己的辅助请求都会消费条目（opencode / dsh / agy / opencode2 / hermes 的标题生成、
-  pi · agy · hermes 的压缩摘要），所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看
+  pi · agy · hermes · **cline** 的压缩摘要），所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看
   mock.log 里是谁在取号。各家要跑到 100 轮的实际轮数：peri 100 · opencode 100 ·
   Claude Code 100 · codex 100 · dsh 100 · mcode 100 · **pi 133**（压缩从约 140 条消息起
   每轮多吃一条）· **agy 104** · **opencode2 101**（标题请求吃第一条）· **hermes 102**
-  （标题与主请求抢开头那一条 + 压缩前后各一条）。
+  （标题与主请求抢开头那一条 + 压缩前后各一条）· **cline 101**（压缩吃掉一条）。
   剧本尾部固定两条收尾（轮数之外）：主流程的「任务结束」文本 + 给 peri 预测请求的空白
   响应（后者消掉 peri 固定 5.0s 的收尾等待，机制见 docs/perf-compare.md）。
   注：agy / opencode2 的标题请求在**主流程之前**（序列第一条），尾部那两条收尾它们只用到
-  第一条；hermes 的标题与主请求几乎同时发出（谁先不定），同样只用到第一条；
+  第一条；hermes 的标题与主请求几乎同时发出（谁先不定），同样只用到第一条；cline 也没有
+  预测请求，同样只用到第一条；
   peri 的预测与 hermes 的技能库复盘在**主流程之后**，正好落在第二条空白上——多出来的一条
   不会被浪费，留着只在各家共用同一份
   生成器时无害。
@@ -129,6 +141,9 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
   cd playground/opencode2 && bun perf-demo.ts --exhausted stop --timeout-ms 1800000
     # 默认剧本 data/scenarios/long-run-opencode2.json；沙盒是 XDG_* 指到 .data/.state/.cache/.config，
     # 命令固定带 --standalone（不加会留一个常驻 serve --service，三次读数就冷热不均）
+  cd playground/cline && bun perf-demo.ts --exhausted stop --timeout-ms 1800000
+    # 默认剧本 data/scenarios/long-run-cline.json；沙盒是 --config/--data-dir/--hooks-dir 指到 .cline/，
+    # provider 按本次端口写进 <沙盒>/data/settings/providers.json（不吃环境变量插值）
 `;
 
 const { values } = parseArgs({
@@ -180,6 +195,7 @@ const delayMs = positiveInt(values["delay-ms"], "--delay-ms", 0);
  *   dsh 0.1.5-rc.2                                bash                    {command, description}
  *   agy 1.2.7                                     run_command             {CommandLine, Cwd, …}
  *   hermes 0.21.3                                 terminal                {command}
+ *   cline 3.0.62                                  run_commands            {commands: [command]}
  * opencode v2 的 shell 工具就叫 `shell`（v1 的 `bash` 没了）：名字换了，形状还是 {command}。
  * 注意 v1（opencode）与 v2（opencode2）是**两个 harness**，各自一份剧本，别把这份形状混过去。
  * dsh 的 description 是**必填**：缺了会被工具自己拒掉
@@ -193,13 +209,15 @@ type ArgShape =
     | "command"
     | "command+description"
     | "exec"
-    | "commandline";
+    | "commandline"
+    | "commands";
 
 const ARG_SHAPES: readonly ArgShape[] = [
     "command",
     "command+description",
     "exec",
     "commandline",
+    "commands",
 ];
 
 function argShapeOf(raw: string | undefined, tool: string): ArgShape {
@@ -210,13 +228,15 @@ function argShapeOf(raw: string | undefined, tool: string): ArgShape {
 }
 
 const argShape = argShapeOf(values.args, values.tool ?? "Bash");
-// exec / run_command 是 codex、agy 各自的工具名，形状定了名字就没有第二个选择。
+// exec / run_command / run_commands 是 codex、agy、cline 各自的工具名，形状定了名字就没有第二个选择。
 const toolName =
     argShape === "exec"
         ? "exec"
         : argShape === "commandline"
           ? (values.tool ?? "run_command")
-          : (values.tool ?? "Bash");
+          : argShape === "commands"
+            ? (values.tool ?? "run_commands")
+            : (values.tool ?? "Bash");
 const outPath = resolve(REPO_ROOT, values.out ?? "data/scenarios/long-run.json");
 
 /**
@@ -257,7 +277,9 @@ function commandFor(round: number): string {
  * - `exec`：按 codex 的 custom 工具写，参数是**裸 JavaScript 源码**（不是 JSON，也不是被引号
  *   包起来的字符串），见 src/responses.ts 头注释里 exec 的声明形状；
  * - `commandline`：按 agy 的 run_command 写（五项全必填，见 ArgShape 注释）。参数名是
- *   大驼峰（`CommandLine`），与其余各家的 snake_case 不同，别顺手改小写。
+ *   大驼峰（`CommandLine`），与其余各家的 snake_case 不同，别顺手改小写；
+ * - `commands`：按 cline 的 run_commands 写——参数是**字符串数组** `{commands: [...]}`，
+ *   一次能排多条命令（实测 schema：required 只有 commands，items 是 string）。
  */
 function toolCall(round: number): {
     id: string;
@@ -291,6 +313,13 @@ function toolCall(round: number): {
                     toolAction: command,
                 },
             },
+        };
+    }
+    if (argShape === "commands") {
+        return {
+            id: callId,
+            type: "function",
+            function: { name: toolName, arguments: { commands: [command] } },
         };
     }
     // 字段顺序与各家实测请求一致：command 在前、description 在后，便于肉眼比对抓包。

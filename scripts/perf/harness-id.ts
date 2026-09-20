@@ -37,6 +37,7 @@ export const DISPLAY_NAMES: Readonly<Record<string, string>> = {
     "minimax-code": "MiniMax Code",
     antigravity: "Antigravity CLI",
     hermes: "Hermes Agent",
+    cline: "Cline",
 };
 
 /** 展示名：认识的给规范写法，不认识的原样用 id。 */
