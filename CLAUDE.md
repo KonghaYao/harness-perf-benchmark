@@ -3,21 +3,24 @@
 ## 项目定位
 
 llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono）：把预设的响应序列写成 JSON
-脚本，**第 i 次请求返回第 i 条**；`stream: true` 时把同一条完整响应转换成对应协议的 SSE 序列。
+脚本，**第 i 次请求返回第 i 条**；客户端要流式时把同一条完整响应转换成对应协议的 SSE 序列
+（Chat / Messages / Responses 按 body 的 `stream: true`，Gemini 那份写在路径的
+`:streamGenerateContent` 上——见「关键约定与陷阱」）。
 
-同一份脚本可以走三种线协议（各自独立计游标，互不干扰）：
+同一份脚本可以走四种线协议（各自独立计游标，互不干扰）：
 
 | 端点 | 协议 | 谁在用 |
 | --- | --- | --- |
 | `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、pi、dsh、MiniMax Code、脚本自测 |
 | `POST /v1/messages` | Anthropic Messages | Claude Code |
 | `POST /v1/responses` | OpenAI Responses | Codex |
+| `POST /v1beta/models/{model}:generateContent` | Google Gemini API | Antigravity CLI |
 
 两个用途：
 
-- **性能压测**：以脚本控制的节奏驱动 harness（peri / Claude Code / Codex / pi / dsh / MiniMax Code；
-  opencode **已退出排名、不再跑**，见「与 harness 集成」开头），测量 harness 进程自身的 CPU / 内存开销
-  （不采 GPU）；
+- **性能压测**：以脚本控制的节奏驱动 harness（peri / Claude Code / Codex / pi / dsh / MiniMax Code /
+  Antigravity CLI；opencode **已退出排名、不再跑**，见「与 harness 集成」开头），测量 harness 进程自身的
+  CPU / 内存开销（不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
 ## 压测工作流（已实现）
@@ -34,6 +37,7 @@ cd playground/codex       && bun perf-demo.ts --timeout-ms 600000   # Codex 沙�
 cd playground/pi          && bun perf-demo.ts --timeout-ms 600000   # pi 沙盒
 cd playground/deepseek    && bun perf-demo.ts --timeout-ms 600000   # dsh 沙盒
 cd playground/minimax-code && bun perf-demo.ts --timeout-ms 600000  # MiniMax Code（mcode）沙盒
+cd playground/antigravity && bun perf-demo.ts --timeout-ms 600000   # Antigravity CLI（agy）沙盒
 # cd playground/opencode  && bun perf-demo.ts --timeout-ms 600000   # 已退出排名：代码保留，常规批次不再跑
 ```
 
@@ -51,7 +55,10 @@ cd playground/minimax-code && bun perf-demo.ts --timeout-ms 600000  # MiniMax Co
 - `playground/deepseek`：`DSH_HOME` 指向沙盒，provider 全走环境变量
   （`$DEEPSEEK_BASE_URL` / `$DEEPSEEK_API_KEY`），**不用生成配置文件**；
 - `playground/minimax-code`：`MINIMAX_DATA_DIR` 指向沙盒，provider 按本次端口写进沙盒的
-  `config.yaml`（mcode 的 `baseURL` 不吃环境变量插值，与 pi 同理）。
+  `config.yaml`（mcode 的 `baseURL` 不吃环境变量插值，与 pi 同理）；
+- `playground/antigravity`：`HOME` 指向沙盒（`$HOME/.gemini/antigravity-cli/settings.json` 里选
+  `modelProvider: gemini`），端点靠 `GOOGLE_GEMINI_BASE_URL`、凭据靠 `GEMINI_API_KEY` 假值
+  （agy 的 provider 配置与登录态都只按 HOME 找，与 Claude Code 同理）。
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
 并打印两个候选后端的开销与分辨率）。想把「CPU 与内存」混成一个可比的数（谁跑完同一部剧本烧的资源
@@ -68,13 +75,15 @@ harness 收到即自行收尾退出——于是能测**端到端时长**（含�
 peri 的「预测下一步输入」的，能消掉它固定 5.0s 的收尾等待（理由见「已知限制与坑」）：
 
 ```sh
-# 七家各一份（工具名/参数形状按各家实测，见 gen-long-run.ts 的 ArgShape）
+# 各家各一份（工具名/参数形状按各家实测，见 gen-long-run.ts 的 ArgShape）
 bun run scripts/perf/gen-long-run.ts --turns 100 --out data/scenarios/long-run.json           # peri / opencode / Claude Code（Bash + command）
 bun run scripts/perf/gen-long-run.ts --turns 100 --args exec --out data/scenarios/long-run-codex.json
 bun run scripts/perf/gen-long-run.ts --turns 133 --tool bash --out data/scenarios/long-run-pi.json  # pi 要 133：压缩请求每轮多吃一条
 bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --args command+description \
   --out data/scenarios/long-run-dsh.json
 bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --out data/scenarios/long-run-minimax-code.json  # mcode：bash + command，轮数 + 1 条就够
+bun run scripts/perf/gen-long-run.ts --turns 104 --args commandline \
+  --out data/scenarios/long-run-antigravity.json  # agy：run_command + 五项参数；104 条 = 100 轮 + 标题 1 + 压缩 3
 
 cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 ```
@@ -99,8 +108,8 @@ Codex 那笔还顺带说明了「收尾零 CPU 的空等照样花钱」——它
 
 产物落在**一次运行一个目录**里：`data/runs/<harness>/<runId>/`（`--out-dir` 可改，`data/` 已在
 .gitignore 里），`<harness>` 是 `peri` / `opencode` / `claude-code` / `codex` / `pi` / `dsh` /
-`minimax-code` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
-`claude-code`、`mcode` → `minimax-code`，见 `scripts/perf/harness-id.ts`），
+`minimax-code` / `antigravity` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
+`claude-code`、`mcode` → `minimax-code`、`agy` → `antigravity`，见 `scripts/perf/harness-id.ts`），
 `<runId>` 形如 `20260919-140136`（同秒第二次运行加 `-2` 后缀）：
 
 | 文件 | 内容 |
@@ -235,10 +244,11 @@ load 在 4~17 之间波动就能让 MiniMax Code 从 19.8s 变 34.7s；负载尖
 ```
 src/server.ts   入口：--help、加载配置与脚本、Bun.serve（默认 :3457）
 src/config.ts   运行配置：CLI > 环境变量 > 内置默认
-src/app.ts      Hono 路由 + 访问日志；三种协议共用取号/日志/错误处理
+src/app.ts      Hono 路由 + 访问日志；四种协议共用取号/日志/错误处理
 src/protocol.ts 协议适配接口（ProtocolAdapter、SSE 帧编码与流包装）
 src/anthropic.ts  Anthropic Messages 适配（Claude Code）
 src/responses.ts  OpenAI Responses 适配（Codex）
+src/gemini.ts   Google Gemini API 适配（Antigravity CLI）
 src/script.ts   脚本解析与进程级单游标 ScriptPlayer
 src/stream.ts   OpenAI chat 的非流式合成 / SSE 序列、token 估算、grapheme 切分
 src/types.ts    OpenAI 协议类型
@@ -273,6 +283,7 @@ bun install
 bun run src/server.ts --script script.json          # 起 mock（脚本必填，默认端口 3457）
 bun run scripts/perf/run.ts --script data/scenarios/long-run.json --exhausted stop   # 压测（--script 必填）
 cd playground/claude-code && bun perf-demo.ts       # 换成 Claude Code 压测（默认剧本由 demo 自带）
+cd playground/antigravity && bun perf-demo.ts       # Antigravity CLI（agy）压测
 bun run scripts/perf/verify.ts                      # 采样口径验证实验
 bun test                                            # 全部测试
 bun run typecheck                                   # tsc --noEmit（含 scripts/ 与 playground/）
@@ -280,7 +291,8 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
 
 ## 与 harness 集成
 
-七家都是「让 harness 把 base URL 指向本 mock」，但接入点各不相同：
+各家都是「让 harness 把 base URL 指向本 mock」，但接入点各不相同（**Antigravity CLI 是第四种线协议**：
+Google Gemini API，其余各家走 chat / Messages / Responses 三种）：
 
 ### peri
 
@@ -435,6 +447,49 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
   但会给启动段带一点外部网络成分，跨机器比时长时要留意；
 - `harness.log` 有内容（自行收尾时 stdout 里是最终回答，本次即收尾文本）。
 
+### Antigravity CLI（`agy`）
+
+- 二进制从 PATH 找（`Bun.which("agy")`，实测 1.2.7，官方脚本装到 `~/.local/bin/agy`，单文件 Go
+  二进制约 181MB）；harness 命令是 `agy -p '<prompt>' --dangerously-skip-permissions`：`-p`/`--print`
+  是官方的**无头模式**（跑一个 prompt、最终回答写 stdout、成功退 0）；
+- 走 **Google Gemini API**（`POST /v1beta/models/{model}:streamGenerateContent?alt=sse`，mock 侧由
+  `src/gemini.ts` 应答）——**唯一不属 OpenAI/Anthropic 系的那一家，也是本项目的第四种线协议**。
+  端点开关是 `GOOGLE_GEMINI_BASE_URL`（官方支持的环境变量，**不带 `/v1`**：客户端在它后面自己拼
+  `/v1beta/models/…`），值必须是 https 或 loopback（`127.0.0.1` / `localhost` / `[::1]`）——mock 正好
+  落在允许范围内，所以不需要证书；配错端点的症状是启动即 404（它不会去试 OpenAI 那两条路径）；
+- 隔离靠 **`HOME`** 指向沙盒（`playground/antigravity/.home/`）：provider 选择与登录态都在
+  `$HOME/.gemini/antigravity-cli/settings.json`，会话与凭据缓存同在一个 HOME 下——**只改某个
+  config dir 挡不住用户级配置**（Claude Code 的教训），这里直接换 HOME；demo 每次把沙盒里的
+  `settings.json` 覆盖进 `$HOME`（改配置立刻生效）；
+- 免登录靠 **`modelProvider: "gemini"` + `GEMINI_API_KEY`**（官方文档写明的 CI / headless 用法）：
+  账号模式在这条路径上要开浏览器走 OAuth，起不来。key 给假值即可（mock 不校验鉴权），
+  但**变量必须存在**，缺了 CLI 直接退出；
+- **死代理**：agy 会碰 Google 自家的服务（自升级检查、遥测），本机到 Google 的连接是停住的，
+  不处理就挂到超时上。demo 只对 harness 及其子进程注入 `HTTPS_PROXY=http://127.0.0.1:9` 让它快速
+  失败，并用 `NO_PROXY` 保住本地 mock 直连（与 Codex 那份同一套路）；此沙盒不适用于依赖外部
+  HTTPS 的剧本；
+- 权限：headless 下审批**无处可批**，默认策略会把需要审批的工具**软拒**（agent 拿到拒绝继续跑，
+  白费一轮），所以固定带 `--dangerously-skip-permissions`，剧本自觉只放只读命令；
+- 工具集实测 9 个（`view_file` / **`run_command`** / `manage_task` / `write_to_file` /
+  `replace_file_content` / `generate_image` / `read_url_content` / `search_web` / `ask_question`），
+  声明走 `parametersJsonSchema`（JSON Schema 2020-12）而不是旧的 Gemini `parameters` 字段；
+  shell 工具 `run_command` 的五个参数**全必填**——`CommandLine` / `Cwd` / `WaitMsBeforeAsync` /
+  `toolSummary` / `toolAction`（缺任何一项都被工具自己拒掉），所以剧本用
+  `gen-long-run.ts --args commandline` 生成（参数名是大驼峰，与其余各家的 snake_case 不同）；
+- **消费规律：标题生成在最前，压缩摘要途中插队**（都要算进剧本条数）：
+  1. **序列第一条**是**会话标题生成**请求（模型 `gemini-3.1-flash-lite-preview`，同一个端点、
+     同一个 key，`systemInstruction` 里写着 "conversation title generator"）——它在**最前面**，
+     与 peri 的预测请求（在最后）正好相反；
+  2. 之后每轮工具调用一条主请求（模型 `gemini-3.1-pro-preview`，`tools=9`）；
+  3. 每约 32 个请求插一条**上下文压缩**（`last=user:"Your main task now is to generate a
+     continuation summary of …"`），同样取号——与 pi 的压缩同类，只是节奏更规整。
+  实测 `--turns 104` 正好 100 个工具轮（104 − 3 条压缩 − 1 条收尾）；`--turns 100` 只有 96 轮、
+  `103` 只有 99 轮。它没有 peri 那样的预测请求，所以尾部第二条空白收尾它用不到（留着无害）；
+- `-p` 文本模式下**工具输出不进 stdout**（`harness.log` 里看不到命令回显，别据此判「工具没执行」）；
+  要看执行细节加 `--output-format stream-json`；
+- `--print-timeout` 实测默认 0（不限时），loop 剧本不会自行收敛——收敛要靠有限长剧本 +
+  `--exhausted stop` 的收尾文本。
+
 ## 已知限制与坑（压测相关）
 
 - **`--max-turns` 在 peri 的 `-p` 模式下是空操作**，所以压测时长由 `--timeout-ms` 兜底，
@@ -459,7 +514,10 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
   长剧本里吃的是尾部那条空白），opencode 与 dsh 发「会话标题生成」（dsh 那条来自 `dsh-session-title-first-prompt-llm`，
   只看首条 prompt，一次会话一条；opencode 那条出现在启动期，`messages=2`）；**pi 的
   上下文压缩也会发请求**——pi 默认开压缩（`compaction.enabled=true`，`reserveTokens` 16384 /
-  `keepRecentTokens` 20000），从约 140 条消息起每轮追加一条 `messages=2` 的总结；
+  `keepRecentTokens` 20000），从约 140 条消息起每轮追加一条 `messages=2` 的总结；**agy 两样都有**——
+  标题生成在**序列第一条**（`gemini-3.1-flash-lite-preview`，`systemInstruction` 里写着
+  "conversation title generator"），压缩摘要每约 32 个请求插一条（`last=user:"Your main task now is
+  to generate a continuation summary of …"`），所以 100 轮要 104 条剧本；
   Claude Code / Codex 本次没见到。脚本不足时先看 `*-mock.log` 里
   是谁在取号（每行都有 `messages=` / `input=` 与末条消息的角色），症状是「明明在正常工作，
   却提前收到收尾文本」；
@@ -498,10 +556,16 @@ bun run typecheck                                   # tsc --noEmit（含 scripts
   `stop` 是更后面的兜底，见「场景：长剧本端到端」）；默认不静默兜底；
 - 脚本条目是**协议中立**的（`message.content` + `message.tool_calls`），各协议适配器负责渲染：
   chat 的 `tool_calls` → Messages 的 `tool_use` 块（`arguments` 解析成 `input` 对象）→
-  Responses 的 function_call / custom_tool_call；
+  Responses 的 function_call / custom_tool_call → Gemini 的 `functionCall`（`arguments` 解析成
+  `args` 对象。**注意 `functionCall.id` 是配对的必需项**：OpenAI / Anthropic 那边 id 只是标签，
+  这边工具结果要按它回填 `functionResponse.id`，所以适配器必须给每个调用补一个 id）；
+- Gemini 那条路由的**流式与否写在路径上**（`:streamGenerateContent` / `:generateContent`），不在
+  请求体里——所以 `ProtocolAdapter.isStream` / `describe` 收的第二个参数是 `req.path`（其余各协议
+  从 body 判断，签名多出来的参数对它们是惰性的）；路由用普通参数 + 白名单守卫，别写成 Hono 的正则
+  参数（`:p{[^/]*generateContent}` 这类**贪心量词 + 字面量不会回溯**，实测直接 404）；
 - 节奏优先级：命令行 / 环境变量 > 脚本 `defaults` > 内置值；`chunkSize` 按 grapheme 切分，不拆坏 emoji；
 - `usage` 未声明时按字符估算（CJK 1 token/字，其余 4 字符 1 token），要精确值就在条目里显式写；
-- 不校验 `Authorization`；`/v1/models` 返回配置的模型名；`choices` 恒为 1；
+- 不校验鉴权（`Authorization` / `x-goog-api-key` 都收，值随便给）；`/v1/models` 返回配置的模型名；`choices` 恒为 1；
 - 脚本消耗比预期快时，先看 mock 的访问日志确认是哪类请求在取号；
 - **harness 的「谁更省」看统一计分**（**Beta**，口径见上）：**面积**（`CU` = 1.0 × 核·秒 +
   1.0 × GB·秒）与**峰值**（不折算）两个口径一起引，别只挑一个（也别另起一套指标）；口径只在

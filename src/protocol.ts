@@ -8,6 +8,7 @@
  *   src/stream.ts     OpenAI Chat Completions（/v1/chat/completions，历史实现）
  *   src/anthropic.ts  Anthropic Messages（/v1/messages，Claude Code）
  *   src/responses.ts  OpenAI Responses（/v1/responses，Codex）
+ *   src/gemini.ts     Google Gemini API（/v1beta/models/{model}:generateContent，Antigravity CLI）
  *
  * 新增协议只需实现本接口 + 在 src/app.ts 里挂一条路由，不必改动取号、日志与错误处理。
  */
@@ -31,6 +32,12 @@ export interface RequestContext {
      * 还是 function_call，只看脚本条目是分不出来的。
      */
     request: Record<string, unknown>;
+    /**
+     * 请求路径。Gemini 把**模型名与动作都写在 URL 上**
+     * （`/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent`），请求体里没有 model，
+     * 非它不可的适配器从这里取；其余协议忽略。
+     */
+    path: string;
 }
 
 /** 流式渲染需要的运行时依赖。 */
@@ -43,10 +50,17 @@ export interface FrameOptions extends RequestContext {
 export interface ProtocolAdapter {
     /** 协议名，用于访问日志与错误信息。 */
     readonly name: string;
-    /** 请求摘要（谁在消费脚本）。 */
-    describe(body: Record<string, unknown>): string;
-    /** 该请求是否要求流式响应。 */
-    isStream(body: Record<string, unknown>): boolean;
+    /** 请求摘要（谁在消费脚本）。`path` 可选，供流式语义写在 URL 上的协议用（见 isStream）。 */
+    describe(body: Record<string, unknown>, path?: string): string;
+    /**
+     * 该请求是否要求流式响应。
+     *
+     * 多数协议看请求体里的字段（chat / Responses 的 `stream`、Messages 的 `stream`），
+     * 但 **Gemini 把这件事写进路径**——`:streamGenerateContent` 与 `:generateContent`
+     * 是两个不同的端点，请求体里没有任何标志，所以再给一个 `path`。
+     * 不关心路径的实现照旧只写一个参数即可（TS 允许少写形参）。
+     */
+    isStream(body: Record<string, unknown>, path?: string): boolean;
     /** 从请求体里取出参与 token 估算的 prompt 部分（只做投影，不夹带别的信息）。 */
     promptValue(body: Record<string, unknown>): unknown;
     /** 非流式响应体。 */

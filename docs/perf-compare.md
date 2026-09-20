@@ -1,4 +1,4 @@
-# 压测对比：六种 harness（opencode 已退出排名）
+# 压测对比：六种 harness（opencode 已退出排名；Antigravity CLI 已接入、尚未并入批次）
 
 > **opencode 已退出排名（2026-09-19 起）**
 >
@@ -43,6 +43,7 @@ harness 走完剧本、收到收尾响应后**自行退出**——回答的是�
 | pi | 0.85.1 | OpenAI Chat Completions | 沙盒 `models.json` 换 baseUrl + `--model llm-mock/llm-mock` | `PI_CODING_AGENT_DIR` |
 | dsh | 0.1.5-rc.2 | OpenAI Chat Completions | `$DEEPSEEK_BASE_URL` / `$DEEPSEEK_API_KEY` 环境变量 | `DSH_HOME` |
 | MiniMax Code（`mcode`） | 0.4.12 | OpenAI Chat Completions | 沙盒 `config.yaml` 的 `custom_provider.*.options.baseURL` + `--model custom_provider:llm-mock/llm-mock` | `MINIMAX_DATA_DIR` |
+| Antigravity CLI（`agy`）（**新接入，本批未跑**） | 1.2.7（PATH） | **Google Gemini API** | `GOOGLE_GEMINI_BASE_URL` + 沙盒 `settings.json` 的 `modelProvider: "gemini"` | `HOME` |
 
 约定：每个 harness 都在自己的 playground 沙盒里、用同一份剧本跑
 （`cd playground/<名> && bun perf-demo.ts …`），剧本由同一个生成器现造、工具形状按各家实测；
@@ -227,6 +228,42 @@ CU 30.42 / 31.99 / 32.15），下面取中位那次（19.9s）：
   **它不省，只是快**；
 - 启动时会刷新模型目录（`models.dev/api.json` → `filecdn.minimax.chat`，落沙盒 `cache/` 下 4.7MB），
   不经过 mock，但给启动段带了 1.22s（六家里最慢）——跨机器比启动时长时要留意。
+
+## Antigravity CLI（`agy`）：已接入，**尚未并入批次**
+
+> **它不在上面那批里，下面的读数不能与批次表格并列。** 差的不是剧本（同一个生成器、同一份
+> 100 轮 × 4KB 口径，工具形状按它自己的 `run_command` 生成），而是**运行批次**：3 次读数跑于
+> 2026-09-20 11:47（`--label agy-probe`，本机 load 3.3），与第五批隔了一夜。跨批次**只能比 CU**，
+> 百分制分数与其余指标都不可比（分数是批内相对值）。
+
+`agy -p`（1.2.7 的无头模式）是 2026-09-20 接入的第 7 家，走**第四种线协议 Google Gemini API**
+（`POST /v1beta/models/{model}:streamGenerateContent?alt=sse`，mock 侧 `src/gemini.ts`）——线协议、
+沙盒与消费规律的完整说明在 `CLAUDE.md` 的「与 harness 集成」。三次读数：
+
+| 次 | runId | 端到端 | 启动 · 运转 · 收尾 | CU | 峰值 RSS · CPU |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `20260920-114712` | 2.4s | 0.1 · 2.2 · 0.1 | 4.866 | 229.2MB · 221.8% |
+| 2 | `20260920-114718`（中位） | 2.2s | 0.1 · 2.0 · 0.1 | 4.593 | 225.1MB · 213.0% |
+| 3 | `20260920-114723` | 2.1s | 0.1 · 2.0 · 0.0 | 4.508 | 225.8MB · 239.8% |
+
+- **端到端 2.1~2.4s，与 peri 同一档**（上一批 peri 2.2s）；三次都**自行退出**（退出码 0、
+  不用强杀），启动 **0.1s**、收尾 **0.0~0.1s**——两笔固定成本都近乎为零，时间几乎全在运转段；
+- **消费规律：标题在最前、压缩途中插队**。实测 105 个请求 = **1 条会话标题生成**
+  （`gemini-3.1-flash-lite-preview`，`tools=0`，落在**序列第一条**——与 peri 的预测请求在最后正好
+  相反）+ 1 条初始主请求 + **100 轮工具调用** + **3 条上下文压缩摘要**（每约 32 个请求一条，
+  `last=user:"Your main task now is to generate a continuation summary of …"`）。所以 100 轮要
+  **104 条剧本**（`gen-long-run.ts --turns 104`）；`--turns 100` 只能跑到 96 轮、`103` 跑到 99 轮。
+  它没有 peri 那样的预测请求，尾部那条空白收尾用不到；
+- **CU 4.5~4.9**（同剧本三次读数 4.508 / 4.593 / 4.866，**±4%**，重复性比端到端还好）：按跨批次口径比，
+  比上一批的 dsh（3.101）贵一档、比 Claude Code（2.828）也贵，远离 MiniMax Code（31.995）那一端。
+  内存项只占它的 CU 的 9%~10%（RSS 均值约 207MB，与 pi 的 186MB 同档）；
+- **进程树口径与 dsh 同类**：`samples.csv` 的 `procs` 列**恒为 1**（执行 shell 命令时拉起的子进程
+  太短命、采样打不到），它的 shell 开销是靠**已回收子进程计数器**（`child_cpu_pct`）捞回来的
+  ——实测 0.32 核·秒，占整段 CPU 的 8%；
+- 要把它并入榜单，得**整批重跑**（带同一个 `--label`，含它共 7 家 × 3 次）：CU 之外的指标都只在
+  批内可比。**在并入之前，生成图表数据要加 `--exclude antigravity`**——否则它会以 `agy-probe` 那
+  3 条混进第五批的图里，而百分制是按「本批最小 CU」算的，跨批混画出来的分数没有意义
+  （与 `--exclude opencode` 同一个用法）。
 
 ## 统一计分（**Beta**）：CPU 与内存 1:1
 

@@ -12,7 +12,7 @@
  *   bun run scripts/perf/gen-long-run.ts --turns 100 --body-kb 8
  *   bun run scripts/perf/gen-long-run.ts --turns 100 --args exec --out data/scenarios/long-run-codex.json
  *
- * 工具形状用 `--tool`（工具名）+ `--args`（参数形状）指定，七家各一份的生成命令见 USAGE。
+ * 工具形状用 `--tool`（工具名）+ `--args`（参数形状）指定，各家各一份的生成命令见 USAGE。
  *
  * 剧本尾部固定带**两条**收尾条（正文轮数之外）：
  *   1. 与 mock 的 stop 策略同文的「任务结束」纯文本——主流程吃到它才收敛（文本取自
@@ -44,34 +44,50 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
   --chunk-size <n>      流式 chunk 字符数（默认 64）
   --chunk-delay-ms <n>  chunk 间隔毫秒（默认 0）
   --delay-ms <n>        首包前延迟毫秒（默认 0）
-  --tool <name>         工具名（默认 Bash；--args exec 时固定为 exec，本项被忽略）
+  --tool <name>         工具名（默认 Bash；--args exec / commandline 时各有各的默认，见下）
   --args <shape>        工具参数形状（默认 command）:
                           command              {command}                peri / opencode / Claude Code / MiniMax Code
                           command+description  {command, description}   pi / dsh
                           exec                 裸 JavaScript 源码        codex（custom 工具）
+                          commandline          {CommandLine, Cwd, …}    agy（Antigravity CLI）
+  --cwd <path>          commandline 形状里 Cwd 的值（默认 playground/antigravity，相对仓库根）
   --out <path>          输出路径（默认 data/scenarios/long-run.json，相对仓库根）
   -h, --help            显示本帮助
 
-七家的生成命令（统一 100 轮主循环；正文大小用 --body-kb 调，默认 4KB）:
+各家的生成命令（统一 100 轮主循环；正文大小用 --body-kb 调，默认 4KB）:
   bun run scripts/perf/gen-long-run.ts --turns 100 --out data/scenarios/long-run.json
     # peri / opencode / Claude Code：工具名 Bash，参数 {command}，三家共用这一份
   bun run scripts/perf/gen-long-run.ts --turns 100 --args exec \\
     --out data/scenarios/long-run-codex.json
-  bun run scripts/perf/gen-long-run.ts --turns 130 --tool bash \\
+  bun run scripts/perf/gen-long-run.ts --turns 133 --tool bash \\
     --out data/scenarios/long-run-pi.json
-    # pi 要 130 条：它从约 140 条消息起自动压缩，压缩期每轮追加一条 messages=2 的总结请求，
-    # 同样取号——100 条下主循环只能跑到 84 轮（实测）
+    # pi 要 133 轮（落成剧本 135 条 = 133 + 2 条收尾）：它从约 140 条消息起自动压缩，压缩期每轮
+    # 追加一条 messages=2 的总结请求，同样取号。实测 135 个请求 = 1 条初始 + 100 轮工具调用 +
+    # 34 条压缩总结；131 轮只有 99 个工具轮、128 轮只有 98 个（轮数要往上加，不是往下减）。
   bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --args command+description \\
     --out data/scenarios/long-run-dsh.json
   bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash \\
     --out data/scenarios/long-run-minimax-code.json
     # MiniMax Code CLI（mcode）的 shell 工具也叫 bash + {command}；消费最干净：
     # 100 轮剧本实收 101 条（100 轮 + 尾部那条收尾），没有标题生成也没有压缩请求
+  bun run scripts/perf/gen-long-run.ts --turns 104 --args commandline \\
+    --out data/scenarios/long-run-antigravity.json
+    # Antigravity CLI（agy）的工具名是 run_command、参数五项全必填（--args commandline）。
+    # 要 104 条才跑满 100 轮，两处原因（都实测）：
+    #   1. 序列第一条是**会话标题生成**请求（gemini-3.1-flash-lite-preview，同一个端点），
+    #      它在**最前面**——与 peri 的预测（在最后）正好相反；
+    #   2. 上下文压缩：每约 32 个请求插一条「续写摘要」请求
+    #      （last=user:"Your main task now is to generate a continuation summary of …"），
+    #      同样取号。104 轮实测 3 次压缩，正好 100 个工具轮；103 轮只有 99 个。
 
-  各家自己的辅助请求都会消费条目（opencode / dsh 的标题生成、pi 的压缩摘要），
+  各家自己的辅助请求都会消费条目（opencode / dsh / agy 的标题生成、pi 与 agy 的压缩摘要），
   所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看 mock.log 里是谁在取号。
+  各家要跑到 100 轮的实际轮数：peri 100 · opencode 100 · Claude Code 100 · codex 100 ·
+  dsh 100 · mcode 100 · **pi 133**（压缩从约 140 条消息起每轮多吃一条）· **agy 104**。
   剧本尾部固定两条收尾（轮数之外）：主流程的「任务结束」文本 + 给 peri 预测请求的空白
   响应（后者消掉 peri 固定 5.0s 的收尾等待，机制见 docs/perf-compare.md）。
+  注：agy 的标题请求在**主流程之前**（序列第一条），尾部那两条收尾它只用到第一条——
+  它没有 peri 那样的预测请求，多出来的一条不会被消费，留着只在各家共用同一份生成器时无害。
 
 配套运行（各 playground 的 perf-demo.ts 默认剧本已指向自家那份；timeout 只作兜底，
 正常应看到 harness 自行退出。--script 的相对路径按**进程 cwd** 解析，别照抄仓库根的写法）:
@@ -95,6 +111,7 @@ const { values } = parseArgs({
         "delay-ms": { type: "string" },
         tool: { type: "string" },
         args: { type: "string" },
+        cwd: { type: "string" },
         out: { type: "string" },
         help: { type: "boolean", short: "h" },
     },
@@ -124,29 +141,47 @@ const chunkDelayMs = positiveInt(values["chunk-delay-ms"], "--chunk-delay-ms", 0
 const delayMs = positiveInt(values["delay-ms"], "--delay-ms", 0);
 
 /**
- * 各 harness 的工具形状（重测六家时逐个核过，原先记在各自的 scenario 文件 note 里，
+ * 各 harness 的工具形状（重测各家时逐个核过，原先记在各自的 scenario 文件 note 里，
  * 文件删掉后固化在这里）：
  *   peri 3.17 / opencode 1.17 / Claude Code 2.1   Bash                   {command}
  *   codex 0.155                                   exec                    裸 JS 源码（custom 工具）
  *   pi 0.85.1                                     bash                    {command}
  *   dsh 0.1.5-rc.2                                bash                    {command, description}
+ *   agy 1.2.7                                     run_command             {CommandLine, Cwd, …}
  * dsh 的 description 是**必填**：缺了会被工具自己拒掉
  * （tool result: invalid arguments: missing required property "description"），
  * 所以生成器必须能把这一项补上，不能只写 command。
+ * agy 的 run_command 同理——实测缺 Cwd / WaitMsBeforeAsync / toolSummary / toolAction 会被工具
+ * 拒掉（tool result: missing properties 'Cwd', 'WaitMsBeforeAsync', 'toolSummary', 'toolAction'），
+ * 五项都要给全，形状见 toolCall()。
  */
-type ArgShape = "command" | "command+description" | "exec";
+type ArgShape = "command" | "command+description" | "exec" | "commandline";
+
+const ARG_SHAPES: readonly ArgShape[] = ["command", "command+description", "exec", "commandline"];
 
 function argShapeOf(raw: string | undefined, tool: string): ArgShape {
     // `--tool exec` 是 codex 那条老用法，保持兼容：没给 --args 时按 exec 形状走。
     if (raw === undefined || raw === "") return tool === "exec" ? "exec" : "command";
-    if (raw === "command" || raw === "command+description" || raw === "exec") return raw;
-    throw new Error(`--args 必须是 command | command+description | exec，收到 ${JSON.stringify(raw)}`);
+    if ((ARG_SHAPES as readonly string[]).includes(raw)) return raw as ArgShape;
+    throw new Error(`--args 必须是 ${ARG_SHAPES.join(" | ")}，收到 ${JSON.stringify(raw)}`);
 }
 
 const argShape = argShapeOf(values.args, values.tool ?? "Bash");
-// exec 是 codex 的 custom 工具名，形状定了名字就没有第二个选择。
-const toolName = argShape === "exec" ? "exec" : (values.tool ?? "Bash");
+// exec / run_command 是 codex 与 agy 各自的工具名，形状定了名字就没有第二个选择。
+const toolName =
+    argShape === "exec"
+        ? "exec"
+        : argShape === "commandline"
+          ? (values.tool ?? "run_command")
+          : (values.tool ?? "Bash");
 const outPath = resolve(REPO_ROOT, values.out ?? "data/scenarios/long-run.json");
+
+/**
+ * commandline 形状（agy 的 run_command）里的工作目录：工具要求 Cwd 落在 workspace 内，
+ * 所以默认写死到 agy 的沙盒目录（playground/antigravity），可用 --cwd 改。
+ * 只在生成时定格——剧本是现生成的（data/ 不入库），换人换机器各生成一份即可。
+ */
+const toolCwd = resolve(REPO_ROOT, values.cwd ?? "playground/antigravity");
 
 /**
  * command+description 形状里那句 description：harness 只拿它当展示文案，内容不参与测量，
@@ -177,7 +212,9 @@ function commandFor(round: number): string {
  * - `command`：arguments 是 `{command}` 的 JSON 对象（peri / opencode / Claude Code / pi）；
  * - `command+description`：再多一项必填的 description（dsh）；
  * - `exec`：按 codex 的 custom 工具写，参数是**裸 JavaScript 源码**（不是 JSON，也不是被引号
- *   包起来的字符串），见 src/responses.ts 头注释里 exec 的声明形状。
+ *   包起来的字符串），见 src/responses.ts 头注释里 exec 的声明形状；
+ * - `commandline`：按 agy 的 run_command 写（五项全必填，见 ArgShape 注释）。参数名是
+ *   大驼峰（`CommandLine`），与其余各家的 snake_case 不同，别顺手改小写。
  */
 function toolCall(round: number): {
     id: string;
@@ -193,6 +230,23 @@ function toolCall(round: number): {
             function: {
                 name: "exec",
                 arguments: `const r = await tools.exec_command({ cmd: ${JSON.stringify(command)} });\ntext(r.output);`,
+            },
+        };
+    }
+    if (argShape === "commandline") {
+        return {
+            id: callId,
+            type: "function",
+            function: {
+                name: toolName,
+                arguments: {
+                    CommandLine: command,
+                    Cwd: toolCwd,
+                    WaitMsBeforeAsync: 10000,
+                    toolSummary: TOOL_DESCRIPTION,
+                    // toolAction 是给 harness 自己展示「这一步在干什么」的，与 CommandLine 同源最自然。
+                    toolAction: command,
+                },
             },
         };
     }

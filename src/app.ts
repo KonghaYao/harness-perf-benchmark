@@ -16,6 +16,7 @@ import { cors } from "hono/cors";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { anthropic } from "./anthropic";
 import type { MockConfig } from "./config";
+import { gemini } from "./gemini";
 import { streamResponse, type ProtocolAdapter } from "./protocol";
 import { responses } from "./responses";
 import type { ScriptPlayer, ScriptResponse } from "./script";
@@ -232,9 +233,10 @@ export function createApp(deps: AppDeps): Hono {
 
             const before = player.status();
             const entry = player.take();
+            const path = c.req.path;
             if (entry === null) {
                 const status = player.status();
-                log(`[llm-mock] ${adapter.name} ${adapter.describe(body)} → 脚本已耗尽`);
+                log(`[llm-mock] ${adapter.name} ${adapter.describe(body, path)} → 脚本已耗尽`);
                 return c.json(
                     adapter.error(
                         `脚本已耗尽（${status.size} 条全部消费，来源 ${status.source}）：` +
@@ -252,15 +254,15 @@ export function createApp(deps: AppDeps): Hono {
             };
             const consumed = player.status();
             log(
-                `[llm-mock] ${adapter.name} ${adapter.describe(body)} → ` +
+                `[llm-mock] ${adapter.name} ${adapter.describe(body, path)} → ` +
                     (before.exhausted && before.policy === "stop"
                         ? `剧本已耗尽（stop 策略），返回收尾响应（第 ${consumed.requests} 次请求）`
                         : `消费第 ${consumed.index} 条`),
             );
             const prompt = adapter.promptValue(body);
-            const ctx = { prompt, request: body };
+            const ctx = { prompt, request: body, path };
 
-            if (!adapter.isStream(body)) {
+            if (!adapter.isStream(body, path)) {
                 await sleep(entry.delayMs, c.req.raw.signal);
                 return c.json(adapter.body(entry, meta, ctx) as Record<string, unknown>);
             }
@@ -289,6 +291,20 @@ export function createApp(deps: AppDeps): Hono {
     // Codex：OpenAI Responses。
     app.post("/v1/responses", scripted(responses));
     app.post("/responses", scripted(responses));
+    // Antigravity CLI（agy）：Google Gemini API。模型名与动作拼在路径的最后一段
+    // （/v1beta/models/{model}:streamGenerateContent），所以这里不能写死后缀——
+    // **Hono 的正则参数不做回溯**：`:mw{[^/]*generateContent}` 匹配得了
+    // `…:generateContent`，却匹配不了 `…:streamGenerateContent`（贪婪量词吃掉整段后不回头，
+    // 实测）。于是路由收宽、动作在 handler 里按白名单校验：非生成类动作（countTokens 等）
+    // 该落到 404，而不是平白吃掉一条脚本。
+    const geminiRoute = scripted(gemini);
+    app.post("/v1beta/models/:modelWithAction", (c) => {
+        const action = c.req.path.split(":").pop() ?? "";
+        if (action !== "generateContent" && action !== "streamGenerateContent") {
+            return errorJson(c, 404, `未知路径 ${c.req.path}`, "invalid_request_error", "not_found");
+        }
+        return geminiRoute(c);
+    });
 
     const models = (c: Context) =>
         c.json({

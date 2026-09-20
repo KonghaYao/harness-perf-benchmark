@@ -30,7 +30,7 @@ async function collect(
     for await (const frame of messageFrames(response, META, {
         sleep: options.sleep ?? (async () => {}),
         signal: options.signal,
-        ...(options.ctx ?? { prompt: null, request: {} }),
+        ...(options.ctx ?? { prompt: null, request: {}, path: "/v1/messages" }),
     })) {
         frames.push(frame);
     }
@@ -64,7 +64,7 @@ const jsonDeltas = (frames: StreamFrame[], index: number) =>
         .join("");
 
 const message = (scripted: ScriptResponse, prompt: unknown = null) =>
-    anthropic.body(scripted, META, { prompt, request: {} }) as MessageResponse;
+    anthropic.body(scripted, META, { prompt, request: {}, path: "/v1/messages" }) as MessageResponse;
 
 describe("anthropic 非流式响应", () => {
     it("文本条目渲染成 message + text 块，stop_reason 为 end_turn", () => {
@@ -265,6 +265,7 @@ describe("anthropic 流式事件", () => {
             signal: controller.signal,
             prompt: null,
             request: {},
+            path: "/v1/messages",
         })) {
             frames.push(frame);
         }

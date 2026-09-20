@@ -34,7 +34,7 @@ const CODEX_TOOLS = [
 /** 请求侧窗口：prompt 是 token 估算投影，request 是工具形状（custom / function）的来源。 */
 function ctxOf(input: unknown[] = []): RequestContext {
     const request = { model: "llm-mock", input: [...CODEX_TOOLS, ...input] };
-    return { prompt: responses.promptValue(request), request };
+    return { prompt: responses.promptValue(request), request, path: "/v1/responses" };
 }
 
 function recordingSleep() {
@@ -166,7 +166,8 @@ describe("responses 非流式响应", () => {
 
         // 请求里没有 additional_tools（手工 curl 调试）时，按最标准的 function_call 渲染。
         expect(
-            toResponse(entry(execCall()), META, { prompt: null, request: {} }).output[1],
+            toResponse(entry(execCall()), META, { prompt: null, request: {}, path: "/v1/responses" })
+                .output[1],
         ).toMatchObject({
             type: "function_call",
             name: "exec",
