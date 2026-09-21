@@ -60,14 +60,7 @@ import {
     type SampleSummary,
     type SamplerBackend,
 } from "./sampler";
-import {
-    CU2_FORMULA,
-    cu2Score,
-    resourceCost,
-    resourcePeaks,
-    type Cu2Score,
-    type ResourcePeaks,
-} from "./score";
+import { resourceCost, resourcePeaks, type ResourceCost, type ResourcePeaks } from "./score";
 
 export const EXIT_OK = 0;
 /** 配置 / mock / 环境错误。 */
@@ -283,28 +276,33 @@ function summaryLines(summary: SampleSummary, config: PerfConfig): string[] {
 }
 
 /**
- * CU 2.0 那一行（人读日志用）：与 run.json 的 `cu2` 同源，公式与预算只在 score.ts 一处。
- * 不可评分时把原因码原样打出来——空着或写「无样本」会让人以为只是没采到样。
+ * 统一计分那一行（人读日志用）：把公式的每一项都摊开，便于事后核对。
+ * 标着 Beta 是刻意的——口径还没定稿（见 score.ts 文件头），日志本身要能自证身份。
  */
-function costLine(score: Cu2Score): string {
-    if (!score.valid) {
-        return `${CU2_FORMULA.label}: 不可评分（${score.invalidReasons.join("、") || "未知原因"}）`;
-    }
+function costLine(cost: ResourceCost | null): string {
+    if (cost === null || cost.sampleCount === 0) return "统一计分(Beta): 无样本";
+    const child =
+        cost.childCpuSeconds > 0
+            ? `，其中后代 ${cost.childCpuSeconds.toFixed(3)}（取自${cost.childCpuFrom === "counter" ? "已回收子进程计数器" : "采样到的后代"}）`
+            : "";
     return (
-        `${CU2_FORMULA.label}: ${score.score!.toFixed(1)} 分（L=${score.burden!.toFixed(3)}，` +
-        `${CU2_FORMULA.budgetScore} 分 = 固定预算；` +
-        `T ${score.metrics!.timeSeconds.toFixed(1)}s · C ${score.metrics!.cpuSeconds.toFixed(3)} 核·秒 · ` +
-        `A ${score.metrics!.memoryGiBSeconds.toFixed(3)} GiB·秒 · P ${score.metrics!.peakGiB.toFixed(3)} GiB）`
+        `统一计分(Beta): ${cost.cu.toFixed(3)} CU = 1.0×${cost.cpuSeconds.toFixed(3)} 核·秒` +
+        ` + 1.0×${cost.gbSeconds.toFixed(3)} GB·秒（CPU 与内存 1:1）` +
+        `（内存项占 ${cost.cu > 0 ? ((cost.memoryCu / cost.cu) * 100).toFixed(0) : "0"}%${child}；` +
+        `尾部补齐 ${cost.tailAppliedMs.toFixed(0)}ms）`
     );
 }
 
-/** 峰值原始量：RSS 峰值已进 CU 2.0 的 P 项，CPU 峰值只作展示。 */
+/**
+ * 另一行给**峰值**（压力口径）：最坏一刻占多少。
+ * 与 `costLine` 的积分互补——面积答「总共烧多少」，峰值答「要多少资源才跑得起来」。
+ */
 function peakLine(peaks: ResourcePeaks | null): string[] {
     if (peaks === null || peaks.sampleCount === 0) return [];
     return [
         `峰值(压力口径): RSS ${mb(peaks.treeRssBytes)}（t=${(peaks.treeRssAtMs / 1000).toFixed(2)}s，` +
             `当时 ${peaks.treeRssProcs} 个进程） · CPU ${peaks.treeCpuPercent.toFixed(1)}%` +
-            `（进程树；RSS 峰值参与 CU 2.0）`,
+            `（进程树，不折算成分数）`,
     ];
 }
 
@@ -583,35 +581,17 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         summary: null,
         summarySource: null,
         cost: null,
-        cu2: null,
         peaks: null,
         exit: null,
         artifacts: null,
     };
 
-    /** 全程样本：定稿时要按它算 CU 2.0（早退路径样本为空 → 自然不可评分）。 */
-    const samples: ProcessSample[] = [];
     let finalized = false;
     /** 定稿并原子落盘。早退路径也要调它——半截的 run 与跑完的 run 必须能分辨。 */
     const finish = (status: RunStatus): void => {
         if (finalized) return;
         finalized = true;
         meta.status = status;
-        // CU 2.0 与日志同一份结果：分数、有效性与原因码都来自 score.ts。
-        // 这里给的是「请求数」而不是工具轮数（请求含辅助请求），只作保守下限检查。
-        meta.cu2 = cu2Score({
-            status,
-            endToEndMs: meta.duration.endToEndMs,
-            harnessExitedAtMs: meta.timing.harnessExitedAtMs,
-            withTree: meta.sampling.withTree,
-            samplingBackend: meta.sampling.backend,
-            childColumnPresent: true,
-            samples,
-            requests: meta.mock.requests,
-        });
-        perfBuffer.push(costLine(meta.cu2));
-        flushPerf();
-        stdout(`[perf] ${costLine(meta.cu2)}`);
         meta.endedAtMs = epochNow();
         meta.endedAt = new Date(meta.endedAtMs).toISOString();
         if (meta.host !== null) {
@@ -789,6 +769,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         }
         if (config.withTree) sampler.refreshTree();
 
+        const samples: ProcessSample[] = [];
         const csvBuffer: string[] = [];
         const samplingStart = clock();
         meta.timing.samplingStartedAtMs = epochNow();
@@ -889,8 +870,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         meta.segments = segmentsOf(finalStatus, harnessStartEpoch, harnessExitEpoch);
         meta.summary = { ...summary };
         meta.summarySource = "runtime";
-        // 历史面积（旧 CU）与峰值各自算一份，均保留原义：
-        // 末拍与 harness 退出之间约一个采样间隔的账没记，用实测空档补齐
+        // 统一计分：末拍与 harness 退出之间还有约一个采样间隔的账没记，用实测空档补上
         // （`harnessExitEpoch` 是 harness 真退出的时刻，末拍是最后一次成功读数）。
         const lastSampleTs =
             samples.length > 0 ? (samples[samples.length - 1] as ProcessSample).ts : null;
@@ -910,6 +890,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
             `mock 游标: index=${finalStatus?.index ?? "?"} / ${finalStatus?.size ?? "?"}`,
             `端到端时长: ${(harnessElapsedMs / 1000).toFixed(1)}s（harness 启动 → 退出；` +
                 `采样窗口 ${(summary.durationMs / 1000).toFixed(1)}s）`,
+            costLine(meta.cost),
             ...peakLine(meta.peaks),
             ...segmentLines(finalStatus, harnessStartEpoch, harnessExitEpoch),
             `产物: ${runDir}（run.json · perf.log · samples.csv · harness.log · mock.log）`,
@@ -919,6 +900,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         for (const line of summaryLines(summary, config)) stdout(`[perf] ${line}`);
         stdout(`[perf] mock 请求数: ${requests} · 产物: ${runDir}`);
         stdout(`[perf] 端到端时长: ${(harnessElapsedMs / 1000).toFixed(1)}s`);
+        stdout(`[perf] ${costLine(meta.cost)}`);
         for (const line of peakLine(meta.peaks)) {
             stdout(`[perf] ${line}`);
         }

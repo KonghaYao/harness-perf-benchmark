@@ -161,7 +161,9 @@
                 gap: 10px 44px;
                 grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
             }
-            /* 综合分占整行，原始 CPU 与内存图在下一行左右配对。 */
+            /* The lead chart (the whole-run bill): it spans both columns above the CPU / memory
+               pair below it. Nothing is parked behind `hidden` today, but that attribute on a
+               .bar-box <figure> is how a chart gets switched off — see barBoxHidden. */
             .bar-box-wide {
                 grid-column: 1 / -1;
             }
@@ -192,25 +194,6 @@
                 position: relative;
                 height: 300px;
                 margin-top: 12px;
-            }
-            /* The repeats block: folded away by default (the ranking is the subject), and its body is
-               small monospace evidence — which runs were aggregated and what is missing from them.
-               Hard-wrapped, not padded into columns: these are sentences with numbers in them. */
-            #score-repeats {
-                margin: 14px 0 0;
-                font: 11.5px/1.7 var(--mono);
-                color: var(--muted);
-            }
-            #score-repeats summary {
-                cursor: pointer;
-                color: var(--faint);
-            }
-            #score-repeats ul {
-                margin: 10px 0 0;
-                padding-left: 18px;
-            }
-            #score-repeats li + li {
-                margin-top: 6px;
             }
             /* The timeline is the only framed element on the page — the frame is there to read
                values against. Width is capped at 780px: across the full page the curves stretch
@@ -351,9 +334,9 @@
             <span class="eyebrow">Long script · 100 turns × 4KB · Process tree</span>
             <h1>harness-perf-benchmark</h1>
             <p class="sub">
-                Coding harnesses run one workload of about 100 tool turns (99 counts as 100), from
-                process start to a clean exit. CU 2.0 Beta is the only ranking: higher is better.
-                The CPU and memory curves below are diagnostics, not additional leaderboards.
+                Coding harnesses run the same script, from process start to a clean exit. The chart at
+                the top is the whole bill, integrated over the run; under it the same harnesses at
+                their worst moment — peak CPU and peak memory. Shorter is leaner in all three.
             </p>
         </header>
 
@@ -364,12 +347,17 @@
         </div>
 
         <div id="app" hidden>
-            <!-- CU 2.0 是唯一综合分；原始 CPU、内存峰值图保留，按各自单位展示资源占用。 -->
+            <!-- The showcase is these three charts, one metric each and all read the same way:
+                 cheapest at the top, its own top two solid, the rest dimmed to background. The
+                 whole-run bill (CU) leads — it is the page's headline number, so it spans the full
+                 width — and the CPU / memory pair follows as a butterfly: bars grow from the middle
+                 outwards, with the two name columns between them (each chart draws its names outside
+                 its own axis). -->
             <div class="bars" id="page-bars">
                 <figure class="bar-box bar-box-wide">
                     <figcaption>
-                        CU 2.0 score <span class="beta">Beta</span>
-                        <span class="unit">0–100 · fixed budgets · higher is better</span>
+                        Unified score CU <span class="beta">Beta</span>
+                        <span class="unit">core·s + GB·s · whole run · lower is leaner</span>
                     </figcaption>
                     <div class="bar-canvas"><canvas id="bar-cu"></canvas></div>
                 </figure>
@@ -387,16 +375,9 @@
                 </figure>
             </div>
             <p class="hint">Click a bar to open that harness's repository.</p>
-            <!-- Validity and repeat warnings (an un-scorable run, an incomplete repeat group, a
-                 mixed set of batches) land here, right under the bar they qualify; the paragraph
-                 takes no space when empty. -->
+            <!-- Batch warnings (a lower-bound CU, a run sampled without the child-CPU column) land
+                 here, right under the bars they qualify; the paragraph takes no space when empty. -->
             <p class="sub warn" id="score-note"></p>
-            <!-- Per-harness detail that must not be hidden but is too long for the paragraph above:
-                 which runs were aggregated, their individual scores, and what is missing. -->
-            <details id="score-repeats">
-                <summary>Runs behind each bar (repeats, scores, invalid reasons)</summary>
-                <ul id="score-runs"></ul>
-            </details>
 
             <section>
                 <div class="head">
@@ -437,21 +418,17 @@
             </section>
 
             <!-- The foot of the page is the method, not the numbers: the chart is up top, so what
-                 stays here is what a reader needs in order to quote or reuse this — the CU 2.0
-                 formula (printed from the payload, see renderMethod) and a citation. -->
+                 stays here is what a reader needs in order to quote or reuse this — the formula CU
+                 computes (printed from the payload, see renderMethod) and a citation. -->
             <section>
                 <div class="head">
                     <span class="eyebrow">Score</span>
-                    <h2>CU 2.0 Beta · Fixed resource budgets <span class="beta">Beta</span></h2>
+                    <h2>Unified score · CPU and memory weighed 1:1 <span class="beta">Beta</span></h2>
                 </div>
                 <p class="sub">
-                    One absolute score for the whole process tree: the largest of four fixed-budget
-                    burdens (time, CPU work, memory area, peak RSS) decides it, so 50 points means
-                    exactly at budget and higher is leaner. There is no in-batch relative score and no
-                    direct growth-multiplier penalty. The bar is one real run — the median-scored run
-                    of the repeats — not a synthetic curve. Scores may be listed together across
-                    batches, but they still move with machine load and environment, so a formal
-                    conclusion needs comparable sampling. Legacy CU 1.0 area is not this score.
+                    One number for the whole run, area rather than peak. Beta, and not a scientific
+                    measurement: the coefficients are this project's own choice, so the bars order
+                    harnesses inside one batch and nothing more.
                 </p>
                 <div class="formula" id="score-formula"></div>
                 <p class="hint" id="score-source"></p>
@@ -476,16 +453,15 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
   author       = {KonghaYao},
   year         = {2026},
   howpublished = {\url{https://github.com/KonghaYao/harness-perf-benchmark}},
-  note         = {CU 2.0 Beta: fixed-budget absolute process-tree resource score, higher is better;
-                  one workload of about 100 tool turns; the bar is the median-scored real run;
-                  scores may be listed across batches, but a formal conclusion needs comparable sampling}
+  note         = {Unified score CU = 1 core-second + 1 GB-second of process-tree CPU and memory,
+                  integrated over the run (Beta)}
 }</pre>
             </section>
 
             <footer class="foot">
                 <span id="data-meta"></span>
                 <span id="pick-rule"></span>
-                <span>Formula and budgets <code>scripts/perf/score.ts</code></span>
+                <span>Method and coefficients <code>scripts/perf/score.ts</code></span>
                 <span>Full report <code>docs/perf-compare.md</code></span>
                 <span>Regenerate the data <code>bun run scripts/perf/gen-chart-data.ts</code></span>
             </footer>
@@ -657,18 +633,16 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
             };
 
             /**
-             * Harnesses whose diagnostic curves start collapsed: click the legend entry to unfold the
-             * historical readings. Their curves are dashed and no longer set the X axis scale (an
-             * excluded one's long tail would squash the rest into a pile — see renderChart). opencode
-             * **v1** is here because it trails the rest by a wide margin on every metric (the why,
-             * with numbers, is in docs/perf-compare.md); its code and sandbox are still in
+             * Harnesses that left the line-up: their curves start collapsed (click the legend
+             * entry to unfold the historical readings), are drawn dashed, say so next to their name
+             * on the bars, and no longer set the X axis scale. opencode **v1** went first — it trails
+             * the rest by a wide margin on every metric (the why, with numbers, is in
+             * docs/perf-compare.md), and keeping it in the line-up only stretched the X axis and
+             * squashed the other five into a pile. Its code and sandbox are still in
              * playground/opencode/ if you want to re-measure.
              *
-             * This set only affects the diagnostic timeline. The CU 2.0 ranking does not use it: a run
-             * with a valid score gets a bar whether or not its curve starts collapsed.
-             *
              * The ids here are harness ids, so `opencode` means v1 only: v2 is a separate harness
-             * (`opencode2`, next to it in the tables above).
+             * (`opencode2`, next to it in the tables above) and it **is** in the line-up.
              */
             const EXCLUDED = new Set(["opencode"]);
 
@@ -960,163 +934,105 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
             }
 
             /**
-             * The method block at the foot of the page: the CU 2.0 formula, its budgets and the
-             * limitations the generator states, plus every reason a bar is missing or qualified.
-             * The formula is printed **from the payload**, never retyped: its definition lives in
-             * exactly one place (CU2_FORMULA in scripts/perf/score.ts), and a page that restates it
-             * can disagree with the bars at the top.
+             * The method block at the foot of the page: the formula CU computes, where its shape comes
+             * from, and the batch warnings. The formula is printed **from the payload**, never
+             * retyped: its coefficients live in exactly one place (scripts/perf/score.ts), and a page
+             * that restates them can disagree with the bars at the top.
              */
-            // 公式块与每条 score 都必须自称 CU 2.0：旧 payload、旧 score 一律不进分数排行。
-            const hasCu2Formula = () =>
-                payload.scoreFormula?.scoreVersion === "cu2-beta" &&
-                typeof payload.scoreFormula.expression === "string" &&
-                typeof payload.scoreFormula.score === "string";
-
-            /** 有 score 块还不够：分数本身必须来自同一版 CU 2.0 且落在声明的区间内。 */
-            const isCu2Score = (run) =>
-                hasCu2Formula() &&
-                run.score?.scoreVersion === "cu2-beta" &&
-                typeof run.score.score === "number" &&
-                Number.isFinite(run.score.score) &&
-                run.score.score >= payload.scoreFormula.range[0] &&
-                run.score.score <= payload.scoreFormula.range[1];
-
-            /**
-             * 一条曲线能不能进唯一排行；不能就说清为什么。`score: null` 是「不可评分」，
-             * 绝不画成 0 或 100——重复组不完整、证据缺失、尾部空档超限都在这里现身。
-             */
-            function scoreIssues(run) {
-                const issues = [];
-                if (!hasCu2Formula()) issues.push("旧版 payload：缺 CU 2.0 scoreFormula");
-                if (run.score?.scoreVersion !== "cu2-beta") {
-                    issues.push("旧版或缺失 scoreVersion，不能当作 CU 2.0");
-                } else if (!isCu2Score(run)) {
-                    issues.push("不可评分（score = null 或超出 0~100）");
-                }
-                if (Array.isArray(run.score?.invalidReasons)) issues.push(...run.score.invalidReasons);
-                if (isCu2Score(run) && run.score.valid !== true) issues.push("valid = false");
-                const repeats = run.repetitions;
-                if (!repeats || !Number.isInteger(repeats.actualCount) || !Number.isInteger(repeats.requestedCount)) {
-                    issues.push("缺少重复次数信息");
-                } else if (repeats.complete !== true || repeats.actualCount < repeats.requestedCount) {
-                    issues.push(`重复次数不足（${repeats.actualCount}/${repeats.requestedCount}）`);
-                }
-                return [...new Set(issues)];
-            }
-
             function renderMethod() {
                 const note = document.getElementById("score-note");
                 const formulaBox = document.getElementById("score-formula");
                 const source = document.getElementById("score-source");
-                const repeatsBox = document.getElementById("score-repeats");
-                const runsList = document.getElementById("score-runs");
+                const chartBox = document.getElementById("bar-cu").closest(".bar-box");
+                if (
+                    payload.scoreFormula === undefined ||
+                    !payload.runs.some((run) => run.score !== undefined)
+                ) {
+                    // An old JSON: don't pretend, just say what to do (this line exists for exactly
+                    // this kind of note). The formula and the chart go with the numbers — an empty
+                    // framed block and an empty chart would be worse than none, and hiding the chart's
+                    // <figure> is also what stops renderBars from building it.
+                    formulaBox.hidden = true;
+                    source.hidden = true;
+                    chartBox.hidden = true;
+                    note.hidden = false;
+                    note.textContent =
+                        "This data/perf-chart.json has no score block (it came from an older " +
+                        "generator): re-run bun run scripts/perf/gen-chart-data.ts and the unified " +
+                        "score comes with it.";
+                    return;
+                }
+
+                // The computation, printed from the payload's own scoreFormula block. Four lines:
+                // what CU is, where it comes from (an integral over the whole run, not a mean), how
+                // it turns into the score, and what it covers. The lines are not padded into columns
+                // — the first one comes verbatim from the generator, and re-typing it here is how
+                // the page and the numbers start to disagree.
                 const formula = payload.scoreFormula;
-                formulaBox.hidden = source.hidden = !hasCu2Formula();
-                if (hasCu2Formula()) {
-                    // 逐行取自 payload：表达式、各项含义、分数式、区间方向、单档工作量与适用边界
-                    // （limitations 是口径自带的边界声明，页面不另编一套）。
-                    formulaBox.textContent = [
-                        formula.label,
-                        formula.expression,
-                        formula.score,
-                        formula.description,
-                        `scope: ${formula.scope} · range: ${formula.range.join("–")} · at budget: ` +
-                            `${formula.budgetScore} · sorted ${formula.sortDirection}`,
-                        formula.singleTierTurns === undefined
-                            ? ""
-                            : `workload: one tier, about ${formula.singleTierTurns.target} tool turns ` +
-                              `(${formula.singleTierTurns.note})`,
-                    ]
-                        .filter((line) => line !== "")
-                        .join("\n");
-                    // Small print: where the shape of the formula comes from, plus the limitations
-                    // the definition itself declares (someone who wants to argue with the metric
-                    // should find them named, not hidden). The text is printed verbatim except for
-                    // the markdown emphasis markers — this is a plain-HTML block, not a renderer.
-                    source.textContent = [formula.source, ...(formula.limitations ?? [])]
-                        .filter(Boolean)
-                        .join(" · ")
-                        .replace(/\*\*/g, "");
-                }
+                formulaBox.textContent = [
+                    formula.expression,
+                    "core·s = ∫ tree CPU% / 100 dt     GB·s = ∫ RSS / 2^20 dt     (over the whole run)",
+                    formula.score,
+                    `scope: ${formula.scope}`,
+                ].join("\n");
+                // Small print: where the shape of the formula comes from, and that the coefficients
+                // are this project's choice (someone who wants to argue about them should find them
+                // named, not hidden).
+                source.textContent = `${formula.source}.`;
 
-                const warnings = hasCu2Formula()
-                    ? []
-                    : [
-                          "This data/perf-chart.json has no CU 2.0 score block (it came from an older " +
-                              "generator), so no score ranking is drawn. Re-run " +
-                              "bun run scripts/perf/gen-chart-data.ts to recompute CU 2.0 from the " +
-                              "existing CSVs — that is a recalculation, not a new benchmark run.",
-                      ];
-
-                // 逐条摊开聚合过程：重复次数、逐次分数、未选运行、逐次不可评分原因都摆出来，
-                // 「为什么这条没有分数」不该只藏在代码里。
-                runsList.replaceChildren();
-                for (const run of payload.runs) {
-                    const issues = scoreIssues(run);
-                    if (issues.length > 0) warnings.push(`${run.name}：${issues.join(" / ")}`);
-                    const repeats = run.repetitions;
-                    const perRunReasons = (repeats?.invalidReasonsByRun ?? []).filter(
-                        (entry) => entry.reasons.length > 0,
+                const warnings = [];
+                const noChild = payload.runs.filter((run) => !run.score.childColumnPresent);
+                if (noChild.length > 0) {
+                    warnings.push(
+                        "These runs were sampled without a child_cpu_pct column (the process-tree " +
+                            "view reads low): " +
+                            noChild.map((run) => run.name).join(", ") +
+                            " — re-run a batch and it is there",
                     );
-                    // 代表 run 是怎么来的要如实写：显式点名、组里有不可评分的（这时代表 run 就是
-                    // 那一次，用来展示原因）、组不完整，还是正常的「分数中位」。
-                    const picked =
-                        repeats === undefined
-                            ? "缺少重复次数信息"
-                            : repeats.mode === "explicit-pick"
-                              ? "显式 --pick（不是默认重复组）"
-                              : repeats.validCount < repeats.actualCount
-                                ? "默认重复组含不可评分运行：代表 run 就是那一次（用来摊开原因）"
-                                : repeats.complete !== true
-                                  ? "默认重复组不足：代表 run 是现有的那一次"
-                                  : `分数中位真实 run（${repeats.medianRule}）`;
-                    const detail =
-                        repeats === undefined
-                            ? picked
-                            : `实际 ${repeats.actualCount}/${repeats.requestedCount} 次 · ` +
-                              `${repeats.complete ? "完整" : "不完整"} · ${repeats.validCount} 次有效 · ` +
-                              `${picked} · 代表 run ${repeats.representativeRunId} · ` +
-                              `runIds ${repeats.runIds.join(", ")} · ` +
-                              `逐次分数 ${repeats.scores.map((value) => (value === null ? "null" : value.toFixed(1))).join(", ")} · ` +
-                              `未选 ${repeats.ignoredRunIds.join(", ") || "无"}` +
-                              (perRunReasons.length > 0
-                                  ? ` · 逐次原因 ${perRunReasons
-                                        .map((entry) => `${entry.runId}: ${entry.reasons.join("+")}`)
-                                        .join("; ")}`
-                                  : "");
-                    const item = document.createElement("li");
-                    item.textContent =
-                        `${run.name} · ${isCu2Score(run) ? `${run.score.score.toFixed(1)} pts` : "不可评分（null）"}` +
-                        ` · ${detail}`;
-                    runsList.append(item);
                 }
-                repeatsBox.hidden = runsList.children.length === 0;
-
-                // 混批不再让分数失效：CU 2.0 是固定预算绝对分，不是「本批最优值」的相对分。
-                // 但它仍然受负载、环境与配置影响——并列可以，当成同条件采样不行。
+                const noTail = payload.runs.filter((run) => !run.score.tailGapKnown);
+                if (noTail.length > 0) {
+                    warnings.push(
+                        "These runs never recorded when the harness exited, so the last sample → exit " +
+                            "gap can't be filled in and CU is a lower bound: " +
+                            noTail.map((run) => run.name).join(", "),
+                    );
+                }
+                // **A chart must not mix batches.** The score divides by the smallest CU *in a batch*,
+                // so a run from another batch (a new harness measured on its own, say) gets a score
+                // that means nothing — and nothing on the page would show it: the bars look the same.
+                // The payload carries each run's --label, so the majority label is treated as the
+                // batch and everyone else is named. Grouping by label rather than by date keeps this
+                // honest for runs that were never labelled at all.
+                //
+                // Harnesses in EXCLUDED are left out of it: they are already drawn dashed, collapsed
+                // and marked as "left the line-up", so their age is on screen — pointing at opencode
+                // again here would just be noise on every chart.
                 const byLabel = new Map();
                 for (const run of payload.runs) {
+                    if (EXCLUDED.has(run.id)) continue;
                     const key = run.label ?? "(no --label)";
                     byLabel.set(key, [...(byLabel.get(key) ?? []), run.name]);
                 }
-                if (byLabel.size > 1 || byLabel.has("(no --label)")) {
+                if (byLabel.size > 1) {
+                    const sorted = [...byLabel.entries()].sort((a, b) => b[1].length - a[1].length);
+                    const [batchKey, batchNames] = sorted[0];
                     warnings.push(
-                        "This set mixes batches or unlabelled runs: " +
-                            [...byLabel.entries()]
+                        "This chart mixes runs from different batches: " +
+                            sorted
+                                .slice(1)
                                 .map(([key, names]) => `${names.join(", ")} (--label ${key})`)
-                                .join("; ") +
-                            ". CU 2.0 is an absolute fixed-budget score rather than an in-batch " +
-                            "relative one, so these bars may be listed together — but they still move " +
-                            "with machine load and environment, and a formal conclusion needs " +
-                            "comparable sampling.",
+                                .join(", ") +
+                            ` did not run with the other ${batchNames.length} (--label ${batchKey}). ` +
+                            "Scores are relative to the smallest CU inside one batch, so those runs can " +
+                            "only be read as raw CU — re-run them together under one --label to rank them",
                     );
                 }
-                // This line is reserved for "there is a trap in this set" warnings: normally it takes
+                // This line is reserved for "there is a trap in this batch" warnings: normally it takes
                 // up not a single character (height included, so that an empty paragraph leaves no
-                // phantom 18px gap). textContent, not innerHTML: run names and labels come from the
-                // payload and must never be parsed as markup.
-                note.textContent = warnings.length > 0 ? `⚠ ${warnings.join("\n")}` : "";
-                note.style.whiteSpace = "pre-line";
+                // phantom 18px gap).
+                note.innerHTML =
+                    warnings.length > 0 ? `<span class="warn">⚠ ${warnings.join("; ")}</span>` : "";
                 note.hidden = warnings.length === 0;
             }
 
@@ -1215,54 +1131,82 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
              * attribute back is all it takes). Only this element is checked: `#app` is hidden as well
              * until the data arrives, so walking up the ancestors would treat every chart as parked.
              */
+            const barBoxHidden = (canvasId) =>
+                document.getElementById(canvasId)?.closest(".bar-box")?.hasAttribute("hidden") === true;
+
             /**
-             * The page's only ranking: the CU 2.0 score, one bar per harness, sorted descending on a
-             * fixed 0–100 axis — the top row is the highest score, and two renders of the same data
-             * never rescale against each other. The top two stay solid, the rest dim into the
-             * background (see DIM_* in the two plugins), and the harness names and icons are written
-             * against the bars.
+             * The bar charts, all built here and all read the same way: one metric per chart, its own
+             * ranking (cheapest first, so first place is the top row), its own top two solid and the
+             * rest translucent, and the harness names and icons written against the bars.
              *
-             * Only runs with a valid CU 2.0 score get a bar (see scoreIssues): a null score means
-             * un-scorable, and drawing it at 0 or 100 would invent a reading. Those runs are named in
-             * the notes above the details block instead.
+             * The whole-run CU chart leads (it spans the page width, so it needs no mirroring), and
+             * the "butterfly" follows: peak CPU and peak memory side by side, bars growing from the
+             * middle outwards — the left chart (CPU) has its value axis reversed and its y ticks moved
+             * to the right, so the names end up between the two charts, while the memory chart keeps
+             * its ticks on the left axis.
              *
-             * CPU 与内存峰值另画原始量，不折算为第二套综合分。
-             * 是否有有效 CU 2.0 分数不影响已有峰值的展示。
-             *
-             * The scope is always the process tree and does **not** follow the "main process /
-             * process tree" buttons above, so this is built once.
+             * Different units (% / MB / CU) never share one value axis;
+             * the scope is always the process tree and does **not** follow the "main process / process
+             * tree" buttons above, so this is built once.
              */
             let barCharts = null;
             function renderBars() {
+                const scored = payload.runs.filter((run) => run.score !== undefined);
+                if (scored.length === 0) {
+                    // An older JSON has no score block: don't fake it — collapse the whole block (the
+                    // CU chart is part of it, and the page has nothing else to show there).
+                    document.getElementById("page-bars").hidden = true;
+                    return;
+                }
                 if (barCharts !== null) return;
-                const scored = payload.runs.filter((run) => scoreIssues(run).length === 0);
-                const measured = payload.runs.filter((run) => run.score?.sampleCount > 0);
                 const colors = new Map();
                 payload.runs.forEach((run, order) => colors.set(run.id, colorOf(run, order)));
 
                 const specs = [
-                    { id: "bar-cu", runs: scored, value: (run) => run.score.score, digits: 1, unit: " pts", descending: true, max: 100 },
-                    { id: "bar-cpu", runs: measured, value: (run) => run.score.peaks?.treeCpuPercent, digits: 1, unit: "%", mirror: true },
-                    { id: "bar-rss", runs: measured, value: (run) => run.score.peaks?.treeRssMb, digits: 1, unit: " MB" },
-                ].filter((spec) => {
-                    const available = spec.runs.some((run) => Number.isFinite(spec.value(run)));
-                    document.getElementById(spec.id).closest(".bar-box").hidden = !available;
-                    return available;
-                });
-                document.getElementById("page-bars").hidden = specs.length === 0;
+                    { id: "bar-cu", value: (run) => run.score.cu, digits: 3, unit: " CU" },
+                    // The mirrored one (left half): reversed value axis + y ticks on the right, which puts
+                    // the names and icons between the two charts.
+                    {
+                        id: "bar-cpu",
+                        value: (run) => run.score.peaks?.treeCpuPercent,
+                        digits: 1,
+                        unit: "%",
+                        mirror: true,
+                    },
+                    { id: "bar-rss", value: (run) => run.score.peaks?.treeRssMb, digits: 1, unit: " MB" },
+                ]
+                    // A chart whose <figure> carries hidden is not drawn (see barBoxHidden).
+                    .filter((spec) => !barBoxHidden(spec.id));
 
                 barCharts = specs.map((spec) => {
                     const mirrored = spec.mirror === true;
-                    const sorted = spec.runs
-                        .map((run) => ({ run, value: spec.value(run), label: run.name }))
+                    const sorted = scored
+                        .map((run) => ({
+                            run,
+                            value: spec.value(run),
+                            // Mark an excluded harness (if the data still carries one) so it doesn't read
+                            // as being in the line-up
+                            label: run.name + (EXCLUDED.has(run.id) ? " (left the line-up)" : ""),
+                        }))
                         .filter((entry) => Number.isFinite(entry.value))
-                        // 综合分高分在前；原始资源量沿用由低到高的展示顺序。
-                        .sort((a, b) => spec.descending ? b.value - a.value : a.value - b.value);
-                    const entries = sorted.map((entry, index) => ({
-                        ...entry,
-                        dim: index >= 2,
-                        text: entry.value.toFixed(spec.digits) + spec.unit,
-                    }));
+                        // This chart's own ranking: the smaller the metric, the higher up — first place
+                        // sits at the top
+                        .sort((a, b) => a.value - b.value);
+                    // Only harnesses still in the line-up take a rank: an excluded one (if the data still
+                    // carries it) never takes a slot and is always dimmed.
+                    let rank = 0;
+                    const entries = sorted.map((entry) => {
+                        const excluded = EXCLUDED.has(entry.run.id);
+                        const dim = excluded || rank >= 2;
+                        if (!excluded) rank += 1;
+                        return {
+                            ...entry,
+                            // The top two of this chart stay solid, the rest dim into the background (see
+                            // DIM_* in the two plugins)
+                            dim,
+                            text: entry.value.toFixed(spec.digits) + spec.unit,
+                        };
+                    });
                     barEntries.set(spec.id, { entries, mirror: mirrored });
                     const chart = new Chart(document.getElementById(spec.id), {
                         type: "bar",
@@ -1304,9 +1248,6 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                             scales: {
                                 x: {
                                     beginAtZero: true,
-                                    // 只有综合分固定 0–100；原始 CPU 和内存轴按实际量缩放。
-                                    min: 0,
-                                    max: spec.max,
                                     // Mirrored: 0 sits at the right end (against the name column) and bars
                                     // grow leftwards.
                                     reverse: mirrored,
@@ -1346,26 +1287,6 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                                 tooltip: {
                                     callbacks: {
                                         label: (item) => `${item.parsed.x.toFixed(spec.digits)}${spec.unit}`,
-                                        // tooltip 保留实测量、预算负担和代表运行，便于核查。
-                                        afterLabel: (item) => {
-                                            const run = entries[item.dataIndex].run;
-                                            const { metrics, burdens, burden, peaks, tailGapMs } = run.score;
-                                            const format = (value) =>
-                                                typeof value === "number" && Number.isFinite(value)
-                                                    ? value.toFixed(3)
-                                                    : "—";
-                                            return [
-                                                `run ${run.runId} · label ${run.label ?? "(none)"}`,
-                                                `repeats ${run.repetitions?.actualCount ?? "—"}/${run.repetitions?.requestedCount ?? "—"}` +
-                                                    ` · run ${run.repetitions?.representativeRunId ?? run.runId}`,
-                                                `T ${format(metrics?.timeSeconds)} s · C ${format(metrics?.cpuSeconds)} core·s`,
-                                                `A ${format(metrics?.memoryGiBSeconds)} GiB·s · P ${format(metrics?.peakGiB)} GiB`,
-                                                `burden T/C/A/P ${format(burdens?.time)} / ${format(burdens?.cpu)} / ` +
-                                                    `${format(burdens?.memory)} / ${format(burdens?.peak)} → L ${format(burden)}`,
-                                                `tail gap ${typeof tailGapMs !== "number" ? "—" : `${tailGapMs.toFixed(0)} ms`}` +
-                                                    ` · peak CPU ${format(peaks?.treeCpuPercent)}% (diagnostic)`,
-                                            ];
-                                        },
                                     },
                                 },
                             },

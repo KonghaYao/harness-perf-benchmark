@@ -4,35 +4,19 @@ A controlled benchmark for measuring the **CPU and memory usage** of AI coding h
 
 The benchmark does not call a real model. Every harness talks to the same local scripted mock, receives the same workload shape, and is measured together with its child processes. Network latency, model inference, GPU usage, and external service resources are outside the measurement scope.
 
-> The current ranking is the **CU 2.0 Beta fixed-budget absolute score — higher is better**. Harnesses may be listed together across batches, but a score still moves with machine load, environment, task and configuration, so it is not a claim of cross-environment fairness.
+> Results are relative to their benchmark batch and its test environment. They should not be treated as absolute numbers across different machines, operating systems, harness versions, or configurations.
 
-**Live charts:** [konghayao.github.io/harness-perf-benchmark](https://konghayao.github.io/harness-perf-benchmark/) — one CU 2.0 score ranking on a fixed 0–100 axis, with the per-sample CPU and memory curves kept as non-ranking diagnostics.
+**Live charts:** [konghayao.github.io/harness-perf-benchmark](https://konghayao.github.io/harness-perf-benchmark/) — the results below as interactive bars (unified score CU, peak CPU, peak memory) with per-sample CPU and memory curves.
 
-## Current score: CU 2.0 Beta
-
-Defined in exactly one place, `CU2_FORMULA` in `scripts/perf/score.ts`:
-
-`Score = 100 / (1 + max(T/10, C/10, A/10, P/1))`, range 0–100.
-
-T is end-to-end seconds, C is process-tree core-seconds, A is measured GiB-seconds of memory area, P is the process-tree RSS peak in GiB. The fixed Beta budgets are 10 s / 10 core-s / 10 GiB·s / 1 GiB, so 50 points means exactly at budget. This is not cloud pricing and not the legacy area sum, and there is no direct memory/CPU growth-multiplier penalty. The RSS peak is part of the score (budget item P); the CPU peak stays a diagnostic.
-
-One tier of about 100 tool turns (99 counts as 100, never padded), no short/medium/long tiers. Three repeats are scored individually and the **real run whose score is the median** supplies the bar; repeats are not mixed across labels, scenario SHAs or sampling conditions, and failed runs are not dropped to build a successful subset. Actual counts, per-run scores and the runs left out travel with the data.
-
-An un-scorable run is `null` with reasons shown (missing evidence, incomplete repeats, a tail gap over 500 ms) — never drawn as 0 or 100. Payloads or score blocks that do not declare `scoreVersion: 'cu2-beta'` are not drawn as CU 2.0 at all.
-
-**The user has approved recomputing CU 2.0 from the existing CSVs: that is a historical recalculation, not a new benchmark run, and it does not require re-running first.** Runs without enough evidence stay un-scored. A formal conclusion still needs comparable sampling. The page prints the formula from the payload only.
-
-## Benchmark Results — CU 1.0 historical
-
-The area CU figures, resource readings and rankings below are kept as they were: they are **CU 1.0 history, not CU 2.0 scores**, and are not renamed or relabelled.
+## Benchmark Results
 
 **Machine:** macOS · Apple Silicon · 18 cores<br>
 **Sampling:** 100 ms intervals · `proc_pid_rusage` · process-tree accounting<br>
-**Runs (historical rule):** 3 serial runs per harness; the duration-median run is shown<br>
+**Runs:** 3 serial runs per harness; the median run is shown<br>
 **Workload:** 100 scripted tool-use turns, with approximately 4 KB of response content per turn<br>
-**CU 1.0 area (historical):** 1 core-second + 1 GB-second of process-tree CPU and memory, integrated over the run
+**Score:** CU = 1 core-second + 1 GB-second of process-tree CPU and memory, integrated over the run
 
-| Harness | Version | CU 1.0 area ↓ | CPU mean | CPU peak | Memory mean | Memory peak |
+| Harness | Version | CU ↓ | CPU mean | CPU peak | Memory mean | Memory peak |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | [pi](https://github.com/earendil-works/pi) | 0.85.1 | **1.271** | 65.5% | 128.8% | 186.2 MB | 234.4 MB |
 | [Codex CLI](https://github.com/openai/codex) | 0.155.1 | 1.383 | **10.5%** | **26.0%** | 123.4 MB | 163.7 MB |
@@ -50,16 +34,19 @@ Bold marks the leanest value in each column (lower is leaner in all of them).
 † The six unmarked rows come from one batch (label `codex-proxy-fix`, September 19, 2026, 20:39–20:43,
 three serial runs each). Antigravity CLI, OpenCode v2, Hermes Agent and Cline were measured in separate
 probe batches (labels `agy-probe`, `oc2-probe`, `hermes-probe` and `cline-probe`, September 20).
-**Cross-batch caveat for the historical rows:** durations and resource readings are single-machine values that move with machine load, so treat the † rows as indicative. CU 2.0 may list families together with a mixed-batch note, but that note is not a claim that these probes were collected under one comparable setup. The CI workflow installs and runs all ten under a single batch label; a formal conclusion still needs comparable sampling.
+**Only CU compares across batches** — it is an absolute quantity, while the other columns are
+single-machine readings that move with machine load, so for the † rows treat them as indicative. The CI
+workflow installs and runs all ten under a single batch label, so the next batch it publishes puts every
+row on the same footing.
 
 ### Reading the results
 
 - CPU is reported using a **single-core 100% scale**. Multi-threaded processes can exceed 100%.
 - CPU and memory use the **process-tree** view, including harness child processes used for tool execution.
 - Memory is resident set size (RSS), not virtual memory or the size of disk caches.
-- The CU column here is the **CU 1.0 area** (CPU and memory integrated 1:1 over the run), kept for
-  compatibility and diagnostics only; it is **not** the current CU 2.0 fixed-budget absolute score.
-  The legacy ratios and rankings below are left as they were published.
+- CU is an **area**, not a peak: CPU and memory integrated over the whole run, weighted 1:1. The
+  coefficients are this project's own choice (documented in `scripts/perf/score.ts`) and the metric is
+  **Beta** — use it to order harnesses inside one batch, not as a verdict.
 - peri has the lowest mean and peak memory of the ten; MiniMax Code has the highest mean CPU and memory.
 - **The process tree is what makes some rows readable.** Codex's main process is only a launcher — the
   work happens in binaries it spawns — and OpenCode v2 has the same shape, with ~95% of its CPU in a
@@ -79,10 +66,9 @@ probe batches (labels `agy-probe`, `oc2-probe`, `hermes-probe` and `cline-probe`
   the row. Cline also holds ~1.8 s of *request-free* time at the end of the run before exiting — 33–43%
   of its whole CU, because the CPU stops there while ~700 MB of RSS stays resident (the same lesson as
   Codex's 10 s exit wait: an idle tail is not free).
-- **A fixed budget does not remove the environment.** Durations are load-sensitive — the same script on
-  the same machine has produced 19.8 s and 34.7 s for one harness. The CU 1.0 relative scores belong to
-  their original batch; CU 2.0 is absolute, so it can be listed with a mixed-batch note, but a formal
-  conclusion still needs comparable sampling.
+- **Only CU is comparable across batches.** Durations are load-sensitive — the same script on the same
+  machine has produced 19.8 s and 34.7 s for one harness — and any relative score is computed inside a
+  single batch by construction.
 
 ## Methodology
 

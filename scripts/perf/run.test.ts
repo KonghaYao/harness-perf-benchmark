@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { REPO_ROOT, loadPerfConfig, type PerfConfig } from "./config";
 import { EXIT_HARNESS, EXIT_SETUP, EXIT_TIMEOUT, runPerf } from "./run";
-import { CSV_HEADER, type SamplerBackend } from "./sampler";
+import { CSV_HEADER } from "./sampler";
 
 const tempDirs: string[] = [];
 /** 每个用例换端口，避免相互抢占（mock 会真的监听）。 */
@@ -122,26 +122,6 @@ const isAlive = (pid: number): boolean => {
         return false;
     }
 };
-
-/**
- * 可控采样后端：kind 固定 `rusage`（= 主路径），读数按墙上时间线性增长（≈1 核常驻 64MB）。
- *
- * 为什么要注入：真后端在 macOS 是 rusage、在 Linux 会回退成 ps；ps 拿不到「已回收子进程」
- * 计数器，CU 2.0 会（正确地）判成 `missing-child-counter` 不可评分。要让「有效分」这条
- * 断言在两个平台上都成立，就得把后端换成可控的。
- */
-function fakeRusageBackend(): SamplerBackend {
-    const startedAt = Date.now();
-    return {
-        kind: "rusage",
-        describe: () => "测试用假后端（读数按时间线性增长）",
-        read: () => ({
-            cpuNs: (Date.now() - startedAt) * 1e6,
-            childCpuNs: 0,
-            rssBytes: 64 * 1024 * 1024,
-        }),
-    };
-}
 
 /** 轮询等待 pid 消失（SIGKILL 后可能有极短的僵尸窗口）。 */
 async function waitGone(pids: number[], timeoutMs = 2000): Promise<number[]> {
@@ -266,20 +246,13 @@ describe("runPerf 端到端", () => {
         expect((meta.mock as Record<string, unknown>).requestsSource).toBe("status");
         expect((meta.duration as Record<string, number>).endToEndMs).toBeGreaterThan(1_000);
         expect((meta.summary as Record<string, number>).count).toBeGreaterThanOrEqual(6);
-        // 旧 CU 面积随 run.json 落盘（1:1 积分），各项自洽
+        // 统一计分随 run.json 落盘（FC 的 CU 口径），且各项自洽
         const cost = meta.cost as Record<string, number>;
         expect(cost.sampleCount).toBeGreaterThanOrEqual(6);
         expect(cost.cu).toBeCloseTo(cost.cpuCu + cost.memoryCu, 9);
         expect(cost.cu).toBeGreaterThan(0);
         expect(cost.tailAppliedMs).toBeGreaterThanOrEqual(0);
         expect(cost.tailAppliedMs).toBeLessThanOrEqual(500);
-        // CU 2.0 也随 run.json 落盘：这一次假 harness 只发 2 个请求（远低于下限），
-        // 所以必须是明确的「不可评分」而不是 0 分或满分；旧面积字段保持原义（不是新分数）。
-        const cu2 = meta.cu2 as Record<string, unknown>;
-        expect(cu2).toMatchObject({ scoreVersion: "cu2-beta", score: null, valid: false });
-        expect(cu2.invalidReasons as string[]).toContain("insufficient-request-evidence");
-        expect(cu2.score).not.toBe(cost.cu);
-        expect((meta.duration as Record<string, number>).samplingWindowMs).toBeGreaterThan(0);
         // 假 harness 不打印任何东西，所以 harness.log 是 0 字节——但文件必须在（peri 被强杀时也是这个形状）
         const artifacts = meta.artifacts as Record<string, { file: string; bytes: number } | null>;
         expect(artifacts.harness?.file).toBe("harness.log");
@@ -287,74 +260,6 @@ describe("runPerf 端到端", () => {
         // 采样起点要落在 harness 启动之后、退出之前，读取端靠它把分界线挪到曲线的时间轴上
         const timing = meta.timing as Record<string, number>;
         expect(timing.harnessStartedAtMs).toBeLessThanOrEqual(timing.samplingStartedAtMs);
-    });
-
-    it("假 harness 消费 100 个请求：run.json 与 perf.log 写出同一份 CU 2.0 绝对分", async () => {
-        // 这是唯一一条把 CU 2.0 走成「有效」的用例：证据齐（ok / 100 请求 / 有退出时刻 / 进程树）。
-        // 注意 100 这个数是**mock 请求数**，只作保守下限，不等于 100 个工具轮。
-        //
-        // 采样后端**注入**，不用真后端：macOS 上是 rusage，Linux 上会回退成 ps，而 ps 拿不到
-        // 「已回收子进程」计数器 → cu2Score 正确地判 missing-child-counter（不可评分）。
-        // 不注入的话这条断言只在 macOS 成立，CI（Linux）会红。
-        const config = makeConfig({ timeoutMs: 20_000 });
-        const code = await runPerf(config, {
-            backend: fakeRusageBackend(),
-            harnessCommand: () => [process.execPath, "-e", `
-                const base = "http://127.0.0.1:${config.port}";
-                for (let i = 0; i < 100; i += 1) {
-                    const response = await fetch(base + "/v1/chat/completions", {
-                        method: "POST",
-                        headers: { "content-type": "application/json" },
-                        body: "{}",
-                    });
-                    if (!response.ok) process.exit(1);
-                    await response.text();
-                }
-                await Bun.sleep(300);
-            `],
-            log: () => {},
-        });
-
-        expect(code).toBe(0);
-        const meta = readRunMeta(config.outDir);
-        expect((meta.mock as Record<string, unknown>).requests).toBe(100);
-        // 断言的是「注入的后端确实被用来计分」，所以下面这些成立与宿主平台无关
-        expect((meta.sampling as Record<string, unknown>).backend).toBe("rusage");
-        const cu2 = meta.cu2 as { score: number; valid: boolean; burden: number; metrics: Record<string, number> };
-        expect(cu2.valid).toBe(true);
-        expect(cu2.score).toBeCloseTo(100 / (1 + cu2.burden), 9);
-        expect(cu2.score).toBeGreaterThan(0);
-        expect(cu2.score).toBeLessThanOrEqual(100);
-        expect(cu2.metrics.timeSeconds).toBeGreaterThan(0);
-        expect(cu2.metrics.cpuSeconds).toBeGreaterThan(0);
-        expect(cu2.metrics.peakGiB).toBeGreaterThan(0);
-        // 日志与 run.json 是同一份结果（页面/报告/日志都不许另算一遍）
-        expect(readFileSync(artifact(config.outDir, "perf.log"), "utf8")).toContain(
-            `CU 2.0 Beta: ${cu2.score.toFixed(1)} 分`,
-        );
-    });
-
-    it("ps 后端（大内存/无 FFI 时的回退路径）拿不到 child 计数器 → CU 2.0 判不可评分", async () => {
-        // 真机上的对应情形：Linux 上 rusage 不可用 → 回退 ps；它没有「已回收子进程」计数，
-        // 进程树口径缺一路，CU 2.0 必须明确不出分（这条钉的就是「别在 Linux 上悄悄给分」）。
-        const config = makeConfig({ timeoutMs: 20_000 });
-        const code = await runPerf(config, {
-            backend: { ...fakeRusageBackend(), kind: "ps", describe: () => "测试用假 ps 后端" },
-            harnessCommand: () => [
-                process.execPath,
-                "-e",
-                "await Bun.sleep(400); process.exit(0);",
-            ],
-            log: () => {},
-        });
-
-        expect(code).toBe(0);
-        const meta = readRunMeta(config.outDir);
-        expect((meta.sampling as Record<string, unknown>).backend).toBe("ps");
-        expect(meta.cu2).toMatchObject({ score: null, valid: false });
-        expect((meta.cu2 as { invalidReasons: string[] }).invalidReasons).toContain(
-            "missing-child-counter",
-        );
     });
 
     it("harness 身份：不给 --harness 时从启动命令的第一个 token 推断（带别名）", async () => {

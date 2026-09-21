@@ -1,13 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import type { ProcessSample } from "./sampler";
 import {
-    CU2_FORMULA,
     CU_COEFFICIENTS,
-    cu2Score,
+    relativeScores,
     resourceCost,
     resourcePeaks,
     segmentCosts,
-    type Cu2Input,
 } from "./score";
 
 /**
@@ -208,149 +206,29 @@ describe("resourcePeaks：峰值（压力口径）", () => {
     });
 });
 
-describe("cu2Score：固定预算下的绝对分", () => {
-    /** 一份「刚好压线」的输入：10s、满核、1GiB 常驻、峰值 1GiB → 四项负担都是 1.0。 */
-    const input = (seconds = 10, cpu = 100, rssMb = 1024, treeRssMb?: number): Cu2Input => ({
-        status: "ok",
-        endToEndMs: seconds * 1000,
-        harnessExitedAtMs: 1_700_000_000_000 + seconds * 1000,
-        withTree: true,
-        childColumnPresent: true,
-        samplingBackend: "rusage",
-        requests: 100,
-        samples: [at(0, { cpu, rssMb, treeRssMb }), at(seconds * 1000, { cpu, rssMb, treeRssMb })],
+describe("relativeScores：百分制", () => {
+    it("最优 100 分，其余按 CU 倒数缩放", () => {
+        const scores = relativeScores([
+            { id: "a", cu: 1 },
+            { id: "b", cu: 2 },
+            { id: "c", cu: 4 },
+        ]);
+        expect(scores.get("a")).toBeCloseTo(100, 6);
+        expect(scores.get("b")).toBeCloseTo(50, 6);
+        expect(scores.get("c")).toBeCloseTo(25, 6);
     });
 
-    it("固定预算边界：50 分 = 恰好压在预算上，四项各自都能单独决定分数", () => {
-        expect(CU2_FORMULA.budgets).toEqual({
-            timeSeconds: 10,
-            cpuSeconds: 10,
-            memoryGiBSeconds: 10,
-            peakGiB: 1,
-        });
-        expect(CU2_FORMULA.budgetScore).toBe(50);
-        expect(cu2Score(input())).toMatchObject({ score: 50, burden: 1, valid: true });
-
-        // 单项压线、其余给足余量 → 仍是 50 分：
-        expect(cu2Score(input(10, 0, 100)).score).toBe(50); // 时长恰好压线
-        expect(cu2Score(input(1, 0, 1000, 1024)).score).toBe(50); // 峰值恰好压线
-        expect(cu2Score(input(1, 1000, 100)).score).toBe(50); // CPU 恰好压线（1s × 10 核）
-
-        // 低于预算就高于 50 分，超了就低于 50 分，且是连续单调的
-        expect(cu2Score(input(5, 100, 512)).score).toBeCloseTo(100 / 1.5, 6);
-        expect(cu2Score(input(20, 100, 512)).score).toBeCloseTo(100 / 3, 6);
-        expect(cu2Score(input(10, 200, 512)).score).toBeCloseTo(100 / 3, 6); // CPU 20 核·秒 = 2 倍预算
+    it("CU 为 0（没采到样）记 0 分，不拿满分", () => {
+        const scores = relativeScores([
+            { id: "broken", cu: 0 },
+            { id: "ok", cu: 2 },
+        ]);
+        expect(scores.get("broken")).toBe(0);
+        expect(scores.get("ok")).toBe(100);
     });
 
-    it("倍率不是乘子：RSS 从 1MB 涨到 100MB 与全程 100MB 同分（只看面积与峰值）", () => {
-        // 每个采样点按「本拍到下一次采样的值 × dt」累加（右端点法）：涨上去的那一段
-        // 记的是它当时的真实字节数，不是「涨了多少倍」。
-        const grown: Cu2Input = {
-            ...input(1, 0, 1),
-            samples: [at(0, { cpu: 0, rssMb: 1 }), at(1000, { cpu: 0, rssMb: 100 })],
-        };
-        const flat: Cu2Input = {
-            ...input(1, 0, 100),
-            samples: [at(0, { cpu: 0, rssMb: 100 }), at(1000, { cpu: 0, rssMb: 100 })],
-        };
-        const result = cu2Score(grown);
-        expect(result.metrics!.memoryGiBSeconds).toBeCloseTo(100 / 1024, 6); // 100MB × 1s
-        expect(result.metrics!.peakGiB).toBeCloseTo(100 / 1024, 6);
-        // 面积与峰值相同 → 分数相同：没有任何「增长倍率」参与折算
-        expect(cu2Score(flat).metrics!.memoryGiBSeconds).toBeCloseTo(result.metrics!.memoryGiBSeconds, 9);
-        expect(cu2Score(flat).score).toBe(result.score);
-        expect(result.burden).toBeCloseTo(0.1, 9); // 四项里最大的是时长（1s / 10s）
-        expect(result.score).toBeCloseTo(100 / 1.1, 6);
-    });
-
-    it("单调性：时长、CPU、内存、峰值任一变大，分数不升；并行按真实 CPU 积分而非墙钟倍乘", () => {
-        const base = cu2Score(input(5, 100, 256));
-        expect(cu2Score(input(10, 100, 256)).score!).toBeLessThanOrEqual(base.score!);
-        expect(cu2Score(input(5, 400, 256)).score!).toBeLessThanOrEqual(base.score!);
-        expect(cu2Score(input(5, 100, 2048)).score!).toBeLessThanOrEqual(base.score!);
-        expect(cu2Score(input(5, 100, 256, 1024)).score!).toBeLessThanOrEqual(base.score!);
-
-        // 串行 10s×1 核 与 并行 5s×2 核：核·秒相同 → 分数相同（不带任何并行倍率）
-        const serial = cu2Score(input(10, 100, 100));
-        const parallel = cu2Score(input(5, 200, 100));
-        expect(parallel.metrics!.cpuSeconds).toBe(serial.metrics!.cpuSeconds);
-        expect(parallel.score).toBe(serial.score);
-        // 但真多烧了 CPU 就要掉分
-        expect(cu2Score(input(5, 400, 100)).score!).toBeLessThan(parallel.score!);
-    });
-
-    it("无效、失败、缺关键时间或 child 列、无 tree、空样本与坏样本一律 null", () => {
-        const patches: Partial<Cu2Input>[] = [
-            { status: "timeout" },
-            { status: null },
-            { endToEndMs: null },
-            { endToEndMs: 0 },
-            { endToEndMs: Number.NaN },
-            { harnessExitedAtMs: null },
-            { childColumnPresent: false },
-            { withTree: false },
-            { withTree: null },
-            { childColumnPresent: false, invalidReasons: ["invalid-csv-columns"] },
-            { samplingBackend: "ps" },
-            { invalidReasons: ["missing-csv"] },
-            { samples: [] },
-            { samples: [at(0)] }, // 只有 0ms 一拍：采样窗口为空
-            { samples: [at(10, { cpu: -1 })] },
-            { samples: [at(10, { rssMb: 0 })] },
-            { samples: [at(10, { cpu: Number.POSITIVE_INFINITY })] },
-            { samples: [at(100), at(50)] }, // 时间倒流
-            { requests: 1 },
-            { requests: null },
-        ];
-        for (const patch of patches) {
-            const result = cu2Score({ ...input(), ...patch });
-            expect(result).toMatchObject({ score: null, valid: false, burden: null });
-            expect(result.invalidReasons.length).toBeGreaterThan(0);
-        }
-    });
-
-    it("末拍 → 退出的空档超过上限时不可评分，不拿截断出来的下界出分", () => {
-        // 末拍 1.0s、退出 2.0s：空档 1000ms > 500ms 上限 → 不评（截断到 500ms 出分会把失真读数当真相）
-        const beyond = cu2Score({ ...input(1), endToEndMs: 2_000, harnessExitedAtMs: 1_700_000_002_000 });
-        expect(beyond).toMatchObject({ score: null, valid: false, tailGapMs: 1_000 });
-        expect(beyond.invalidReasons).toContain("tail-gap-exceeds-limit");
-        expect(beyond.metrics).toBeNull();
-
-        // 上限之内照评：空档照样补进面积里（1s 满核 + 0.5s 满核 = 1.5 核·秒）
-        const filled = cu2Score({ ...input(1), harnessExitedAtMs: 1_700_000_001_500 });
-        expect(filled.valid).toBe(true);
-        expect(filled.tailGapMs).toBe(500);
-        expect(filled.metrics!.cpuSeconds).toBeCloseTo(1.5, 6);
-    });
-
-    it("后代 CPU 沿用「两路取大」，GiB·秒按 2^30 积分，P 不含尾部外推；99 与 100 等同", () => {
-        const withChild: Cu2Input = {
-            ...input(1),
-            samples: [
-                at(0, { cpu: 10, tree: 60, child: 80, rssMb: 512 }),
-                at(1000, { cpu: 10, tree: 60, child: 80, rssMb: 512 }),
-            ],
-        };
-        const result = cu2Score(withChild);
-        // 后代取 max(采样 0.5, 计数器 0.8) = 0.8；主进程 0.1 → 0.9 核·秒
-        expect(result.metrics!.cpuSeconds).toBeCloseTo(0.9, 9);
-        expect(result.metrics!.memoryGiBSeconds).toBeCloseTo(0.5, 9);
-        expect(result.metrics!.peakGiB).toBeCloseTo(0.5, 9);
-
-        // 99 轮按 100 轮算：不补算、也不因此扣分（换的就是同一份请求数）
-        expect(cu2Score({ ...input(), requests: 99 })).toEqual(cu2Score(input()));
-    });
-
-    it("请求数只是保守下限：它含辅助请求，不是工具轮数，不能证明跑满 100 轮", () => {
-        expect(CU2_FORMULA.limitations.join("\n")).toContain("不是工具轮数");
-        // 明显不足的挡掉
-        expect(cu2Score({ ...input(), requests: 12 }).invalidReasons).toContain(
-            "insufficient-request-evidence",
-        );
-        // 过线的只说明「不像没跑起来」，没有任何字段声称它就是 100 轮
-        const many = cu2Score({ ...input(), requests: 100_000 });
-        expect(many.valid).toBe(true);
-        expect(Object.keys(many)).not.toContain("toolTurns");
-        expect(JSON.stringify(CU2_FORMULA)).not.toContain("turnsVerified");
+    it("全部为 0 时全是 0 分，不产生 NaN", () => {
+        const scores = relativeScores([{ id: "a", cu: 0 }]);
+        expect(scores.get("a")).toBe(0);
     });
 });

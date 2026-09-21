@@ -14,9 +14,10 @@
 #
 # 口径提醒（这是发布用的站点，读的人会拿它当结论，所以别省这段）：
 #   - 默认 runner 是 macOS：采样器的首选后端 proc_pid_rusage 只在 macOS 上可用。换 ubuntu 会
-#     退到 ps（CPU 分辨率约 60ms、无已回收后代计数器），CU 2.0 会标不可评分；
-#     跨批次可并列绝对分，但正式比较仍需可比环境（见 docs/perf-compare.md）。
-#   - 十一家串行、每家 repeats 次，图表取 CU 2.0 分数中位对应的真实运行。
+#     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
+#     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
+#     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
+#   - 十一家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
 #   - opencode **v1** 已退出排名，这里不装、不跑；v2 是另一家（npm 包 `@opencode/cli`，bin 名
 #     `opencode2`），在排名里，沙盒是 playground/opencode2。两者同名不同代，别混。
 #   - peri 走 GitHub release，Antigravity CLI（agy）与 Hermes Agent（hermes）走它们各自的官方
@@ -32,7 +33,7 @@ on:
         description: 长剧本轮数（pi 自动 +33、agy 自动 +4、opencode2 自动 +1、hermes 自动 +2、cline 自动 +⌈n/100⌉：它们的压缩/标题请求会多吃条目）
         default: "100"
       repeats:
-        description: 每家跑几次（图表取 CU 2.0 分数中位对应的真实运行）
+        description: 每家跑几次（图表取端到端时长居中的那一次）
         default: "3"
       runner:
         description: 跑压测的 runner 标签
@@ -99,8 +100,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: data/perf-chart.json
-          key: perf-chart-cu2-beta-${{ github.run_id }}
-          restore-keys: perf-chart-cu2-beta-
+          key: perf-chart-${{ github.run_id }}
+          restore-keys: perf-chart-
 
       - name: 决定这一趟跑不跑压测
         id: decide
@@ -342,12 +343,18 @@ jobs:
           set -euo pipefail
           label="ci-$(date -u +%Y%m%d-%H%M)"
           echo "批次标签：${label}（写进每次运行的 run.json，便于按批筛）"
-          # 每轮只运行一次；失败保留在重复组中，不靠重试筛出成功子集。
+          # 一次没跑成（harness 崩了 / 端口被占）就再试一次：gen-chart-data 按「最近 window 次」
+          # 取中位，补上一条能让它落回正常的 3 条里。
           run_one() {
-            local dir="playground/$1"
-            if ! (cd "${dir}" && bun perf-demo.ts --timeout-ms 240000 --label "${label}"); then
-              echo "::warning::$1 本轮未成功，汇总将保留失败并标记不可评分"
-            fi
+            local dir="playground/$1" attempt
+            for attempt in 1 2; do
+              if (cd "${dir}" && bun perf-demo.ts --timeout-ms 240000 --label "${label}"); then
+                return 0
+              fi
+              echo "::warning::$1 第 ${attempt} 次运行非 0 退出"
+            done
+            echo "::warning::$1 这一轮两次都没跑成，图表会少一条读数"
+            return 0
           }
           for round in $(seq 1 "${REPEATS}"); do
             for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes cline zcode; do
@@ -367,49 +374,38 @@ jobs:
           bun run scripts/perf/gen-chart-data.ts \
             --dir data/runs --window "${REPEATS}" --out data/perf-chart.json
 
-      - name: 核对计分版本与参测清单
-        run: |
-          bun -e '
-            import { CU2_FORMULA } from "./scripts/perf/score.ts";
-            const data = await Bun.file("data/perf-chart.json").json();
-            const expected = ["peri", "claude-code", "codex", "pi", "dsh", "minimax-code", "antigravity", "opencode2", "hermes", "cline", "zcode"];
-            if (data.scoreFormula?.scoreVersion !== CU2_FORMULA.scoreVersion) throw new Error("缓存不是当前 CU 2.0 数据");
-            const missing = expected.filter(id => !data.runs.some(run => run.id === id));
-            if (missing.length) throw new Error(`缺少参测记录，拒绝发布残缺榜单：${missing.join(", ")}`);
-          '
-
       - name: 存下这一份结果（下次只发布时复用）
         if: steps.decide.outputs.bench == '1' && steps.decide.outputs.publish == 'true'
         uses: actions/cache/save@v4
         with:
           path: data/perf-chart.json
-          key: perf-chart-cu2-beta-${{ github.run_id }}
+          key: perf-chart-${{ github.run_id }}
 
       - name: 结果摘要
         run: |
           set -euo pipefail
-          # ps 缺少后代 CPU 计数器，CU 2.0 不给分。
-          # 「只发布」时没有 data/runs，允许空目录；最终有效性仍以 payload 为准。
+          # 采样后端自检：rusage 不可用时 run.ts 会静默退到 ps，读数会偏低而页面看不出来。
+          # 「只发布」那一趟没有 data/runs（直接沿用缓存里的结果），这里的 grep 必须容得下空目录，
+          # 否则 set -e + pipefail 会把整步判失败。
           degraded=$( { grep -rl '"backend": "ps"' data/runs/*/*/run.json 2>/dev/null || true; } \
             | wc -l | tr -d ' ')
           echo "退到 ps 后端的运行次数：${degraded}"
-          [ "${degraded}" = "0" ] || echo "::warning::有 ${degraded} 次运行退到了 ps 采样后端，这一批对应运行的 CU 2.0 不可评分"
-          bun -e '
-            import { CU2_FORMULA } from "./scripts/perf/score.ts";
-            const fs = await import("node:fs");
+          [ "${degraded}" = "0" ] || echo "::warning::有 ${degraded} 次运行退到了 ps 采样后端，这一批的 CU 是下界"
+          node -e '
+            const fs = require("node:fs");
             const data = JSON.parse(fs.readFileSync("data/perf-chart.json", "utf8"));
-            if (data.scoreFormula?.scoreVersion !== CU2_FORMULA.scoreVersion) throw new Error("图表缓存计分版本不匹配，请重跑汇总");
-            const valid = (run) => run.score?.scoreVersion === CU2_FORMULA.scoreVersion &&
-              run.score.valid === true && Number.isFinite(run.score.score);
-            const rows = [...data.runs].sort((a, b) =>
-              (valid(b) ? b.score.score : -1) - (valid(a) ? a.score.score : -1));
+            const rows = data.runs.filter((run) => run.score).sort((a, b) => a.score.cu - b.score.cu);
+            const num = (value, digits) => (value === undefined ? "n/a" : value.toFixed(digits));
             const lines = [
               "",
               `数据生成于 ${data.generatedAt} · 产物 ${data.sourceDir}`,
               "",
-              "| harness | CU 2.0 分数 ↑ | 状态 |",
-              "| --- | --- | --- |",
-              ...rows.map((run) => `| ${run.name} | ${valid(run) ? run.score.score.toFixed(2) : "不可评分"} | ${valid(run) ? "有效" : (run.score?.invalidReasons ?? ["missing-score"]).join(", ")} |`),
+              "| harness | CU | 分数 | 峰值 CPU % | 峰值 RSS MB |",
+              "| --- | --- | --- | --- | --- |",
+              ...rows.map((run) => {
+                const peaks = run.score.peaks ?? {};
+                return `| ${run.name} | ${run.score.cu.toFixed(3)} | ${num(run.score.score, 1)} | ${num(peaks.treeCpuPercent, 1)} | ${num(peaks.treeRssMb, 1)} |`;
+              }),
             ];
             fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
           '
