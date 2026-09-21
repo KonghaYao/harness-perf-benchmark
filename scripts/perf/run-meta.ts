@@ -17,7 +17,7 @@
 
 import { renameSync, writeFileSync } from "node:fs";
 import { cpus, hostname, loadavg, platform, release, totalmem } from "node:os";
-import type { ResourceCost, ResourcePeaks } from "./score";
+import type { Cu2Score, ResourceCost, ResourcePeaks } from "./score";
 
 /** schema 版本：字段有破坏性变化时 +1（读取端据此判断能不能读）。 */
 export const RUN_META_SCHEMA_VERSION = 1;
@@ -125,12 +125,11 @@ export interface RunMeta {
     } | null;
     /** 摘要来自内存里的样本（本进程跑的）还是从 samples.csv 重算（迁移的老产物）。 */
     summarySource: "runtime" | "samples" | null;
-    /**
-     * 统一计分（CU = 1.0 × 核·秒 + 1.0 × GB·秒，口径只在 score.ts）：把 CPU 与内存折成一个标量。
-     * 2026-09-19 追加的字段；那之前的老产物没有，读取端认 null 并按 samples.csv 现算。
-     */
+    /** 历史资源积分：`cu` 是 CPU 与内存 1:1 的面积，只作兼容，不是 CU 2.0 分数。 */
     cost: ResourceCost | null;
-    /** 压力口径：整个窗口的峰值（RSS / CPU），不折算成分数。2026-09-19 追加。 */
+    /** CU 2.0 绝对分（定义只在 score.ts）；老记录缺这个键，读取端按不可评分处理。 */
+    cu2?: Cu2Score | null;
+    /** 整个窗口的峰值；RSS 峰值参与 CU 2.0 的 P 项。 */
     peaks: ResourcePeaks | null;
     exit: { code: number | null; signal: string | null } | null;
     artifacts: Record<"perf" | "samples" | "harness" | "mock", { file: string; bytes: number } | null> | null;
