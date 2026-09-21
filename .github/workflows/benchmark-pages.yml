@@ -17,7 +17,7 @@
 #     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
 #     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
 #     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
-#   - 十家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
+#   - 十一家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
 #   - opencode **v1** 已退出排名，这里不装、不跑；v2 是另一家（npm 包 `@opencode/cli`，bin 名
 #     `opencode2`），在排名里，沙盒是 playground/opencode2。两者同名不同代，别混。
 #   - peri 走 GitHub release，Antigravity CLI（agy）与 Hermes Agent（hermes）走它们各自的官方
@@ -73,7 +73,7 @@ concurrency:
 
 jobs:
   bench-and-publish:
-    # 整批 30 次运行（十家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
+    # 整批 33 次运行（十一家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
     timeout-minutes: 150
     runs-on: ${{ github.event.inputs.runner || 'macos-latest' }}
     environment:
@@ -152,6 +152,13 @@ jobs:
             echo "- 批次配置：轮数 ${TURNS} · 每家 ${REPEATS} 次 · runner \`${RUNNER}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
 
+      # 在 npm 全局安装之前固定 Node，避免切换版本后丢失全局 CLI 的 PATH。
+      - name: 装 Node（ZCode 包内 CLI 实测版本）
+        if: steps.decide.outputs.bench == '1'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26.9.0
+
       - name: 装 harness（peri + 七家 npm CLI + agy / hermes 官方脚本）
         if: steps.decide.outputs.bench == '1'
         env:
@@ -223,6 +230,47 @@ jobs:
           "$HOME/.local/bin/hermes" --version
           echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
 
+      # ZCode 没有官方 npm CLI：从官方桌面安装包取出 glm/zcode.cjs，不启动 Electron。
+      # 固定 3.14.1（CLI 0.16.9），它使用的 provider_config schema 已在本机验证。
+      - name: 装 ZCode（官方安装包内的 headless CLI）
+        if: steps.decide.outputs.bench == '1'
+        run: |
+          set -euo pipefail
+          case "$(uname -m)" in
+            arm64|aarch64) arch=arm64 ;;
+            x86_64) arch=x64 ;;
+            *) echo "不支持的 ZCode 架构" >&2; exit 1 ;;
+          esac
+          install_dir="${RUNNER_TEMP}/zcode"
+          mkdir -p "${install_dir}"
+          # URL 取自官网 https://zcode.z.ai/en 的平台下载清单，不用第三方同名 npm 包。
+          base="https://cdn-zcode.z.ai/zcode/electron/releases/3.14.1"
+          case "$(uname -s)" in
+            Darwin)
+              curl -fSL --retry 3 -o "${install_dir}/ZCode.dmg" \
+                "${base}/macos-${arch}/ZCode-3.14.1-mac-${arch}.dmg"
+              mount="${install_dir}/mount"
+              hdiutil attach "${install_dir}/ZCode.dmg" -readonly -nobrowse -mountpoint "${mount}"
+              trap 'hdiutil detach "${mount}"' EXIT
+              resources="${install_dir}/Resources"
+              ditto "${mount}/ZCode.app/Contents/Resources" "${resources}"
+              hdiutil detach "${mount}"
+              trap - EXIT
+              ;;
+            Linux)
+              curl -fSL --retry 3 -o "${install_dir}/ZCode.deb" \
+                "${base}/linux-${arch}/ZCode-3.14.1-linux-${arch}.deb"
+              dpkg-deb -x "${install_dir}/ZCode.deb" "${install_dir}/unpacked"
+              entry=$(find "${install_dir}/unpacked" -type f -path '*/resources/glm/zcode.cjs')
+              test -n "${entry}" && test -f "${entry}"
+              resources="$(dirname "$(dirname "${entry}")")"
+              ;;
+            *) echo "ZCode 压测只支持 macOS / Linux runner" >&2; exit 1 ;;
+          esac
+          test -f "${resources}/config/provider/zcode-builtin.json"
+          HOME="${install_dir}" node "${resources}/glm/zcode.cjs" --version
+          echo "ZCODE_RESOURCES=${resources}" >> "${GITHUB_ENV}"
+
       - name: 报一下装到了什么版本
         if: steps.decide.outputs.bench == '1'
         run: |
@@ -242,7 +290,7 @@ jobs:
           hermes --version || true
           cline --version || true
 
-      - name: 生成剧本（十份，按各家工具形状）
+      - name: 生成剧本（按各家工具形状，含 ZCode）
         if: steps.decide.outputs.bench == '1'
         env:
           TURNS: ${{ github.event.inputs.turns || '100' }}
@@ -251,6 +299,8 @@ jobs:
           gen() { bun run scripts/perf/gen-long-run.ts "$@"; }
           # peri / claude-code 共用 Bash + command 形状的那份；其余各家参数不一样，见 CLAUDE.md。
           gen --turns "${TURNS}" --out data/scenarios/long-run.json
+          # ZCode 3.14.1：Bash + command，100 轮实测 101 请求，无辅助请求插队。
+          gen --turns "${TURNS}" --out data/scenarios/long-run-zcode.json
           gen --turns "${TURNS}" --args exec --out data/scenarios/long-run-codex.json
           # pi 从约 140 条消息起自动压缩，压缩期每轮多一条 messages=2 的总结请求：
           # 100 轮实测要 135 条（--turns 133），131 条只有 99 轮。
@@ -285,7 +335,7 @@ jobs:
           gen --turns "$((TURNS + (TURNS + 99) / 100))" --args commands \
             --out data/scenarios/long-run-cline.json
 
-      - name: 跑批次（十家串行，每家 repeats 次）
+      - name: 跑批次（十一家串行，每家 repeats 次）
         if: steps.decide.outputs.bench == '1'
         env:
           REPEATS: ${{ github.event.inputs.repeats || '3' }}
@@ -307,7 +357,7 @@ jobs:
             return 0
           }
           for round in $(seq 1 "${REPEATS}"); do
-            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes cline; do
+            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes cline zcode; do
               echo "::group::第 ${round} 轮 · ${harness}"
               run_one "${harness}"
               echo "::endgroup::"
