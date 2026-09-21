@@ -112,11 +112,16 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     # 用掉、当轮工具调用不再执行，随后带着压缩后的上下文继续。标准剧本（每轮 4KB）实测每约 90 轮
     # 触发一次：101 轮（103 条）实测 102 条请求 = 1 条初始 + 99 条带工具结果的续跑 + 1 条压缩 +
     # 1 条压缩后续跑 = **100 个工具轮**。200 轮实测压缩 2 次，所以按「每 100 轮 +1、向上取整」留。
+  bun run scripts/perf/gen-long-run.ts --turns 100 --out data/scenarios/long-run-kimi.json
+    # Kimi Code CLI（kimi，官方单文件二进制，实测 2.0.0）：Bash + {command}，与 peri /
+    # Claude Code 同形。100 轮实测 101 条请求（1 条初始 + 100 个工具轮 + 1 条收尾）：
+    # 没有标题生成、没有上下文压缩（max_context_size 262144 下末次请求 messages=204 也没触顶）、
+    # 没有 peri 那样的预测请求——与 mcode 同一档，轮数不用加。
 
   各家自己的辅助请求都会消费条目（opencode / dsh / agy / opencode2 / hermes 的标题生成、
   pi · agy · hermes · **cline** 的压缩摘要），所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看
   mock.log 里是谁在取号。各家要跑到 100 轮的实际轮数：peri 100 · opencode 100 ·
-  Claude Code 100 · codex 100 · dsh 100 · mcode 100 · **pi 133**（压缩从约 140 条消息起
+  Claude Code 100 · codex 100 · dsh 100 · mcode 100 · kimi 100 · **pi 133**（压缩从约 140 条消息起
   每轮多吃一条）· **agy 104** · **opencode2 101**（标题请求吃第一条）· **hermes 102**
   （标题与主请求抢开头那一条 + 压缩前后各一条）· **cline 101**（压缩吃掉一条）。
   剧本尾部固定两条收尾（轮数之外）：主流程的「任务结束」文本 + 给 peri 预测请求的空白
@@ -196,6 +201,7 @@ const delayMs = positiveInt(values["delay-ms"], "--delay-ms", 0);
  *   agy 1.2.7                                     run_command             {CommandLine, Cwd, …}
  *   hermes 0.21.3                                 terminal                {command}
  *   cline 3.0.62                                  run_commands            {commands: [command]}
+ *   kimi 2.0.0                                    Bash                   {command}
  * opencode v2 的 shell 工具就叫 `shell`（v1 的 `bash` 没了）：名字换了，形状还是 {command}。
  * 注意 v1（opencode）与 v2（opencode2）是**两个 harness**，各自一份剧本，别把这份形状混过去。
  * dsh 的 description 是**必填**：缺了会被工具自己拒掉

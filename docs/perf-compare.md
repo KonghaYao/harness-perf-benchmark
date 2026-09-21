@@ -49,6 +49,7 @@ harness 走完剧本、收到收尾响应后**自行退出**——回答的是�
 | opencode v2（`opencode2`）（**新接入，本批未跑**） | 2.0.10 | OpenAI Chat Completions | 随 cwd 的 `opencode.json` + `{env:LLM_MOCK_BASE_URL}`，命令带 `--standalone` | `XDG_*` + 死代理 |
 | Hermes Agent（`hermes`）（**新接入，本批未跑**） | 0.21.3（2026.9.14，官方脚本装到 `~/.local/bin`） | OpenAI Chat Completions | 沙盒 `config.yaml` 的 `model.provider: custom` + `base_url`（不吃环境变量插值） | `HERMES_HOME` |
 | Cline（`cline`）（**新接入，本批未跑**） | 3.0.62 | OpenAI Chat Completions | 沙盒 `settings/providers.json` 里的 `openai-compatible` provider + `-P` / `-m` 显式点名（配置不吃环境变量插值） | `--config` / `--data-dir` / `--hooks-dir`（**不用换 HOME**） |
+| Kimi Code（`kimi`）（**新接入，本批未跑**） | 2.0.0（官方 install.sh 装到 `~/.kimi-code/bin`） | OpenAI Chat Completions | 沙盒 `config.toml` 的 `[providers.llm-mock]`（`type = "openai"` + `base_url`，假 key）+ `-m llm-mock`（配置不吃环境变量插值） | `KIMI_CODE_HOME`（**不用换 HOME**） |
 
 约定：每个 harness 都在自己的 playground 沙盒里、用同一份剧本跑
 （`cd playground/<名> && bun perf-demo.ts …`），剧本由同一个生成器现造、工具形状按各家实测；
@@ -425,6 +426,49 @@ v1 已退出排名（见开头那个框），这条是新的一项。产品细�
   批内可比。CI 的 workflow 已经带上它（装 cline + 生成自家剧本 + 跑批三处），下一次 CI 批次就是
   这个形态。图表页现在**会画出它**——`gen-chart-data.ts` 默认收 `data/runs` 下最近的运行；跨批混画
   由页面自己兜着（机制见上一节）。只想看批次内排名就照旧用 `--exclude cline` 生成数据。
+
+## Kimi Code（`kimi`）：已接入，**尚未并入批次**
+
+> **它不在上面那批里，下面的读数不能与批次表格并列**——理由与上四节相同：3 次读数跑于
+> 2026-09-21（`--label kimi-probe`，本机 1 分钟 load 2.5 左右），与第五批隔了两天。
+> 跨批次**只能比 CU**，百分制分数与其余指标都不可比（分数是批内相对值）。
+
+`kimi`（Kimi Code CLI，Moonshot 官方单文件原生二进制，实测 **2.0.0**；`curl -fsSL
+https://code.kimi.com/kimi-code/install.sh | bash` 装到 `~/.kimi-code/bin`）是 2026-09-21 接入的
+第 11 家，走 **OpenAI Chat Completions**（与 peri / pi / dsh / mcode / hermes / cline 同协议）。
+沙盒、provider 注入、工具形状与消费规律在 `CLAUDE.md` 的「与 harness 集成」，这里只放读数
+（同一份剧本、三次串行）：
+
+| 次 | runId | 端到端 | 启动 · 运转 · 收尾 | CU | 峰值 RSS · CPU |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `20260921-153625`（中位） | 3.7s | 1.0 · 2.6 · 0.1 | 4.364 | 603.6MB · 176.8% |
+| 2 | `20260921-153540` | 3.8s | 1.1 · 2.5 · 0.2 | 4.490 | 561.0MB · 182.4% |
+| 3 | `20260921-153640` | 3.5s | 0.9 · 2.5 · 0.1 | 4.206 | 604.8MB · 181.8% |
+
+- **三次都自行退出**（退出码 0、不用强杀），端到端 **3.5~3.8s**：启动 **0.9~1.1s**、运转
+  **2.5~2.6s**、收尾 **0.1~0.2s**。运转段 2.5s 出头的 100 个工具轮是全场最快（其余各家同口径
+  在 2.3~18.2s，见批次表格）；收尾段**没有空等**（`idleTail=false`）——与 peri 的 5.0s、
+  Codex 的 10.1s、cline 的 1.8s 那几笔固定成本完全不同，主流程吃到收尾文本后立刻退；
+- **CU 4.206~4.490**（三次 ±7%，与 opencode2 的 ±7% 同档）：跨批次口径比，与 cline-probe
+  （3.38~3.81）相邻、略低于 agy-probe（4.59）。拆开看**内存项占 39%~41%**（RSS 均值 476~494MB、
+  峰值 561~605MB）——比 pi（186MB）、agy（209MB）、hermes（147MB）重，落在 cline（均值 444MB）
+  那一档；**CPU 项 2.51~2.73 核·秒**，其中约 0.23 是已回收子进程计数器记的工具 shell 开销。
+  它 CU 不低的根因是「只跑了 3.5~3.8s，却全程顶着 ~490MB」——**快不等于省**；
+- 峰值 CPU **176.8%~182.4%**（均值 63.5%~65.6%）：多线程、瞬时越过单核，但没有 agy 那样
+  mean 就超过一个核（173.4%）——它是「短时间多核 burst」，不是「持续吃满」；
+- 进程树 `procs` 列**恒为 1**：单进程原生二进制（launcher / worker 那套形状它没有）。工具命令
+  拉起的短命 shell 是**根进程**的子进程，活不过 2s 刷新窗口，但 CPU 记在根进程的 `ri_child_*`
+  计数器上，`child_cpu_pct` 兜得住（0.230~0.238 核·秒/100 轮）——与 dsh / agy / hermes 同类，
+  **不像 cline 的孙进程两头漏**，所以它的 CU 不是下界；
+- **消费规律与 mcode 并列最干净**：101 条请求 = 1 条初始（`messages=4`：system + 带 auto 权限
+  system-reminder 的 user）+ 100 个工具轮 + 1 条收尾。**没有标题生成**（与 opencode2 / dsh /
+  agy / hermes 都不同）、**没有上下文压缩**（`max_context_size = 262144` 下末次请求
+  `messages=204` 也没触顶）、没有 peri 那样的预测请求。所以 100 轮只要默认的 **102 条剧本**
+  （`--turns 100`），正好跑满；
+- 要把它并入榜单，得**整批重跑**（带同一个 `--label`，含它共 12 家 × 3 次）：CU 之外的指标都只在
+  批内可比。CI 的 workflow 已经带上它（装 kimi + 生成自家剧本 + 跑批三处），下一次 CI 批次就是
+  这个形态。图表页现在**会画出它**（`gen-chart-data.ts` 默认收 `data/runs` 下最近的运行），跨批混画
+  由页面自己兜着。只想看批次内排名就照旧用 `--exclude kimi` 生成数据。
 
 ## 统一计分（**Beta**）：CPU 与内存 1:1
 

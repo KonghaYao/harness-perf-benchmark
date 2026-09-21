@@ -17,12 +17,13 @@
 #     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
 #     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
 #     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
-#   - 十一家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
+#   - 十二家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
 #   - opencode **v1** 已退出排名，这里不装、不跑；v2 是另一家（npm 包 `@opencode/cli`，bin 名
 #     `opencode2`），在排名里，沙盒是 playground/opencode2。两者同名不同代，别混。
-#   - peri 走 GitHub release，Antigravity CLI（agy）与 Hermes Agent（hermes）走它们各自的官方
-#     install.sh（都装到 ~/.local/bin）。三家都必须装成，装不上这一趟就整趟失败——线上继续挂
-#     上一批的站点，不会悄悄少一条曲线（十条曲线里少一条比整个榜单停更是更坏的失真）。
+#   - peri 走 GitHub release，Antigravity CLI（agy）、Hermes Agent（hermes）与 Kimi Code CLI
+#     （kimi）走它们各自的官方 install.sh（agy / hermes 装到 ~/.local/bin，kimi 装到
+#     ~/.kimi-code/bin）。四家都必须装成，装不上这一趟就整趟失败——线上继续挂上一批的站点，
+#     不会悄悄少一条曲线（十条曲线里少一条比整个榜单停更是更坏的失真）。
 
 name: benchmark · gh-pages
 
@@ -73,7 +74,7 @@ concurrency:
 
 jobs:
   bench-and-publish:
-    # 整批 33 次运行（十一家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
+    # 整批 36 次运行（十二家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
     timeout-minutes: 150
     runs-on: ${{ github.event.inputs.runner || 'macos-latest' }}
     environment:
@@ -271,10 +272,29 @@ jobs:
           HOME="${install_dir}" node "${resources}/glm/zcode.cjs" --version
           echo "ZCODE_RESOURCES=${resources}" >> "${GITHUB_ENV}"
 
+      # Kimi Code CLI（kimi，Moonshot）也只有官方一个安装脚本：落 ~/.kimi-code/bin/kimi
+      # （单文件原生二进制，macOS arm64 实测 2.0.0）。**钉 2.0.0**：沙盒的 config.toml
+      # （providers / models 两张表）与「无标题、无压缩」的消费规律都是按 2.0.0 实测的，
+      # 上游大版本翻新时先在本机复测再动这个钉子。脚本自己会改 shell profile，runner 上
+      # 用 KIMI_NO_MODIFY_PATH=1 关掉，PATH 由下面的 GITHUB_PATH 补。
+      # 沙盒与本步无关：KIMI_CODE_HOME、provider 配置、遥测/更新/定时任务开关都是
+      # playground/kimi/perf-demo.ts 在起 harness 时注入的（deps.harnessEnv），
+      # 这里只需要一个能跑的 kimi。
+      - name: 装 Kimi Code CLI（官方 install.sh，装到 ~/.kimi-code）
+        if: steps.decide.outputs.bench == '1'
+        run: |
+          set -euo pipefail
+          # 与 peri / agy / hermes 那几步同一条纪律：先落盘再执行，脚本本身能进日志。
+          curl -fsSL -o /tmp/kimi-install.sh https://code.kimi.com/kimi-code/install.sh
+          KIMI_NO_MODIFY_PATH=1 KIMI_VERSION=2.0.0 bash /tmp/kimi-install.sh
+          # 自查：装完确认二进制确实能跑（真倒在下载/解包上，这步失败）。
+          "$HOME/.kimi-code/bin/kimi" --version
+          echo "${HOME}/.kimi-code/bin" >> "${GITHUB_PATH}"
+
       - name: 报一下装到了什么版本
         if: steps.decide.outputs.bench == '1'
         run: |
-          for bin in peri agy claude codex pi dsh mcode opencode2 hermes cline; do
+          for bin in peri agy claude codex pi dsh mcode opencode2 hermes cline kimi; do
             printf '%-8s %s\n' "${bin}" "$(command -v "${bin}" || echo '（不在 PATH 里）')"
           done
           peri --version || true
@@ -289,6 +309,7 @@ jobs:
           opencode2 --version || true
           hermes --version || true
           cline --version || true
+          kimi --version || true
 
       - name: 生成剧本（按各家工具形状，含 ZCode）
         if: steps.decide.outputs.bench == '1'
@@ -334,8 +355,12 @@ jobs:
           # 向上取整」留条目。
           gen --turns "$((TURNS + (TURNS + 99) / 100))" --args commands \
             --out data/scenarios/long-run-cline.json
+          # Kimi Code CLI（kimi）：Bash + command，与 peri / Claude Code 同形；100 轮实测
+          # 101 条请求（1 条初始 + 100 个工具轮 + 1 条收尾），没有标题生成、没有上下文压缩、
+          # 没有预测请求，所以轮数不用加（与 mcode 同一档）。
+          gen --turns "${TURNS}" --out data/scenarios/long-run-kimi.json
 
-      - name: 跑批次（十一家串行，每家 repeats 次）
+      - name: 跑批次（十二家串行，每家 repeats 次）
         if: steps.decide.outputs.bench == '1'
         env:
           REPEATS: ${{ github.event.inputs.repeats || '3' }}
@@ -357,7 +382,7 @@ jobs:
             return 0
           }
           for round in $(seq 1 "${REPEATS}"); do
-            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes cline zcode; do
+            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes cline zcode kimi; do
               echo "::group::第 ${round} 轮 · ${harness}"
               run_one "${harness}"
               echo "::endgroup::"

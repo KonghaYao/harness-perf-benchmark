@@ -11,7 +11,7 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 
 | 端点 | 协议 | 谁在用 |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、opencode2、pi、dsh、MiniMax Code、Hermes Agent、Cline、脚本自测 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、opencode2、pi、dsh、MiniMax Code、Hermes Agent、Cline、Kimi Code、脚本自测 |
 | `POST /v1/messages` | Anthropic Messages | Claude Code |
 | `POST /v1/responses` | OpenAI Responses | Codex |
 | `POST /v1beta/models/{model}:generateContent` | Google Gemini API | Antigravity CLI |
@@ -19,7 +19,7 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 两个用途：
 
 - **性能压测**：以脚本控制的节奏驱动 harness（peri / Claude Code / Codex / pi / dsh / MiniMax Code /
-  Antigravity CLI / opencode2 / Hermes Agent / Cline；opencode **v1** 已退出排名、不再跑，见
+  Antigravity CLI / opencode2 / Hermes Agent / Cline / Kimi Code；opencode **v1** 已退出排名、不再跑，见
   「与 harness 集成」开头），测量 harness 进程自身的 CPU / 内存开销（不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
@@ -41,6 +41,7 @@ cd playground/antigravity && bun perf-demo.ts --timeout-ms 600000   # Antigravit
 cd playground/opencode2   && bun perf-demo.ts --timeout-ms 600000   # opencode v2（bin 名 opencode2）沙盒
 cd playground/hermes      && bun perf-demo.ts --timeout-ms 600000   # Hermes Agent（hermes）沙盒
 cd playground/cline       && bun perf-demo.ts --timeout-ms 600000   # Cline（cline）沙盒
+cd playground/kimi        && bun perf-demo.ts --timeout-ms 600000   # Kimi Code（kimi）沙盒
 # cd playground/opencode  && bun perf-demo.ts --timeout-ms 600000   # opencode v1 已退出排名：代码保留，常规批次不再跑
 ```
 
@@ -74,6 +75,12 @@ cd playground/cline       && bun perf-demo.ts --timeout-ms 600000   # Cline（cl
   provider 按本次端口写进 `<沙盒>/data/settings/providers.json`（不吃环境变量插值，与 pi / mcode /
   hermes 同理）。**不用换 HOME**（实测用户级 `~/.cline` 抢不走配置）；**也不注入死代理**——实测那样
   反而把它拖慢 4~5 倍（见「与 harness 集成」的 Cline 一节）。
+- `playground/kimi`：**`KIMI_CODE_HOME` 指向沙盒**（官方文档写明的数据根开关：config.toml /
+  sessions / logs / credentials 全从它找），provider（`type = "openai"` + `base_url`）按本次端口
+  写进沙盒的 `config.toml`（不吃环境变量插值，与 pi / mcode / hermes 同理）。**不用换 HOME**
+  （HOME 只在解析默认数据根时用一下，被 KIMI_CODE_HOME 覆盖）；**也不注入死代理**——loopback 恒直连，
+  它自己的外部请求（更新预检 / 遥测 / 定时任务）用 `KIMI_CODE_NO_AUTO_UPDATE=1` /
+  `KIMI_DISABLE_TELEMETRY=1` / `KIMI_DISABLE_CRON=1` 关掉（与 Cline 同一思路：别对着代理重试）。
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
 并打印两个候选后端的开销与分辨率）。想把「CPU 与内存」混成一个可比的数（谁跑完同一部剧本烧的资源
@@ -105,6 +112,8 @@ bun run scripts/perf/gen-long-run.ts --turns 102 --tool terminal \
   --out data/scenarios/long-run-hermes.json  # hermes：terminal 工具 + {command}；104 条 = 102 轮 + 2 条收尾 → 100 个工具轮（标题与压缩各吃掉一条轮次）
 bun run scripts/perf/gen-long-run.ts --turns 101 --args commands \
   --out data/scenarios/long-run-cline.json  # cline：run_commands 工具 + **字符串数组** {commands:[…]}；103 条 = 101 轮 + 2 条收尾 → 100 个工具轮（压缩吃掉一条）
+bun run scripts/perf/gen-long-run.ts --turns 100 \
+  --out data/scenarios/long-run-kimi.json  # kimi：Bash + {command}，与 peri / Claude Code 同形；102 条 = 100 轮 + 2 条收尾 → 100 个工具轮（无标题 / 压缩 / 预测请求）
 
 cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 ```
@@ -125,13 +134,14 @@ Codex 那笔还顺带说明了「收尾零 CPU 的空等照样花钱」——它
 注意**「剧本轮数」与「harness 实际执行的轮数」可能不等**：各家自己的辅助请求（标题生成、上下文
 压缩）也消费剧本条目，100 条剧本下 opencode / dsh 实测只跑到 99 轮、pi 要 135 条（`--turns 133`）
 才够跑满 100 轮、opencode2 要 103 条（`--turns 101`）、hermes 要 104 条（`--turns 102`）、
-cline 要 103 条（`--turns 101`，见「与 harness 集成」的消费规律）（数法：`mock.log` 里带工具结果
-的请求有几条）。
+cline 要 103 条（`--turns 101`，见「与 harness 集成」的消费规律）；**kimi 与 mcode 一样干净**——
+102 条剧本（`--turns 100`）实测 101 条请求 = 100 个工具轮 + 1 条收尾，没有辅助请求
+（数法：`mock.log` 里带工具结果的请求有几条）。
 生成器写的条目数是 `轮数 + 2`（两条收尾，见上），peri 那条「预测下一步输入」就落在最后那条空白上。
 
 产物落在**一次运行一个目录**里：`data/runs/<harness>/<runId>/`（`--out-dir` 可改，`data/` 已在
 .gitignore 里），`<harness>` 是 `peri` / `opencode` / `opencode2` / `claude-code` / `codex` / `pi` /
-`dsh` / `minimax-code` / `antigravity` / `hermes` / `cline` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
+`dsh` / `minimax-code` / `antigravity` / `hermes` / `cline` / `kimi` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
 `claude-code`、`mcode` → `minimax-code`、`agy` → `antigravity`，见 `scripts/perf/harness-id.ts`），
 `<runId>` 形如 `20260919-140136`（同秒第二次运行加 `-2` 后缀）：
 
@@ -324,6 +334,7 @@ cd playground/antigravity && bun perf-demo.ts       # Antigravity CLI（agy）�
 cd playground/opencode2   && bun perf-demo.ts       # opencode v2（`npm i -g @opencode/cli`）压测
 cd playground/hermes      && bun perf-demo.ts       # Hermes Agent（Nous Research，官方 install.sh）压测
 cd playground/cline       && bun perf-demo.ts       # Cline（`npm i -g cline`）压测
+cd playground/kimi        && bun perf-demo.ts       # Kimi Code CLI（官方 install.sh 装 ~/.kimi-code/bin）压测
 bun run scripts/perf/verify.ts                      # 采样口径验证实验
 bun test                                            # 全部测试
 bun run typecheck                                   # tsc --noEmit（含 scripts/ 与 playground/）
@@ -675,6 +686,58 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
 - `harness.log` 有内容（自行收尾时 stdout 里是最终回答）；每次请求 stderr 上会带一条 AI SDK 的
   `Deprecated: "providerOptions key 'openai-compatible'"` 警告，是它自己包里的用法告警，不影响读数。
 
+### Kimi Code（`kimi`）
+
+- 二进制从 PATH 找（`Bun.which("kimi")`，实测 **2.0.0**；官方 `install.sh` 装到
+  `~/.kimi-code/bin/kimi`，单文件原生 Mach-O、arm64，没有 Node 运行时依赖）；`--peri <path>`
+  可显式指定。**启动时先跑一次 `--version` 自查形状**（kimi-code 只打一个裸语义版本号）：
+  老的 `kimi-cli`（另一个产品）也提供 `kimi` 这个 bin 名，顶名时直接报错，不拿错二进制出读数；
+- harness 命令是 `kimi -p '<prompt>' -m llm-mock`：`-p`/`--prompt` 是官方的**无头模式**
+  （单 prompt 进、最终回答出；stdout 是转录式输出——思考与工具进度走 stderr，被强杀时也有内容），
+  成功退 0。`-p` 模式**自动按 auto 权限跑**（官方文档：非交互模式不再问审批），`--yolo` /
+  `--auto` 与 `-p` 互斥、传了会被拒，所以 demo 不带权限参数；剧本自觉只放只读命令；
+- 走 **OpenAI Chat Completions**（`POST {base_url}/chat/completions`、`stream: true`），与 peri /
+  opencode / pi / dsh / mcode / hermes / cline 同协议：provider 类型写 `type = "openai"`，
+  `/chat/completions` 由 CLI 自己拼，所以 `base_url` 要带 `/v1`；
+- 隔离靠 **`KIMI_CODE_HOME`** 指向沙盒（`playground/kimi/.kimi-home/`）：官方文档写明的数据根开关，
+  `config.toml` / sessions / logs / credentials 全从它找，指到沙盒就不读用户的 `~/.kimi-code`
+  （那里面有登录态与 hooks）。**不用换 HOME**——HOME 只在解析默认数据根时用一下，被
+  KIMI_CODE_HOME 覆盖（与 cline 同理，与 Claude Code / agy 相反）；work-dir 下的项目级
+  `.kimi-code/local.toml` 沙盒里没有，也不会去用户目录找；
+- **provider 配置只能靠 config.toml**：`[providers.llm-mock]`（`type = "openai"` + `base_url` +
+  假 `api_key`——mock 不校验鉴权）加 `[models."llm-mock"]`（`provider` / `model` /
+  `max_context_size = 262144`，取 kimi-for-coding 的真实窗口），demo 每次按本次端口全量重写
+  （与 pi 的 models.json、mcode / hermes 的 config.yaml 同理）。CLI **明确不从 shell 环境变量
+  取凭据**（`KIMI_API_KEY` 之类只认 config.toml 的 `[providers.<name>.env]` 子表或
+  `api_key_env`），所以假 key 直接写文件；`-m llm-mock` 与 `default_model` 双保险指到 mock 别名；
+- 三个开关关掉它自己的外部请求：`KIMI_DISABLE_TELEMETRY=1`（遥测）、
+  `KIMI_CODE_NO_AUTO_UPDATE=1`（更新预检——官方文档：完全不检查、不后台装、不提示）、
+  `KIMI_DISABLE_CRON=1`（定时任务工具）。**不注入死代理**（Codex / agy 那份）：官方代理规则里
+  loopback 恒直连，mock 直连没有悬念；外部请求已按上面关掉，学 cline 不给自己找重试
+  （实测对着死代理重试能把 5 轮小剧本拖慢 4~5 倍）；
+- 工具集含 Read / Write / Edit / Grep / Glob / **Bash** / WebSearch / FetchURL / TodoList /
+  Agent / Skill / Task* / Cron* 等，shell 工具叫 **`Bash`**、参数 `{command}` 必填
+  （cwd / timeout 可选）——与 peri / Claude Code 同形，所以默认剧本就是那份
+  `data/scenarios/long-run-kimi.json`（`gen-long-run.ts --turns 100`，Bash + command）；
+- **消费规律与 mcode 并列最干净**（实测 2.0.0，标准 100 轮 × 4KB 剧本）：
+  1. 一次 prompt 起步就是主请求（`messages=4`：system + user，末条 user 带着 auto 权限的
+     system-reminder），**没有标题生成那一步**（与 opencode2 / dsh / agy / hermes 都不同）；
+  2. **没有上下文压缩**：`max_context_size = 262144` 下末次请求 `messages=204` 也没触顶
+     （对比 pi 从约 140 条消息起每轮多吃一条）；也没有 peri 那样的预测请求、收尾后不再发请求；
+  3. 主流程吃到剧本尾部「任务结束」纯文本即自行收敛退出（退出码 0），`--exhausted stop` 的兜底
+     收尾用不到；尾部第二条空白收尾条同样用不到，留着无害；
+  所以 100 轮只要默认的 **102 条剧本**（`--turns 100`），实测 **101 条请求 = 1 条初始 + 100 个
+  工具轮 + 1 条收尾**；
+- 进程形状是**单进程**（`samples.csv` 的 `procs` 列恒为 1）：工具命令拉起的短命 shell 是**根进程**
+  的子进程，活不过进程树的 2s 刷新窗口，但其 CPU 记在根进程的 `ri_child_*` 计数器上，
+  `child_cpu_pct` 兜得住（实测约 0.23 核·秒/100 轮，与 dsh / agy / hermes 同类；
+  cline 那种孙进程才漏）；
+- **本地读数还是「单跑」的**（`--label kimi-probe`，3 次串行，见 `docs/perf-compare.md`）：
+  端到端 3.5~3.8s（启动 0.9~1.1s · 运转 2.5~2.6s · 收尾 0.1~0.2s，**没有收尾空等**）、
+  CU 4.206~4.490、峰值 RSS 561~605MB / CPU 176.8~182.4%——**跨批次只比 CU**（与 cline-probe
+  一批的 3.397、agy-probe 的 4.593 同一档）。CI 的 harness 清单已经加上它（装 kimi + 生成自家
+  剧本 + 跑批三处），下一次 CI 批次就是同批的读数。
+
 ## 已知限制与坑（压测相关）
 
 - **`--max-turns` 在 peri 的 `-p` 模式下是空操作**，所以压测时长由 `--timeout-ms` 兜底，
@@ -713,7 +776,7 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
   都发**），所以 100 轮要 104 条剧本（`--turns 102`）；**cline 是压缩那一路**——没有标题生成，
   但默认 `--compaction agentic`，实测每约 90 轮把当轮换成一条 `messages=2` 的续写摘要请求
   （"Summarize this session for continuation…"），所以 100 轮要 103 条剧本（`--turns 101`）；
-  Claude Code / Codex 本次没见到。脚本不足时先看 `*-mock.log` 里
+  Claude Code / Codex / MiniMax Code / Kimi Code 本次没见到。脚本不足时先看 `*-mock.log` 里
   是谁在取号（每行都有 `messages=` / `input=` 与末条消息的角色），症状是「明明在正常工作，
   却提前收到收尾文本」；
 - 各 harness 的 `-p` / `run` / `exec` 模式普遍没有轮数上限，loop 剧本不会自行收敛
