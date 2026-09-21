@@ -39,6 +39,7 @@ export const DISPLAY_NAMES: Readonly<Record<string, string>> = {
     hermes: "Hermes Agent",
     cline: "Cline",
     zcode: "ZCode",
+    kimi: "Kimi Code",
 };
 
 /** 展示名：认识的给规范写法，不认识的原样用 id。 */

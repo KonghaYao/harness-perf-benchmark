@@ -531,6 +531,12 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 // white instead of reading as a disabled series.
                 hermes: "#5a6472",
                 zcode: "#b45309",
+                // Indigo: every hue band is taken by now (rose / blue x2 / orange / green /
+                // purple / magenta / cyan / olive / copper / graphite / amber), and Kimi's own
+                // mark is a blue-violet gradient with no single vendor colour to inherit.
+                // Indigo sits between opencode's brighter blue and pi's purple without
+                // colliding with either, and stays legible on white.
+                kimi: "#4f46e5",
             };
             const PALETTE = Object.values(COLORS);
 
@@ -592,6 +598,10 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 cline: "https://github.com/cline/cline",
                 hermes: "https://github.com/NousResearch/hermes-agent",
                 zcode: "https://zcode.z.ai/en",
+                // No repository: Kimi Code CLI ships as a single native binary from an install
+                // script and is not open source, so this points at the official product page
+                // (the docs the config.toml schema was verified against live under it).
+                kimi: "https://www.kimi.com/code/",
             };
 
             // Legend icon objects: Chart.js's pointStyle wants an **already-loaded Image**, so they are

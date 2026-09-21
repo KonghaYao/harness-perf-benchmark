@@ -24,6 +24,7 @@ The benchmark does not call a real model. Every harness talks to the same local 
 | [Claude Code](https://github.com/anthropics/claude-code) | 2.1.277 | 2.828 | 71.8% | 122.4% | 310.9 MB | 351.0 MB |
 | [DeepSeek Harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness) | 0.1.5-rc.2 | 3.101 | 46.3% | 128.0% | 185.6 MB | 231.2 MB |
 | [Cline](https://github.com/cline/cline) (`cline`) † | 3.0.62 | 3.397 | 23.3% | 138.4% | 443.5 MB | 706.1 MB |
+| [Kimi Code](https://www.kimi.com/code/) (`kimi`) † | 2.0.0 | 4.364 | 63.5% | 176.8% | 491.9 MB | 603.6 MB |
 | [Antigravity CLI](https://antigravity.google) (`agy`) † | 1.2.7 | 4.593 | 173.4% | 213.0% | 208.6 MB | 225.1 MB |
 | [OpenCode v2](https://github.com/anomalyco/opencode) (`opencode2`) † | 2.0.10 | 9.595 | 48.6% | 105.2% | 576.1 MB | 849.6 MB |
 | [Hermes Agent](https://github.com/NousResearch/hermes-agent) (`hermes`) † | 0.21.3 | 10.706 | 73.1% | 131.8% | 147.3 MB | 201.1 MB |
@@ -33,10 +34,11 @@ Bold marks the leanest value in each column (lower is leaner in all of them).
 
 † The six unmarked rows come from one batch (label `codex-proxy-fix`, September 19, 2026, 20:39–20:43,
 three serial runs each). Antigravity CLI, OpenCode v2, Hermes Agent and Cline were measured in separate
-probe batches (labels `agy-probe`, `oc2-probe`, `hermes-probe` and `cline-probe`, September 20).
+probe batches (labels `agy-probe`, `oc2-probe`, `hermes-probe` and `cline-probe`, September 20), and
+Kimi Code in its own (label `kimi-probe`, September 21).
 **Only CU compares across batches** — it is an absolute quantity, while the other columns are
 single-machine readings that move with machine load, so for the † rows treat them as indicative. The CI
-workflow installs and runs all ten under a single batch label, so the next batch it publishes puts every
+workflow installs and runs all eleven under a single batch label, so the next batch it publishes puts every
 row on the same footing.
 
 ### Reading the results
@@ -47,7 +49,7 @@ row on the same footing.
 - CU is an **area**, not a peak: CPU and memory integrated over the whole run, weighted 1:1. The
   coefficients are this project's own choice (documented in `scripts/perf/score.ts`) and the metric is
   **Beta** — use it to order harnesses inside one batch, not as a verdict.
-- peri has the lowest mean and peak memory of the ten; MiniMax Code has the highest mean CPU and memory.
+- peri has the lowest mean and peak memory of the eleven; MiniMax Code has the highest mean CPU and memory.
 - **The process tree is what makes some rows readable.** Codex's main process is only a launcher — the
   work happens in binaries it spawns — and OpenCode v2 has the same shape, with ~95% of its CPU in a
   worker process (`opencode.exe serve --stdio`). Reading the main process alone would undercount both.
@@ -66,6 +68,12 @@ row on the same footing.
   the row. Cline also holds ~1.8 s of *request-free* time at the end of the run before exiting — 33–43%
   of its whole CU, because the CPU stops there while ~700 MB of RSS stays resident (the same lesson as
   Codex's 10 s exit wait: an idle tail is not free).
+- **Kimi Code is the fastest harness here end-to-end** — 3.5–3.8 s for the same 100-round script, with
+  only ~2.5 s of that in the running segment — but it is not the leanest: it holds ~490 MB of RSS on
+  average (~600 MB peak) and runs multi-threaded (mean ~65% of a core, peaks above 170%), so its CU
+  (4.36) lands between Cline and Antigravity CLI. Its shell commands are children of the measured root,
+  so their ~0.24 core-seconds per run are captured through the child-process counters (the channel Cline's
+  grandchildren escape).
 - **Only CU is comparable across batches.** Durations are load-sensitive — the same script on the same
   machine has produced 19.8 s and 34.7 s for one harness — and any relative score is computed inside a
   single batch by construction.
@@ -87,6 +95,7 @@ row on the same footing.
 | Antigravity CLI (`agy`) | [antigravity.google](https://antigravity.google) | **Google Gemini API** | Isolated `HOME`, Gemini endpoint override, placeholder key, dead proxy |
 | Hermes Agent (`hermes`) | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | OpenAI Chat Completions | Isolated `HERMES_HOME` and generated provider config |
 | Cline (`cline`) | [cline/cline](https://github.com/cline/cline) | OpenAI Chat Completions | Isolated `--config` / `--data-dir` / `--hooks-dir` directories and a generated provider file |
+| Kimi Code (`kimi`) | [kimi.com/code](https://www.kimi.com/code/) | OpenAI Chat Completions | Isolated `KIMI_CODE_HOME`, generated `config.toml` provider (`type = "openai"`), `-p` headless mode |
 
 Each harness runs in its own playground sandbox. The mock protocol adapter and tool schema match the harness under test; this avoids treating unsupported tool names or protocol mismatches as performance data. Credentials are placeholders — the mock does not validate them, so no real key is ever involved.
 
@@ -114,14 +123,14 @@ The workload is generated rather than hand-maintained. It contains a finite sequ
 
 The tool shape is adapted to each harness:
 
-- `Bash` with `{command}` for peri, OpenCode v1, and Claude Code;
+- `Bash` with `{command}` for peri, OpenCode v1, Claude Code, and Kimi Code;
 - `shell` with `{command}` for OpenCode v2 — the tool was renamed in v2;
 - `exec` with bare JavaScript source for Codex;
 - lowercase `bash` for pi and MiniMax Code;
 - lowercase `bash` with `{command, description}` for DeepSeek Harness;
 - `run_command` with five camelCase fields (`CommandLine`, `Cwd`, …) for Antigravity CLI;
 - `terminal` with `{command}` for Hermes Agent;
-- `run_commands` with `{commands: [...]}` for Cline — the only array-shaped argument among the ten.
+- `run_commands` with `{commands: [...]}` for Cline — the only array-shaped argument among the eleven.
 
 Some harnesses issue additional internal requests, such as context compaction or session-title generation. These consume script entries too, so each harness's script is sized to them: a 100-turn run needs **102** entries (100 turns plus two completion entries) for most harnesses, **135** for pi, **106** for Antigravity CLI, **103** for OpenCode v2, **104** for Hermes Agent and **103** for Cline.
 
@@ -185,6 +194,11 @@ bun run scripts/perf/gen-long-run.ts \
   --turns 101 \
   --args commands \
   --out data/scenarios/long-run-cline.json
+
+# Kimi Code
+bun run scripts/perf/gen-long-run.ts \
+  --turns 100 \
+  --out data/scenarios/long-run-kimi.json
 ```
 
 ### Run a harness
@@ -202,6 +216,7 @@ cd playground/antigravity  && bun perf-demo.ts --exhausted stop --timeout-ms 600
 cd playground/opencode2    && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 cd playground/hermes       && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 cd playground/cline        && bun perf-demo.ts --exhausted stop --timeout-ms 600000
+cd playground/kimi         && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 # cd playground/opencode  && bun perf-demo.ts --exhausted stop --timeout-ms 600000   # OpenCode v1: kept for reproduction
 ```
 
