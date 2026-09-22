@@ -42,6 +42,7 @@ export const DISPLAY_NAMES: Readonly<Record<string, string>> = {
     cline: "Cline",
     zcode: "ZCode",
     kimi: "Kimi Code",
+    "qwen-code": "Qwen Code",
     ccode: "ccode",
 };
 

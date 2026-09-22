@@ -43,9 +43,9 @@ single-machine readings that move with machine load, so for the † rows treat t
 single-sample CPU peak is the one number here that is an artefact rather than a reading: on a 10 ms
 sampler one tick is a whole 100%, so any run that does work inside a sample lands on 99%. Its CU is
 unaffected — CU integrates the run's cumulative CPU readings, it does not use the peak column at all — so
-for this row read CU and the memory columns, not the peak. The CI workflow installs and runs all twelve
-under a single batch label,
-so the next batch it publishes puts every row on the same footing.
+for this row read CU and the memory columns, not the peak. The CI workflow installs and runs all thirteen
+published harnesses under a single batch label, so the next batch it publishes puts every row on the same
+footing.
 
 ### Reading the results
 
@@ -55,8 +55,8 @@ so the next batch it publishes puts every row on the same footing.
 - CU is an **area**, not a peak: CPU and memory integrated over the whole run, weighted 1:1. The
   coefficients are this project's own choice (documented in `scripts/perf/score.ts`) and the metric is
   **Beta** — use it to order harnesses inside one batch, not as a verdict.
-- peri has the lowest mean and peak memory of the eleven runtimes here; MiniMax Code has the highest mean
-  CPU and memory. (ccode is lower than both — see its row.)
+- peri has the lowest mean and peak memory among the twelve established runtimes here; MiniMax Code has
+  the highest mean CPU and memory. (ccode is lower than both — see its row.)
 - **The process tree is what makes some rows readable.** Codex's main process is only a launcher — the
   work happens in binaries it spawns — and OpenCode v2 has the same shape, with ~95% of its CPU in a
   worker process (`opencode.exe serve --stdio`). Reading the main process alone would undercount both.
@@ -113,6 +113,7 @@ so the next batch it publishes puts every row on the same footing.
 | Hermes Agent (`hermes`) | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | OpenAI Chat Completions | Isolated `HERMES_HOME` and generated provider config |
 | Cline (`cline`) | [cline/cline](https://github.com/cline/cline) | OpenAI Chat Completions | Isolated `--config` / `--data-dir` / `--hooks-dir` directories and a generated provider file |
 | Kimi Code (`kimi`) | [kimi.com/code](https://www.kimi.com/code/) | OpenAI Chat Completions | Isolated `KIMI_CODE_HOME`, generated `config.toml` provider (`type = "openai"`), `-p` headless mode |
+| [Qwen Code](https://github.com/QwenLM/qwen-code) (`qwen`) | latest npm release | OpenAI Chat Completions | Isolated `HOME` / `QWEN_HOME` / XDG directories, one-shot headless mode with `--bare --safe-mode` |
 | ccode (`ccode-cli`) | [MoyaMryia/ccode](https://github.com/MoyaMryia/ccode) | OpenAI Chat Completions | Isolated `CCODE_SESSION_DIR`, provider from environment variables (`CCODE_API_BASE` / `_API_KEY` / `_MODEL`), `--write --auto-approve -p` headless mode |
 
 Each harness runs in its own playground sandbox. The mock protocol adapter and tool schema match the harness under test; this avoids treating unsupported tool names or protocol mismatches as performance data. Credentials are placeholders — the mock does not validate them, so no real key is ever involved.
@@ -219,6 +220,12 @@ bun run scripts/perf/gen-long-run.ts \
   --turns 100 \
   --out data/scenarios/long-run-kimi.json
 
+# Qwen Code
+bun run scripts/perf/gen-long-run.ts \
+  --turns 100 \
+  --tool run_shell_command \
+  --out data/scenarios/long-run-qwen-code.json
+
 # ccode: lowercase `bash` + {command}, same shape as pi; 100 turns cover 100 tool rounds
 # (it stops at --max-turns before the closing entry, so it does not need extra entries)
 bun run scripts/perf/gen-long-run.ts \
@@ -244,6 +251,7 @@ cd playground/hermes       && bun perf-demo.ts --exhausted stop --timeout-ms 600
 cd playground/cline        && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 cd playground/ccode        && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 cd playground/kimi         && bun perf-demo.ts --exhausted stop --timeout-ms 600000
+cd playground/qwen-code    && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 # cd playground/opencode  && bun perf-demo.ts --exhausted stop --timeout-ms 600000   # OpenCode v1: kept for reproduction
 ```
 

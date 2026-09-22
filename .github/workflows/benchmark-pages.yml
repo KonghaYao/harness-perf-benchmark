@@ -17,7 +17,7 @@
 #     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
 #     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
 #     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
-#   - 十三家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
+#   - 十四家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
 #   - opencode **v1** 已退出排名，这里不装、不跑；v2 是另一家（npm 包 `@opencode/cli`，bin 名
 #     `opencode2`），在排名里，沙盒是 playground/opencode2。两者同名不同代，别混。
 #   - peri 走 GitHub release，Antigravity CLI（agy）、Hermes Agent（hermes）与 Kimi Code CLI
@@ -75,7 +75,7 @@ concurrency:
 
 jobs:
   bench-and-publish:
-    # 整批 39 次运行（十三家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
+    # 整批 42 次运行（十四家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
     timeout-minutes: 150
     runs-on: ${{ github.event.inputs.runner || 'macos-latest' }}
     environment:
@@ -166,7 +166,7 @@ jobs:
         with:
           node-version: 26.9.0
 
-      - name: 装 harness（peri + 七家 npm CLI + agy / hermes 官方脚本）
+      - name: 装 harness（peri + 八家 npm CLI + agy / hermes 官方脚本）
         if: steps.decide.outputs.bench == '1'
         env:
           PERI_INSTALL_VERSION: ${{ github.event.inputs.peri_version }}
@@ -198,7 +198,8 @@ jobs:
             @deepseek-ai/dsh \
             @minimax-ai/code \
             @opencode/cli \
-            cline
+            cline \
+            @qwen-code/qwen-code
 
       # agy 只有官方一个安装脚本：它查一份平台清单（darwin_arm64 等）→ 下载约 180MB 的
       # 单文件二进制 → 校验 SHA-512 → 落到 ~/.local/bin/agy。脚本自己不改 PATH，所以下面
@@ -316,7 +317,7 @@ jobs:
       - name: 报一下装到了什么版本
         if: steps.decide.outputs.bench == '1'
         run: |
-          for bin in peri agy claude codex pi dsh mcode opencode2 hermes cline kimi ccode-cli; do
+          for bin in peri agy claude codex pi dsh mcode opencode2 hermes cline kimi qwen ccode-cli; do
             printf '%-8s %s\n' "${bin}" "$(command -v "${bin}" || echo '（不在 PATH 里）')"
           done
           peri --version || true
@@ -332,6 +333,7 @@ jobs:
           hermes --version || true
           cline --version || true
           kimi --version || true
+          qwen --version || true
           ccode-cli --help | head -1 || true
 
       - name: 生成剧本（按各家工具形状，含 ZCode）
@@ -382,6 +384,10 @@ jobs:
           # 101 条请求（1 条初始 + 100 个工具轮 + 1 条收尾），没有标题生成、没有上下文压缩、
           # 没有预测请求，所以轮数不用加（与 mcode 同一档）。
           gen --turns "${TURNS}" --out data/scenarios/long-run-kimi.json
+          # Qwen Code（qwen）：run_shell_command + {command}；100 轮实测 101 条请求
+          # （1 条初始 + 100 个工具轮 + 1 条收尾），没有标题生成、上下文压缩或预测请求。
+          gen --turns "${TURNS}" --tool run_shell_command \
+            --out data/scenarios/long-run-qwen-code.json
           # ccode：bash + command，与 pi / mcode 同形；撞上自己的 --max-turns 就停，
           # 所以剧本给 TURNS 条即可（不加轮数）。
           gen --turns "${TURNS}" --tool bash --out data/scenarios/long-run-ccode.json
@@ -408,7 +414,7 @@ jobs:
             return 0
           }
           for round in $(seq 1 "${REPEATS}"); do
-            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes cline zcode kimi ccode; do
+            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes cline zcode kimi qwen-code ccode; do
               echo "::group::第 ${round} 轮 · ${harness}"
               run_one "${harness}"
               echo "::endgroup::"
