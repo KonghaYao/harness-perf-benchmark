@@ -470,6 +470,36 @@ https://code.kimi.com/kimi-code/install.sh | bash` 装到 `~/.kimi-code/bin`）�
   这个形态。图表页现在**会画出它**（`gen-chart-data.ts` 默认收 `data/runs` 下最近的运行），跨批混画
   由页面自己兜着。只想看批次内排名就照旧用 `--exclude kimi` 生成数据。
 
+## ccode（`ccode-cli`）：已接入，Linux 批次读数
+
+`ccode-cli --write --auto-approve -p '<prompt>'` 走 OpenAI Chat Completions：provider 全走环境变量
+（`CCODE_API_BASE` 带 `/v1`、`CCODE_API_KEY` 假值、`CCODE_MODEL`），隔离靠 `CCODE_SESSION_DIR` 指向
+沙盒（默认落 `~/.ccode/sessions`）。`--write` 必给（默认工具集是只读的），`--auto-approve` 免掉
+headless 下无人可批的确认。工具是 `bash` + `{command}`，与 pi / mcode 同形。
+
+**消费规律：撞上限就停。** `--turns N` 映射成 ccode 的 `--max-turns N`；**demo 永远显式给这个
+flag**，调用方没给 `--turns` 时传 0（ccode 的「不限轮」）——省掉它会落回 ccode 自己的默认 50，100 轮
+的剧本只跑一半，而柱子照画、读 CU 看不出来（上游 CI 跑批不带 `--turns`，所以这条是必须的）。
+`--max-turns N` 配 N 轮剧本实测正好 N 条请求，尾部那条「任务结束」不发（3 轮冒烟 3 条、100 轮长剧本
+100 条）；不设上限时它跑到剧本尾部再退（= 轮数 + 1 条）；上限大于剧本轮数时同理（实测 50 轮剧本配
+`--max-turns 100` 收到 51 条）。
+
+**它是这一批里唯一快到采样分辨率边界的 harness。** 100 轮端到端 0.26s，10ms 采样只拿到 24 拍，
+启动段与收尾段都测不出来（分段 0.000 / 0.111 / 0.000 CU）。**所以这一行只看 CU，别看 CPU 峰值**：
+10ms 间隔下单个 tick 就是整格 100%，任何在采样窗口里干了活的运行都会顶到 99%，那是量化不是负载。
+CU 不受这个影响——它按累计 CPU 的差分积分（macOS 的 rusage 与 Linux 的 procfs 两条后端都是差分，
+不是「百分比 × 一次另测的间隔」），与峰值怎么取无关。
+
+读数（`--label 265k-linux`，3 次串行，Linux / Intel Core Ultra 7 265K / 10ms procfs / 进程树；
+表里是中位那次，3 次端到端都在 0.2~0.3s；CPU 峰值那一列对这个量级的运行没有意义，故不列）：
+
+| 运行 | 端到端 | 请求数 | CU | 核·秒 | GB·秒 | CPU 均值 | RSS 均值 / 峰值 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `20260922-003430` | 0.26s | 100 | **0.114** | 0.1132 | 0.0009 | 47.2% | 3.8MB / 4.4MB |
+
+同批 14 家里最低（第二名 peri 0.606、第三名 pi 1.417）。在这个量级上它更像「启动 + 100 次 HTTP
+往返 + 100 次 `sh -c`」的裸成本，而不是一个运行时的开销。
+
 ## 统一计分（**Beta**）：CPU 与内存 1:1
 
 > **状态：Beta（2026-09-19 起试行）**。系数是本项目定的、实现（逐拍积分 / 后代取大 / 尾部补齐）
