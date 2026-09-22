@@ -537,6 +537,13 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 // Indigo sits between opencode's brighter blue and pi's purple without
                 // colliding with either, and stays legible on white.
                 kimi: "#4f46e5",
+                // Ink: every hue band is spoken for by now (rose / blue x2 / orange / green /
+                // purple / magenta / cyan / olive / copper / graphite / amber / indigo), and ccode
+                // has no brand mark to inherit — it is a terminal program. The near-black reads as
+                // the plainest series on the chart, sits clearly apart from hermes's mid graphite,
+                // and stays legible on white. There is no icon in logos/ for it either, so the
+                // legend shows this swatch (the same fallback every harness without an icon gets).
+                ccode: "#111827",
             };
             const PALETTE = Object.values(COLORS);
 
@@ -602,6 +609,7 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 // script and is not open source, so this points at the official product page
                 // (the docs the config.toml schema was verified against live under it).
                 kimi: "https://www.kimi.com/code/",
+                ccode: "https://github.com/MoyaMryia/ccode",
             };
 
             // Legend icon objects: Chart.js's pointStyle wants an **already-loaded Image**, so they are
