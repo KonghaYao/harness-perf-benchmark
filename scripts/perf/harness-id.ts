@@ -40,6 +40,7 @@ export const DISPLAY_NAMES: Readonly<Record<string, string>> = {
     cline: "Cline",
     zcode: "ZCode",
     kimi: "Kimi Code",
+    "qwen-code": "Qwen Code",
 };
 
 /** 展示名：认识的给规范写法，不认识的原样用 id。 */

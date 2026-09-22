@@ -117,6 +117,11 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     # Claude Code 同形。100 轮实测 101 条请求（1 条初始 + 100 个工具轮 + 1 条收尾）：
     # 没有标题生成、没有上下文压缩（max_context_size 262144 下末次请求 messages=204 也没触顶）、
     # 没有 peri 那样的预测请求——与 mcode 同一档，轮数不用加。
+  bun run scripts/perf/gen-long-run.ts --turns 100 --tool run_shell_command \
+    --out data/scenarios/long-run-qwen-code.json
+    # Qwen Code（qwen，npm 包 @qwen-code/qwen-code@0.24.3）：工具叫 run_shell_command、参数
+    # {command}。100 轮实测 101 条请求（1 条初始 + 100 个工具轮 + 1 条收尾），没有标题生成、
+    # 上下文压缩或预测请求，轮数不用加。
 
   各家自己的辅助请求都会消费条目（opencode / dsh / agy / opencode2 / hermes 的标题生成、
   pi · agy · hermes · **cline** 的压缩摘要），所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看

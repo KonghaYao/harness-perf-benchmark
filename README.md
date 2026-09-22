@@ -38,7 +38,7 @@ probe batches (labels `agy-probe`, `oc2-probe`, `hermes-probe` and `cline-probe`
 Kimi Code in its own (label `kimi-probe`, September 21).
 **Only CU compares across batches** — it is an absolute quantity, while the other columns are
 single-machine readings that move with machine load, so for the † rows treat them as indicative. The CI
-workflow installs and runs all eleven under a single batch label, so the next batch it publishes puts every
+workflow installs and runs all twelve under a single batch label, so the next batch it publishes puts every
 row on the same footing.
 
 ### Reading the results
@@ -49,7 +49,7 @@ row on the same footing.
 - CU is an **area**, not a peak: CPU and memory integrated over the whole run, weighted 1:1. The
   coefficients are this project's own choice (documented in `scripts/perf/score.ts`) and the metric is
   **Beta** — use it to order harnesses inside one batch, not as a verdict.
-- peri has the lowest mean and peak memory of the eleven; MiniMax Code has the highest mean CPU and memory.
+- peri has the lowest mean and peak memory of the current eleven published results; MiniMax Code has the highest mean CPU and memory.
 - **The process tree is what makes some rows readable.** Codex's main process is only a launcher — the
   work happens in binaries it spawns — and OpenCode v2 has the same shape, with ~95% of its CPU in a
   worker process (`opencode.exe serve --stdio`). Reading the main process alone would undercount both.
@@ -96,6 +96,7 @@ row on the same footing.
 | Hermes Agent (`hermes`) | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | OpenAI Chat Completions | Isolated `HERMES_HOME` and generated provider config |
 | Cline (`cline`) | [cline/cline](https://github.com/cline/cline) | OpenAI Chat Completions | Isolated `--config` / `--data-dir` / `--hooks-dir` directories and a generated provider file |
 | Kimi Code (`kimi`) | [kimi.com/code](https://www.kimi.com/code/) | OpenAI Chat Completions | Isolated `KIMI_CODE_HOME`, generated `config.toml` provider (`type = "openai"`), `-p` headless mode |
+| [Qwen Code](https://github.com/QwenLM/qwen-code) (`qwen`) | 0.24.3 | OpenAI Chat Completions | Isolated `HOME` / `QWEN_HOME` / XDG directories, one-shot headless mode with `--bare --safe-mode` |
 
 Each harness runs in its own playground sandbox. The mock protocol adapter and tool schema match the harness under test; this avoids treating unsupported tool names or protocol mismatches as performance data. Credentials are placeholders — the mock does not validate them, so no real key is ever involved.
 
@@ -199,6 +200,12 @@ bun run scripts/perf/gen-long-run.ts \
 bun run scripts/perf/gen-long-run.ts \
   --turns 100 \
   --out data/scenarios/long-run-kimi.json
+
+# Qwen Code
+bun run scripts/perf/gen-long-run.ts \
+  --turns 100 \
+  --tool run_shell_command \
+  --out data/scenarios/long-run-qwen-code.json
 ```
 
 ### Run a harness
@@ -217,6 +224,7 @@ cd playground/opencode2    && bun perf-demo.ts --exhausted stop --timeout-ms 600
 cd playground/hermes       && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 cd playground/cline        && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 cd playground/kimi         && bun perf-demo.ts --exhausted stop --timeout-ms 600000
+cd playground/qwen-code    && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 # cd playground/opencode  && bun perf-demo.ts --exhausted stop --timeout-ms 600000   # OpenCode v1: kept for reproduction
 ```
 
