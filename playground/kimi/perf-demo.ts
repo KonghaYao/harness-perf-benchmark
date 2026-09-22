@@ -63,7 +63,7 @@ const PROVIDER = "llm-mock";
 /** 模型别名（config.toml 里 [models."<alias>"] 的键名，`-m` 与 default_model 都指它）。 */
 const MODEL = "llm-mock";
 
-if (argv.includes("-h") || argv.includes("--help")) {
+if (import.meta.main && (argv.includes("-h") || argv.includes("--help"))) {
     console.log(USAGE);
     console.log("提示: 这是 Kimi Code CLI 版 demo，harness 命令固定为");
     console.log(`      kimi -p '<prompt>' -m ${MODEL}`);
@@ -96,54 +96,57 @@ max_context_size = 262144
 `;
 }
 
-try {
-    const config = loadPerfConfig(argv, REPO_ROOT, {
-        scriptPath: "data/scenarios/long-run-kimi.json",
-    });
-    if (!argv.some((arg) => arg === "--work-dir" || arg.startsWith("--work-dir="))) {
-        config.workDir = import.meta.dir;
+// 被测试或其他模块导入时，只提供配置函数，不启动压测或修改宿主进程的退出码。
+if (import.meta.main) {
+    try {
+        const config = loadPerfConfig(argv, REPO_ROOT, {
+            scriptPath: "data/scenarios/long-run-kimi.json",
+        });
+        if (!argv.some((arg) => arg === "--work-dir" || arg.startsWith("--work-dir="))) {
+            config.workDir = import.meta.dir;
+        }
+        if (!argv.some((arg) => arg === "--harness" || arg.startsWith("--harness="))) {
+            config.harnessId = "kimi";
+        }
+        if (!argv.some((arg) => arg === "--exhausted" || arg.startsWith("--exhausted="))) {
+            config.exhausted = "stop";
+        }
+        // 二进制：PATH 里的 kimi（官方安装脚本落 ~/.kimi-code/bin），--peri 可显式指定。
+        const explicitBin = argv.some((arg) => arg === "--peri" || arg.startsWith("--peri="));
+        const kimiBin = explicitBin ? config.periPath : Bun.which("kimi");
+        if (kimiBin === null) {
+            throw new Error(
+                "PATH 里找不到 kimi：装官方发布版（curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash），" +
+                    "或用 --peri <path> 显式指定",
+            );
+        }
+        // 版本自查：官方 kimi-code 的 --version 只打一个裸语义版本号（实测 2.0.0）。
+        // 老的 kimi-cli（另一个产品）也提供 kimi 这个 bin 名，输出不是这个形状，先挡掉。
+        const version = Bun.spawnSync([kimiBin, "--version"], { stderr: "pipe" });
+        const versionText = version.stdout.toString().trim();
+        if (version.exitCode !== 0 || !/^\d+\.\d+\.\d+/.test(versionText)) {
+            throw new Error(
+                `${kimiBin} --version 输出不符合 kimi-code 的形状（实测 2.0.0 只打印裸版本号），收到: ` +
+                    `${JSON.stringify(versionText.slice(0, 80))}；注意别把老 kimi-cli 的 bin 当成 kimi-code`,
+            );
+        }
+        mkdirSync(SANDBOX, { recursive: true });
+        const configFile = join(SANDBOX, "config.toml");
+        // 全量覆盖：沙盒里不会越压越多份，端口变化只影响这一个文件。
+        writeFileSync(configFile, sandboxConfig(config.port));
+        process.exitCode = await runPerf(config, {
+            harnessEnv: () => ({
+                KIMI_CODE_HOME: SANDBOX,
+                KIMI_DISABLE_TELEMETRY: "1",
+                KIMI_CODE_NO_AUTO_UPDATE: "1",
+                KIMI_DISABLE_CRON: "1",
+                NO_PROXY: "127.0.0.1,localhost,::1",
+                no_proxy: "127.0.0.1,localhost,::1",
+            }),
+            harnessCommand: (cfg) => [kimiBin, "-p", cfg.prompt, "-m", MODEL, ...cfg.periArgs],
+        });
+    } catch (error) {
+        console.error(`[perf] 启动失败: ${(error as Error).message}`);
+        process.exitCode = EXIT_SETUP;
     }
-    if (!argv.some((arg) => arg === "--harness" || arg.startsWith("--harness="))) {
-        config.harnessId = "kimi";
-    }
-    if (!argv.some((arg) => arg === "--exhausted" || arg.startsWith("--exhausted="))) {
-        config.exhausted = "stop";
-    }
-    // 二进制：PATH 里的 kimi（官方安装脚本落 ~/.kimi-code/bin），--peri 可显式指定。
-    const explicitBin = argv.some((arg) => arg === "--peri" || arg.startsWith("--peri="));
-    const kimiBin = explicitBin ? config.periPath : Bun.which("kimi");
-    if (kimiBin === null) {
-        throw new Error(
-            "PATH 里找不到 kimi：装官方发布版（curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash），" +
-                "或用 --peri <path> 显式指定",
-        );
-    }
-    // 版本自查：官方 kimi-code 的 --version 只打一个裸语义版本号（实测 2.0.0）。
-    // 老的 kimi-cli（另一个产品）也提供 kimi 这个 bin 名，输出不是这个形状，先挡掉。
-    const version = Bun.spawnSync([kimiBin, "--version"], { stderr: "pipe" });
-    const versionText = version.stdout.toString().trim();
-    if (version.exitCode !== 0 || !/^\d+\.\d+\.\d+/.test(versionText)) {
-        throw new Error(
-            `${kimiBin} --version 输出不符合 kimi-code 的形状（实测 2.0.0 只打印裸版本号），收到: ` +
-                `${JSON.stringify(versionText.slice(0, 80))}；注意别把老 kimi-cli 的 bin 当成 kimi-code`,
-        );
-    }
-    mkdirSync(SANDBOX, { recursive: true });
-    const configFile = join(SANDBOX, "config.toml");
-    // 全量覆盖：沙盒里不会越压越多份，端口变化只影响这一个文件。
-    writeFileSync(configFile, sandboxConfig(config.port));
-    process.exitCode = await runPerf(config, {
-        harnessEnv: () => ({
-            KIMI_CODE_HOME: SANDBOX,
-            KIMI_DISABLE_TELEMETRY: "1",
-            KIMI_CODE_NO_AUTO_UPDATE: "1",
-            KIMI_DISABLE_CRON: "1",
-            NO_PROXY: "127.0.0.1,localhost,::1",
-            no_proxy: "127.0.0.1,localhost,::1",
-        }),
-        harnessCommand: (cfg) => [kimiBin, "-p", cfg.prompt, "-m", MODEL, ...cfg.periArgs],
-    });
-} catch (error) {
-    console.error(`[perf] 启动失败: ${(error as Error).message}`);
-    process.exitCode = EXIT_SETUP;
 }

@@ -24,6 +24,23 @@ describe("Kimi Code 压测入口", () => {
         expect(displayName("kimi")).toBe("Kimi Code");
     });
 
+    it.each([[], ["--help"]])("导入配置函数不执行 CLI 或修改进程退出码：%j", async (...args: string[]) => {
+        const result = Bun.spawn([process.execPath, "-e", `
+            process.argv = [process.execPath, "import-check", ...${JSON.stringify(args)}];
+            await import(${JSON.stringify(entry)});
+            console.log("导入完成");
+        `], {
+            env: { ...process.env, PATH: "/nonexistent-kimi-bin" },
+            stdout: "pipe", stderr: "pipe",
+        });
+        const [output, errors, code] = await Promise.all([
+            new Response(result.stdout).text(), new Response(result.stderr).text(), result.exited,
+        ]);
+        expect(code).toBe(0);
+        expect(output).toBe("导入完成\n");
+        expect(errors).toBe("");
+    });
+
     it("查看帮助不需要本机安装 kimi", async () => {
         const result = Bun.spawn([process.execPath, entry, "--help"], {
             env: { ...process.env, PATH: "/nonexistent-kimi-bin" },

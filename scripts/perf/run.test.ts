@@ -17,6 +17,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { calibrationHost, type Calibration } from "./calibrate";
+import { fakeCalibration } from "./calibrate.test";
 import { REPO_ROOT, loadPerfConfig, type PerfConfig } from "./config";
 import { EXIT_HARNESS, EXIT_SETUP, EXIT_TIMEOUT, runPerf } from "./run";
 import { CSV_HEADER } from "./sampler";
@@ -62,6 +64,8 @@ function makeConfig(overrides: Partial<PerfConfig> = {}): PerfConfig {
         // 「不给时从命令推断」由单独的用例覆盖。
         harnessId: "test-harness",
         label: null,
+        // 不校准：CU 里的核·秒就是本机秒（校准路径由 config.test.ts 与 calibrate.test.ts 覆盖）。
+        cpuCalibrationPath: null,
         port: nextPort++,
         exhausted: "loop",
         sampler: "rusage",
@@ -548,4 +552,109 @@ describe("loadPerfConfig → runPerf 联通", () => {
         expect(code).toBe(0);
         expect(readFileSync(artifact(outDir, "perf.log"), "utf8")).toContain("=== 摘要 ===");
     });
+});
+
+describe("CPU 校准（写侧）：加载、核对、写进 run.json", () => {
+    /** 一份「宿主就是本机」的校准 JSON 文件（校准值本身是假的，用来验证链路）。 */
+    function writeCalibration(dir: string, overrides: Partial<Calibration> = {}, cpuScale = 7): string {
+        const path = join(dir, "calibration.json");
+        const calibration = fakeCalibration({
+            host: calibrationHost(),
+            scale: {
+                baselineMips: 1000,
+                cpuScale,
+                cpuScaleValue: cpuScale * 1000,
+                baseline: "1000 benchmark MIPS per CPU-second",
+                unit: "本机核·秒 × cpuScale = 标准机核·秒",
+                oneCoreSecond: { rawRu: [cpuScale * 1000], rawRatings: [cpuScale * 1000] },
+            },
+            ...overrides,
+        });
+        writeFileSync(path, JSON.stringify(calibration, null, 2));
+        return path;
+    }
+
+    it("校准与当前机器相符：run.json 记下折算摘要，CU 的 CPU 项按 scale 折算", async () => {
+        const dir = tempDir();
+        const calibrationPath = writeCalibration(dir, {}, 7);
+        const config = makeConfig({ cpuCalibrationPath: calibrationPath, timeoutMs: 20_000 });
+        const lines: string[] = [];
+        const code = await runPerf(config, {
+            harnessCommand: () => fakeHarness(1_000, join(config.outDir, "harness-pids.txt")),
+            log: (line) => lines.push(line),
+        });
+        expect(code).toBe(0);
+        const meta = readRunMeta(config.outDir) as {
+            cpuCalibration: { cpuScale: number; baselineMips: number; toolVersion: string } | null;
+            cost: { cpuScale?: number; cpuSeconds: number; standardCpuSeconds?: number; rawCu?: number; cu: number; memoryCu: number };
+        };
+        expect(meta.cpuCalibration?.cpuScale).toBe(7);
+        expect(meta.cpuCalibration?.baselineMips).toBe(1000);
+        expect(meta.cpuCalibration?.toolVersion).toBe("26.01");
+        // CPU 项 ×7、内存项不变；rawCu 是未折算的那一份
+        const cost = meta.cost;
+        expect(cost.cpuScale).toBe(7);
+        expect(cost.standardCpuSeconds).toBeCloseTo(cost.cpuSeconds * 7, 9);
+        expect(cost.rawCu).toBeCloseTo(cost.cu - cost.cpuSeconds * 7 + cost.cpuSeconds, 6);
+        // run.json 里存的是摘要，不是整份校准 JSON
+        expect(JSON.stringify(meta.cpuCalibration)).not.toContain("configSignature\":\"a");
+        // 日志文案：cpuScale 显示缩到 4 位小数（7 就写 7，不写 7.0000），且不声称参考机器
+        const summary = lines.join("\n");
+        expect(summary).toContain("cpuScale 7 = 7000 / 1000");
+        expect(summary).toContain("项目标准 CPU 单位");
+        expect(summary).not.toContain("标准机");
+        expect(summary).not.toContain("名次与未折算一致");
+    }, 30_000);
+
+    it("校准的宿主与当前机器不符：起进程前就拒绝，不留半截产物", async () => {
+        const dir = tempDir();
+        const path = join(dir, "calibration.json");
+        const calibration = fakeCalibration({
+            host: { ...calibrationHost(), hostname: "another-mac", cpuModel: "Apple M1" },
+        });
+        writeFileSync(path, JSON.stringify(calibration, null, 2));
+        const config = makeConfig({ cpuCalibrationPath: path });
+        // 与「PATH 里没有 peri」同类：起跑前的配置错误直接抛（而不是跑一轮再写 setup-error）
+        await expect(
+            runPerf(config, {
+                harnessCommand: () => fakeHarness(200, join(config.outDir, "pids.txt")),
+                log: () => {},
+            }),
+        ).rejects.toThrow(/与当前机器不符/);
+        // 校准核对在起进程之前：连产物目录都还没建
+        expect(existsSync(join(config.outDir, "test-harness"))).toBe(false);
+    });
+
+    it("校准文件不存在 / 口径不对：直接报错，不当成「没校准」", async () => {
+        const missing = makeConfig({ cpuCalibrationPath: join(tempDir(), "nope.json") });
+        await expect(
+            runPerf(missing, { harnessCommand: () => fakeHarness(100, "x"), log: () => {} }),
+        ).rejects.toThrow(/找不到校准文件/);
+
+        const dir = tempDir();
+        const wrongVersion = join(dir, "cal.json");
+        writeFileSync(wrongVersion, JSON.stringify({ ...fakeCalibration(), tool: { ...fakeCalibration().tool, version: "25.01" } }));
+        await expect(
+            runPerf(makeConfig({ cpuCalibrationPath: wrongVersion }), {
+                harnessCommand: () => fakeHarness(100, "x"),
+                log: () => {},
+            }),
+        ).rejects.toThrow(/26\.01/);
+    });
+
+    it("没给 --cpu-calibration：run.json 里是 null，CU 不折算（旧行为不变）", async () => {
+        const config = makeConfig({ timeoutMs: 20_000 });
+        const code = await runPerf(config, {
+            harnessCommand: () => fakeHarness(600, join(config.outDir, "pids.txt")),
+            log: () => {},
+        });
+        expect(code).toBe(0);
+        const meta = readRunMeta(config.outDir) as {
+            cpuCalibration: unknown;
+            cost: { cpuScale?: number; rawCu?: number; cu: number };
+        };
+        expect(meta.cpuCalibration).toBeNull();
+        expect(meta.cost.cpuScale).toBe(1);
+        expect(meta.cost.rawCu).toBeCloseTo(meta.cost.cu, 9);
+    }, 30_000);
 });

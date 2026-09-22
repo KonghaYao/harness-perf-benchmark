@@ -41,12 +41,14 @@ import {
 import { cpus, hostname, loadavg, platform, release, totalmem } from "node:os";
 import { join, relative } from "node:path";
 import { REPO_ROOT, formatRunId, loadPerfConfig, type PerfConfig } from "./config";
+import { calibrationRef, hostMismatches, loadCalibration } from "./calibrate";
 import { harnessIdFromCommand } from "./harness-id";
 import {
     RUN_META_SCHEMA_VERSION,
     hostSnapshot,
     writeJsonAtomic,
     type RunMeta,
+    type RunMetaCpuCalibration,
     type RunStatus,
 } from "./run-meta";
 import {
@@ -60,7 +62,14 @@ import {
     type SampleSummary,
     type SamplerBackend,
 } from "./sampler";
-import { resourceCost, resourcePeaks, type ResourceCost, type ResourcePeaks } from "./score";
+import {
+    formatBytesMb,
+    formatCpuScale,
+    resourceCost,
+    resourcePeaks,
+    type ResourceCost,
+    type ResourcePeaks,
+} from "./score";
 
 export const EXIT_OK = 0;
 /** 配置 / mock / 环境错误。 */
@@ -106,6 +115,11 @@ export const USAGE = `llm-mock 压测采样器 —— 起 mock、起 harness、�
                            hold/error 下剧本走完即停，harness 有机会自行退出并写出 harness.log
   --sampler <kind>        采样后端：rusage（默认，FFI proc_pid_rusage）| ps（兜底）
   --no-tree               不统计 harness 的后代进程（默认统计，含其拉起的 MCP 子进程）
+  --cpu-calibration <path>
+                          CPU 校准 JSON（cpu:calibrate 的产物，相对路径按 cwd 解析）。
+                          给了就按它的 cpuScale 把 CU 里的核·秒折成项目标准 CPU 单位，并记进
+                          run.json.cpuCalibration；**没有默认值**：不给就是不校准。
+                          校准量的是哪台机器，这里就必须是哪台机器（不符直接报错）
   --peri-arg <arg>        透传给 harness 的参数，可重复。值以 - 开头时必须用 --peri-arg=<值>：
                             --peri-arg=--db-path --peri-arg=/tmp/peri.db
   -h, --help              显示本帮助
@@ -117,6 +131,14 @@ export const USAGE = `llm-mock 压测采样器 —— 起 mock、起 harness、�
                              harness.log   harness 的 stdout/stderr
                              mock.log      mock server 的输出
   <runId> 形如 20260919-153012；同秒第二次运行自动加 -2 后缀。
+
+CPU 校准（可选）:
+  本机秒与项目标准 CPU 单位秒不是一回事（这个单位是本项目自定的，没有真实参考机器），
+  要把各机器的读数放在一起读，就先用 7-Zip 量一把本机的尺子：
+    bun run cpu:calibrate                                  # → data/calibration/<stamp>/calibration.json
+    bun run scripts/perf/run.ts --script … --cpu-calibration data/calibration/<stamp>/calibration.json
+  CU 的 1:1 系数**不因校准改变**：变的是核·秒的单位（本机秒 → 项目标准 CPU 单位秒），
+  内存项原样——**两项量纲不同，折算前后的名次可能不同**。
 
 退出码:
   0 正常   1 配置/mock/环境错误   2 harness 非 0 退出   3 超时被强制终止   130 被中断
@@ -241,8 +263,9 @@ function describeEnv(env: Record<string, string>): string {
         .join(" ");
 }
 
+/** 人读字节数；实现与 score.ts 的 `formatBytesMb` 同一份，别再各写一套四舍五入。 */
 function mb(bytes: number): string {
-    return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+    return formatBytesMb(bytes);
 }
 
 /** 单行采样摘要（每个落盘周期写一行，便于肉眼扫时间线）。 */
@@ -278,18 +301,52 @@ function summaryLines(summary: SampleSummary, config: PerfConfig): string[] {
 /**
  * 统一计分那一行（人读日志用）：把公式的每一项都摊开，便于事后核对。
  * 标着 Beta 是刻意的——口径还没定稿（见 score.ts 文件头），日志本身要能自证身份。
+ *
+ * 有校准就同时给**原始**与**折算后**两个数：折算只乘 CPU 项，所以「折算后大于原始」是正常的
+ * （机器越快，同样的本机核·秒折出的标准秒越多），并排写出来才不会被误读成算错。
  */
-function costLine(cost: ResourceCost | null): string {
+function costLine(
+    cost: ResourceCost | null,
+    calibration: RunMetaCpuCalibration | null = null,
+): string {
     if (cost === null || cost.sampleCount === 0) return "统一计分(Beta): 无样本";
     const child =
         cost.childCpuSeconds > 0
             ? `，其中后代 ${cost.childCpuSeconds.toFixed(3)}（取自${cost.childCpuFrom === "counter" ? "已回收子进程计数器" : "采样到的后代"}）`
             : "";
+    if (calibration === null) {
+        return (
+            `统一计分(Beta): ${cost.cu.toFixed(3)} CU = 1.0×${cost.cpuSeconds.toFixed(3)} 核·秒` +
+            ` + 1.0×${cost.gbSeconds.toFixed(3)} GB·秒（CPU 与内存 1:1）` +
+            `（内存项占 ${cost.cu > 0 ? ((cost.memoryCu / cost.cu) * 100).toFixed(0) : "0"}%${child}；` +
+            `尾部补齐 ${cost.tailAppliedMs.toFixed(0)}ms）`
+        );
+    }
+    const scale = cost.cpuScale ?? calibration.cpuScale;
+    const standard = cost.standardCpuSeconds ?? cost.cpuSeconds * scale;
+    const raw = cost.rawCu ?? cost.cu;
     return (
-        `统一计分(Beta): ${cost.cu.toFixed(3)} CU = 1.0×${cost.cpuSeconds.toFixed(3)} 核·秒` +
-        ` + 1.0×${cost.gbSeconds.toFixed(3)} GB·秒（CPU 与内存 1:1）` +
-        `（内存项占 ${cost.cu > 0 ? ((cost.memoryCu / cost.cu) * 100).toFixed(0) : "0"}%${child}；` +
+        `统一计分(Beta·CPU 已校准): ${cost.cu.toFixed(3)} CU = 1.0×${standard.toFixed(3)} ` +
+        `项目标准 CPU 单位·秒（CPU 项已折算，非真实参考机器）` +
+        ` + 1.0×${cost.gbSeconds.toFixed(3)} GB·秒（内存项不折算）；` +
+        `原始 ${raw.toFixed(3)} CU = 1.0×${cost.cpuSeconds.toFixed(3)} 本机核·秒 + ` +
+        `1.0×${cost.gbSeconds.toFixed(3)} GB·秒` +
+        `（cpuScale ${formatCpuScale(scale)} = ${calibration.cpuScaleValue} / ${calibration.baselineMips}，` +
+        `7-Zip ${calibration.toolVersion}${child}；内存项占 ${cost.cu > 0 ? ((cost.memoryCu / cost.cu) * 100).toFixed(0) : "0"}%；` +
         `尾部补齐 ${cost.tailAppliedMs.toFixed(0)}ms）`
+    );
+}
+
+/** 校准那一行（人读）：写明这次用的是哪把尺子、量于何时、有没有 warning。 */
+function calibrationLine(calibration: RunMetaCpuCalibration | null): string {
+    if (calibration === null) return "CPU 校准: 未校准（CU 里的核·秒是本机秒，不折算）";
+    const warnings =
+        calibration.warningCount > 0 ? `，⚠ ${calibration.warningCount} 条 warning（见校准 JSON）` : "";
+    return (
+        `CPU 校准: cpuScale ${formatCpuScale(calibration.cpuScale)}（乘进 CPU 项）· ` +
+        `7-Zip ${calibration.toolVersion} · ` +
+        `测于 ${calibration.measuredAt} · ${calibration.statistic.repeats} 轮 · ` +
+        `二进制 ${calibration.binary.realPath}${warnings}`
     );
 }
 
@@ -486,6 +543,22 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
     const metaPath = join(runDir, "run.json");
     const statusUrl = `http://127.0.0.1:${config.port}/__mock/status`;
 
+    // CPU 校准（可选）：**必须在起进程之前加载并核对宿主**——拿错机器的尺子去量这次运行，
+    // 出来的 CU 是错的，而错的方向看不出来（只是个更大的数）。所以这里直接抛（与「PATH 里
+    // 找不到 peri」同类：起跑前的配置错误不写 run.json、也不白跑一轮）。
+    let cpuCalibration: RunMetaCpuCalibration | null = null;
+    if (config.cpuCalibrationPath !== null) {
+        const calibration = loadCalibration(config.cpuCalibrationPath);
+        const mismatches = hostMismatches(calibration.host, hostSnapshot());
+        if (mismatches.length > 0) {
+            throw new Error(
+                `校准文件与当前机器不符（${config.cpuCalibrationPath}）: ${mismatches.join("；")}。` +
+                    "校准值只在量它的那台机器上成立——要换机器就重跑 bun run cpu:calibrate",
+            );
+        }
+        cpuCalibration = { ...calibrationRef(calibration), calibrationHost: calibration.host };
+    }
+
     let perfBuffer: string[] = [];
     let t0 = clock();
     const flushPerf = (): void => {
@@ -582,6 +655,7 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         summarySource: null,
         cost: null,
         peaks: null,
+        cpuCalibration,
         exit: null,
         artifacts: null,
     };
@@ -872,14 +946,19 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         meta.summarySource = "runtime";
         // 统一计分：末拍与 harness 退出之间还有约一个采样间隔的账没记，用实测空档补上
         // （`harnessExitEpoch` 是 harness 真退出的时刻，末拍是最后一次成功读数）。
+        // `cpuScale` 由校准给出（不校准就是 1）：它**只乘 CPU 项**，内存项永远是本机的 GB·秒。
         const lastSampleTs =
             samples.length > 0 ? (samples[samples.length - 1] as ProcessSample).ts : null;
         const tailMs =
             lastSampleTs !== null && harnessExitEpoch !== null
                 ? Math.max(0, harnessExitEpoch - lastSampleTs)
                 : 0;
-        meta.cost = resourceCost(samples, { tailMs });
+        meta.cost = resourceCost(samples, {
+            tailMs,
+            cpuScale: cpuCalibration?.cpuScale ?? 1,
+        });
         // 峰值是另一码事：它是最大值，与时长、尾部空档都无关，直接用原始采样点。
+        // 峰值也不折算：MB 与 % 是绝对量，本来就能横比。
         meta.peaks = resourcePeaks(samples);
         perfBuffer.push("", "=== 摘要 ===", ...summaryLines(summary, config));
         perfBuffer.push(
@@ -890,7 +969,8 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
             `mock 游标: index=${finalStatus?.index ?? "?"} / ${finalStatus?.size ?? "?"}`,
             `端到端时长: ${(harnessElapsedMs / 1000).toFixed(1)}s（harness 启动 → 退出；` +
                 `采样窗口 ${(summary.durationMs / 1000).toFixed(1)}s）`,
-            costLine(meta.cost),
+            costLine(meta.cost, cpuCalibration),
+            calibrationLine(cpuCalibration),
             ...peakLine(meta.peaks),
             ...segmentLines(finalStatus, harnessStartEpoch, harnessExitEpoch),
             `产物: ${runDir}（run.json · perf.log · samples.csv · harness.log · mock.log）`,
@@ -900,7 +980,8 @@ export async function runPerf(config: PerfConfig, deps: RunDeps = {}): Promise<n
         for (const line of summaryLines(summary, config)) stdout(`[perf] ${line}`);
         stdout(`[perf] mock 请求数: ${requests} · 产物: ${runDir}`);
         stdout(`[perf] 端到端时长: ${(harnessElapsedMs / 1000).toFixed(1)}s`);
-        stdout(`[perf] ${costLine(meta.cost)}`);
+        stdout(`[perf] ${costLine(meta.cost, cpuCalibration)}`);
+        stdout(`[perf] ${calibrationLine(cpuCalibration)}`);
         for (const line of peakLine(meta.peaks)) {
             stdout(`[perf] ${line}`);
         }

@@ -2,9 +2,11 @@ import { describe, expect, it } from "bun:test";
 import type { ProcessSample } from "./sampler";
 import {
     CU_COEFFICIENTS,
+    formatCpuScale,
     relativeScores,
     resourceCost,
     resourcePeaks,
+    scoreFormula,
     segmentCosts,
 } from "./score";
 
@@ -230,5 +232,64 @@ describe("relativeScores：百分制", () => {
     it("全部为 0 时全是 0 分，不产生 NaN", () => {
         const scores = relativeScores([{ id: "a", cu: 0 }]);
         expect(scores.get("a")).toBe(0);
+    });
+});
+
+/**
+ * 文案回归：这两条都是**曾经写错**的（写错了会把人引到相反的结论上），所以在**生成出来的字符串**上钉住。
+ *
+ * 1. 「折算不改变名次」是**错的**：只有 CPU 项乘了 scale、内存项不变，两项量纲不同，
+ *    排序会变（实测能翻转：CPU 重的被顶下去）。
+ * 2. 不能说「折成某台**参考机器**的秒」：baseline 1000 是本项目自定的单位，
+ *    没有任何一台真实参考机器被测量过。
+ */
+describe("公式文案：不许出现错误结论", () => {
+    const calibration = {
+        cpuScale: 9.386899999999999,
+        baselineMips: 1000,
+        cpuScaleValue: 9386.9,
+        toolVersion: "26.01",
+        measuredAt: "2026-09-22T04:20:31.722Z",
+    };
+    const words = (formula: ReturnType<typeof scoreFormula>): string => JSON.stringify(formula);
+
+    it("没有任何一句声称「名次不变 / 排序不变 / 系数约掉」", () => {
+        for (const formula of [scoreFormula(), scoreFormula(calibration)]) {
+            const text = words(formula);
+            expect(text).not.toContain("名次与未折算一致");
+            expect(text).not.toContain("归一化系数在批内约掉");
+            expect(text).not.toContain("不改变名次");
+            expect(text).not.toContain("排序不变");
+            expect(text).not.toContain("ranking is unchanged");
+        }
+    });
+
+    it("明确说出「只有 CPU 项折算、名次可能不同」", () => {
+        const lines = scoreFormula(calibration).lines.join("\n");
+        expect(lines).toContain("名次与未折算时可能不同");
+        const disclaimers = scoreFormula(calibration).deviations.join("\n");
+        expect(disclaimers).toContain("raw and rescaled rankings can differ");
+    });
+
+    it("不声称「某台参考机器」：只说项目标准 CPU 单位", () => {
+        for (const formula of [scoreFormula(), scoreFormula(calibration)]) {
+            const text = words(formula);
+            expect(text).not.toContain("标准机");
+            // 「no real reference machine was measured」是允许的（它正是那句否定），
+            // 但绝不能出现「折成参考机器的秒」这种肯定说法
+            expect(text).not.toContain("reference machine seconds");
+            expect(text).not.toContain("reference-machine seconds");
+            expect(text).not.toContain("scaled to the reference machine");
+        }
+        expect(words(scoreFormula(calibration))).toContain("no real reference machine was measured");
+    });
+
+    it("cpuScale 显示时缩到 4 位小数（计算仍用全精度）", () => {
+        expect(formatCpuScale(9.386899999999999)).toBe("9.3869");
+        expect(formatCpuScale(1)).toBe("1");
+        expect(formatCpuScale(0.987654321)).toBe("0.9877");
+        // 只格式化，不改数值：计算用的还是原值
+        expect(scoreFormula(calibration).calibration?.cpuScale).toBe(9.386899999999999);
+        expect(scoreFormula(calibration).expression).toContain("9.3869");
     });
 });

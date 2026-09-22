@@ -17,6 +17,7 @@
 
 import { renameSync, writeFileSync } from "node:fs";
 import { cpus, hostname, loadavg, platform, release, totalmem } from "node:os";
+import type { CalibrationHost } from "./calibrate";
 import type { ResourceCost, ResourcePeaks } from "./score";
 
 /** schema 版本：字段有破坏性变化时 +1（读取端据此判断能不能读）。 */
@@ -44,6 +45,43 @@ export interface RunMetaHost {
     /** `os.loadavg()` 是 1/5/15 分钟均值（macOS 上不是瞬时值），跨机器比读数时要说清口径。 */
     loadAvgStart: [number, number, number];
     loadAvgEnd: [number, number, number] | null;
+}
+
+/**
+ * 这次运行用的 CPU 校准摘要（口径见 calibrate.ts）。
+ *
+ * 存的是**摘要**而不是整份校准 JSON：run.json 要能单独拷走，而折算只需要「乘多少」这一个数
+ * 加它的身份（哪把尺子）。整份 JSON（含逐轮原始读数与日志 sha256）留在 `file` 指向的目录里，
+ * 要复核再去读——`file` 为空串表示这次没记录出处（老产物），读取端按「来源不明」处理。
+ */
+export interface RunMetaCpuCalibration {
+    method: string;
+    /** 校准 JSON 所在目录（绝对路径）或文件；"" = 未记录。 */
+    file: string;
+    measuredAt: string;
+    /** 乘进 core·秒的系数（`cpuScale = cpuScaleValue / baselineMips`）。 */
+    cpuScale: number;
+    baselineMips: number;
+    cpuScaleValue: number;
+    statistic: { metric: string; repeats: number };
+    binary: { path: string; realPath: string; sha256: string };
+    toolVersion: string;
+    /** 口径口令（binary hash + 版本 + 参数 + baseline + 重复数 + 线程数）。 */
+    configSignature: string;
+    warningCount: number;
+    /**
+     * 单线程那一路 Rating 的变异系数（%）。它说的是「这把尺子量得稳不稳」——
+     * 超过阈值时校准 JSON 里会带 warning，页面要能显示出来。
+     * 可选：2026-09-22 之前写下的 fixture / 手写的摘要没有它。
+     */
+    singleThreadCvPercent?: number;
+    /**
+     * 整机那一路的**实测**吞吐（`-mmt<threads>` 的原始 Rating 均值 / baseline）。
+     * 它是观察值，**不是**「单线程 × 核数」。可选，理由同上。
+     */
+    machine?: { threads: number; standardUnitsThroughput: number };
+    /** 校准时那台机器的快照：**用它核对「这次运行是不是在这台机器上跑的」**。 */
+    calibrationHost: CalibrationHost;
 }
 
 export interface RunMeta {
@@ -132,6 +170,15 @@ export interface RunMeta {
     cost: ResourceCost | null;
     /** 压力口径：整个窗口的峰值（RSS / CPU），不折算成分数。2026-09-19 追加。 */
     peaks: ResourcePeaks | null;
+    /**
+     * 这次运行用的 CPU 校准（`--cpu-calibration` 给的那一份；没给就是 null = 未校准，
+     * CU 里的核·秒保持本机的秒）。**校准不改 CU 的 1:1 系数**，只把核·秒折成项目标准 CPU 单位
+     * （本项目自定单位，无真实参考机器；内存项仍是本机 GB·秒）。
+     *
+     * 可选是为了兼容 2026-09-22 之前写下的 fixture / 老产物：那时候没有这个字段，
+     * 读取端把「缺失」与「null」都当未校准。写入端一律写 null，不缺键。
+     */
+    cpuCalibration?: RunMetaCpuCalibration | null;
     exit: { code: number | null; signal: string | null } | null;
     artifacts: Record<"perf" | "samples" | "harness" | "mock", { file: string; bytes: number } | null> | null;
 }

@@ -97,6 +97,11 @@ jobs:
       - name: 依赖
         run: bun install --frozen-lockfile
 
+      - name: 单元测试与类型检查
+        run: |
+          bun test
+          bun run typecheck
+
       # 只发布的那一趟靠它拿数据；跑压测的那一趟拿到的会被新结果覆盖。
       - name: 取上一次的结果
         uses: actions/cache/restore@v4

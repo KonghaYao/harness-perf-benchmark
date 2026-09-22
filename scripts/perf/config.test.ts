@@ -108,6 +108,21 @@ describe("loadPerfConfig", () => {
         expect(config.periArgs).toEqual(["--db-path", "/tmp/p.db", "/tmp/extra"]);
     });
 
+    it("--cpu-calibration：相对路径按 cwd 解析；不给就是不校准（没有隐式默认）", () => {
+        // 没有隐式默认：不给就不校准，绝不自动去找「最近一份校准文件」
+        expect(loadPerfConfig(argvWithScript(), REPO_ROOT).cpuCalibrationPath).toBeNull();
+        expect(loadPerfConfig(argvWithScript("--cpu-calibration", "  "), REPO_ROOT).cpuCalibrationPath).toBeNull();
+        expect(
+            loadPerfConfig(
+                argvWithScript("--cpu-calibration", "data/calibration/20260922-130000/calibration.json"),
+                REPO_ROOT,
+            ).cpuCalibrationPath,
+        ).toBe(resolve(REPO_ROOT, "data/calibration/20260922-130000/calibration.json"));
+        expect(
+            loadPerfConfig(argvWithScript("--cpu-calibration=cal.json"), "/tmp/work").cpuCalibrationPath,
+        ).toBe("/tmp/work/cal.json");
+    });
+
     it("非法取值给出可定位的错误", () => {
         expect(() => loadPerfConfig(argvWithScript("--interval-ms", "0"), REPO_ROOT)).toThrow(
             /interval-ms/,
