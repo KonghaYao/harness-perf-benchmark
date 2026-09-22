@@ -51,7 +51,7 @@ try {
   const explicitBin = argv.some((arg) => arg === '--peri' || arg.startsWith('--peri='));
   const qwenBin = explicitBin ? config.periPath : Bun.which('qwen');
   if (qwenBin === null) {
-    throw new Error('PATH 里找不到 qwen，可 npm i -g @qwen-code/qwen-code@0.24.3，或显式传 --peri <path>');
+    throw new Error('PATH 里找不到 qwen，可 npm i -g @qwen-code/qwen-code，或显式传 --peri <path>');
   }
 
   process.exitCode = await runPerf(config, {

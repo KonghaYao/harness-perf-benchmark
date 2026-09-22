@@ -193,7 +193,7 @@ jobs:
             @minimax-ai/code \
             @opencode/cli \
             cline \
-            @qwen-code/qwen-code@0.24.3
+            @qwen-code/qwen-code
 
       # agy 只有官方一个安装脚本：它查一份平台清单（darwin_arm64 等）→ 下载约 180MB 的
       # 单文件二进制 → 校验 SHA-512 → 落到 ~/.local/bin/agy。脚本自己不改 PATH，所以下面

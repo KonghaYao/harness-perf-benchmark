@@ -96,7 +96,7 @@ row on the same footing.
 | Hermes Agent (`hermes`) | [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) | OpenAI Chat Completions | Isolated `HERMES_HOME` and generated provider config |
 | Cline (`cline`) | [cline/cline](https://github.com/cline/cline) | OpenAI Chat Completions | Isolated `--config` / `--data-dir` / `--hooks-dir` directories and a generated provider file |
 | Kimi Code (`kimi`) | [kimi.com/code](https://www.kimi.com/code/) | OpenAI Chat Completions | Isolated `KIMI_CODE_HOME`, generated `config.toml` provider (`type = "openai"`), `-p` headless mode |
-| [Qwen Code](https://github.com/QwenLM/qwen-code) (`qwen`) | 0.24.3 | OpenAI Chat Completions | Isolated `HOME` / `QWEN_HOME` / XDG directories, one-shot headless mode with `--bare --safe-mode` |
+| [Qwen Code](https://github.com/QwenLM/qwen-code) (`qwen`) | latest npm release | OpenAI Chat Completions | Isolated `HOME` / `QWEN_HOME` / XDG directories, one-shot headless mode with `--bare --safe-mode` |
 
 Each harness runs in its own playground sandbox. The mock protocol adapter and tool schema match the harness under test; this avoids treating unsupported tool names or protocol mismatches as performance data. Credentials are placeholders — the mock does not validate them, so no real key is ever involved.
 

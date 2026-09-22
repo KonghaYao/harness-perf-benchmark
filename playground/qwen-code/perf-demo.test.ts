@@ -25,7 +25,7 @@ describe('Qwen Code 压测入口', () => {
     const errors = await new Response(result.stderr).text();
     expect(await result.exited).toBe(1);
     expect(errors).toContain('PATH 里找不到 qwen');
-    expect(errors).toContain('@qwen-code/qwen-code@0.24.3');
+    expect(errors).toContain('@qwen-code/qwen-code');
   });
 
   it('用规范展示名汇总 Qwen 结果', () => {
