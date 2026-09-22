@@ -153,6 +153,29 @@
                 font-variant-numeric: tabular-nums;
                 white-space: pre;
             }
+            /* The calibration table: raw vs scaled numbers. Same hairline-only separation as the
+               rest of the page, monospace + tabular-nums so the columns line up. */
+            .calib {
+                margin: 0 0 22px;
+                border-collapse: collapse;
+                width: 100%;
+                font: 11.5px/1.7 var(--mono);
+                font-variant-numeric: tabular-nums;
+            }
+            .calib th,
+            .calib td {
+                padding: 5px 10px 5px 0;
+                border-bottom: 1px solid var(--rule);
+                text-align: right;
+            }
+            .calib th:first-child,
+            .calib td:first-child {
+                text-align: left;
+            }
+            .calib th {
+                color: var(--faint);
+                font-weight: 500;
+            }
             /* Butterfly: two charts side by side with the names between them (each chart draws
                its names outside its own axis), so there is no card border here — the bars sit
                straight on the paper, with only the hairline above the chart. */
@@ -357,7 +380,9 @@
                 <figure class="bar-box bar-box-wide">
                     <figcaption>
                         Unified score CU <span class="beta">Beta</span>
-                        <span class="unit">core·s + GB·s · whole run · lower is leaner</span>
+                        <span class="unit" id="cu-unit"
+                            >core·s + GB·s · whole run · lower is leaner</span
+                        >
                     </figcaption>
                     <div class="bar-canvas"><canvas id="bar-cu"></canvas></div>
                 </figure>
@@ -432,6 +457,22 @@
                 </p>
                 <div class="formula" id="score-formula"></div>
                 <p class="hint" id="score-source"></p>
+                <!-- Raw vs scaled, one row per harness. Hidden when the payload carries no
+                     calibration at all (then CU is already in raw units and this table would just
+                     repeat the bars). Every number here is printed from the payload. -->
+                <table class="calib" id="calibration-table" hidden>
+                    <thead>
+                        <tr>
+                            <th>harness</th>
+                            <th>raw CU<br />(local core·s + GB·s)</th>
+                            <th>standard core·s<br />(× cpuScale)</th>
+                            <th>GB·s<br />(not scaled)</th>
+                            <th>cpuScale</th>
+                            <th>CU<br />(scaled)</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
             </section>
 
             <section>
@@ -537,6 +578,13 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 // Indigo sits between opencode's brighter blue and pi's purple without
                 // colliding with either, and stays legible on white.
                 kimi: "#4f46e5",
+                // Ink: every hue band is spoken for by now (rose / blue x2 / orange / green /
+                // purple / magenta / cyan / olive / copper / graphite / amber / indigo), and ccode
+                // has no brand mark to inherit — it is a terminal program. The near-black reads as
+                // the plainest series on the chart, sits clearly apart from hermes's mid graphite,
+                // and stays legible on white. There is no icon in logos/ for it either, so the
+                // legend shows this swatch (the same fallback every harness without an icon gets).
+                ccode: "#111827",
             };
             const PALETTE = Object.values(COLORS);
 
@@ -602,6 +650,7 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 // script and is not open source, so this points at the official product page
                 // (the docs the config.toml schema was verified against live under it).
                 kimi: "https://www.kimi.com/code/",
+                ccode: "https://github.com/MoyaMryia/ccode",
             };
 
             // Legend icon objects: Chart.js's pointStyle wants an **already-loaded Image**, so they are
@@ -973,18 +1022,54 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                     return;
                 }
 
-                // The computation, printed from the payload's own scoreFormula block. Four lines:
-                // what CU is, where it comes from (an integral over the whole run, not a mean), how
-                // it turns into the score, and what it covers. The lines are not padded into columns
-                // — the first one comes verbatim from the generator, and re-typing it here is how
-                // the page and the numbers start to disagree.
+                // The computation, printed from the payload's own scoreFormula block. The lines come
+                // verbatim from the generator (scripts/perf/score.ts builds them), so re-typing them
+                // here is not an option: that is how the page and the numbers start to disagree.
+                // With CPU calibration in play there are extra lines (the scale and what it applies
+                // to, 中文那两行由 payload 给出英文口径说明).
                 const formula = payload.scoreFormula;
-                formulaBox.textContent = [
-                    formula.expression,
-                    "core·s = ∫ tree CPU% / 100 dt     GB·s = ∫ RSS / 2^20 dt     (over the whole run)",
-                    formula.score,
-                    `scope: ${formula.scope}`,
-                ].join("\n");
+                const lines = Array.isArray(formula.lines)
+                    ? formula.lines
+                    : [
+                          formula.expression,
+                          "core·s = ∫ tree CPU% / 100 dt     GB·s = ∫ RSS / 2^20 dt     (over the whole run)",
+                          formula.score,
+                          `scope: ${formula.scope}`,
+                      ];
+                formulaBox.textContent = lines.join("\n");
+                // 口径说明与折算元信息一起印，方便对着算：公式来自 payload，页面不自己算。
+                const methodCalibration = payload.calibration;
+                if (methodCalibration !== undefined && methodCalibration.mode !== "none") {
+                    const scales = methodCalibration.scales ?? [];
+                    const distinct = [...new Set(scales.map((entry) => entry.cpuScale))];
+                    const host = methodCalibration.host;
+                    const machine = methodCalibration.machine;
+                    formulaBox.textContent +=
+                        "\n" +
+                        [
+                            `calibration: cpuScale ${
+                                distinct.length === 1
+                                    ? formatScale(distinct[0])
+                                    : "per run (see each bar)"
+                            } = 单线程 R/U 均值 / ${methodCalibration.baselineMips}（乘进 core·s）——` +
+                                "只乘 CPU 项，内存项不变，**名次可能与未折算时不同**",
+                            `          7-Zip ${methodCalibration.toolVersion ?? "?"} · 测于 ${
+                                methodCalibration.measuredAt || "?"
+                            } · ${methodCalibration.retrospective ? "事后套用（本地预览，未重跑）" : "产物自带口径"}`,
+                            host === null || host === undefined
+                                ? "          量尺子的机器: 未记录"
+                                : `          量尺子的机器: ${host.hostname} · ${host.cpuModel} · ${host.cpus} cpus (${host.platform}/${host.arch})`,
+                            `          单线程 CV ${
+                                methodCalibration.singleThreadCvPercent === null ||
+                                methodCalibration.singleThreadCvPercent === undefined
+                                    ? "未记录"
+                                    : `${methodCalibration.singleThreadCvPercent.toFixed(2)}%`
+                            }（这一份尺子量得稳不稳；> 5% 时校准 JSON 里带 warning）`,
+                            machine === null || machine === undefined
+                                ? "          整机实测等效: 未记录"
+                                : `          整机实测等效: -mmt${machine.threads} 原始 Rating 均值 / ${methodCalibration.baselineMips} = ${machine.standardUnitsThroughput.toFixed(3)}（实测观察值，不是「单线程 × 核数」）`,
+                        ].join("\n");
+                }
                 // Small print: where the shape of the formula comes from, and that the coefficients
                 // are this project's choice (someone who wants to argue about them should find them
                 // named, not hidden).
@@ -996,7 +1081,7 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                     warnings.push(
                         "These runs were sampled without a child_cpu_pct column (the process-tree " +
                             "view reads low): " +
-                            noChild.map((run) => run.name).join(", ") +
+                            noChild.map((run) => escapeHtml(run.name)).join(", ") +
                             " — re-run a batch and it is there",
                     );
                 }
@@ -1005,7 +1090,7 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                     warnings.push(
                         "These runs never recorded when the harness exited, so the last sample → exit " +
                             "gap can't be filled in and CU is a lower bound: " +
-                            noTail.map((run) => run.name).join(", "),
+                            noTail.map((run) => escapeHtml(run.name)).join(", "),
                     );
                 }
                 // **A chart must not mix batches.** The score divides by the smallest CU *in a batch*,
@@ -1022,7 +1107,7 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 for (const run of payload.runs) {
                     if (EXCLUDED.has(run.id)) continue;
                     const key = run.label ?? "(no --label)";
-                    byLabel.set(key, [...(byLabel.get(key) ?? []), run.name]);
+                    byLabel.set(key, [...(byLabel.get(key) ?? []), escapeHtml(run.name)]);
                 }
                 if (byLabel.size > 1) {
                     const sorted = [...byLabel.entries()].sort((a, b) => b[1].length - a[1].length);
@@ -1031,11 +1116,54 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                         "This chart mixes runs from different batches: " +
                             sorted
                                 .slice(1)
-                                .map(([key, names]) => `${names.join(", ")} (--label ${key})`)
+                                .map(([key, names]) => `${names.join(", ")} (--label ${escapeHtml(key)})`)
                                 .join(", ") +
-                            ` did not run with the other ${batchNames.length} (--label ${batchKey}). ` +
+                            ` did not run with the other ${batchNames.length} (--label ${escapeHtml(batchKey)}). ` +
                             "Scores are relative to the smallest CU inside one batch, so those runs can " +
                             "only be read as raw CU — re-run them together under one --label to rank them",
+                    );
+                }
+                // **Calibration must not be mixed silently either.** When some runs carry a CPU
+                // calibration and others do not (or the scales come from different methods), the CU
+                // bars are in different units: they still order by size, but the order is not a
+                // ranking. The generator marks that in calibration.blocked and the page says so
+                // instead of pretending. 用户另一条明确要求：中文说清「这是历史重算/估算口径，
+                // 不保证跨机器绝对一致」。
+                const calibration = payload.calibration;
+                if (calibration?.blocked === true) {
+                    warnings.push(
+                        "This batch mixes CPU-calibration units (some runs scaled, some not, or " +
+                            "different 7-Zip methods): CU is not a like-for-like ranking here — " +
+                            "read each bar with its own scale, and re-run the batch under one " +
+                            "calibration to rank (" +
+                            (calibration.blockedReasons ?? []).map(escapeHtml).join("; ") +
+                            ")。这是历史重算口径，不是按新口径重跑的读数",
+                    );
+                }
+                if (calibration?.retrospective === true) {
+                    warnings.push(
+                        "The CPU scale was applied afterwards from a calibration file (local " +
+                            "preview): the runs were not re-measured — only the CPU term is " +
+                            "converted into this project's standard CPU units (a project-defined " +
+                            "unit; no real reference machine was measured). 内存项仍是本机实测的 " +
+                            "GB·秒，两项量纲不同，所以名次可能与未折算时不同；要正式发榜需整批重跑",
+                    );
+                }
+                const calibratedRuns = payload.runs.filter(
+                    (run) => run.score.calibration !== undefined && run.score.calibration !== null,
+                );
+                if (calibration?.applied === true && calibratedRuns.length > 0) {
+                    const scales = new Set(calibratedRuns.map((run) => run.score.cpuScale));
+                    warnings.push(
+                        `CPU term rescaled into this project's standard CPU units (single-thread 7-Zip ${calibration.toolVersion}, ` +
+                            `baseline ${calibration.baselineMips} MIPS per CPU-second, ${
+                                scales.size === 1
+                                    ? `cpuScale ${[...scales][0]}`
+                                    : `${scales.size} per-run scales — see each bar`
+                            }): ` +
+                            "the bars are core·s (project-standard CPU units) + GB·s (locally measured, " +
+                            "not rescaled) — 两项量纲不同，名次可能与未折算时不同。" +
+                            "逐家的原始 CU 与折算系数在下方口径说明里",
                     );
                 }
                 // This line is reserved for "there is a trap in this batch" warnings: normally it takes
@@ -1044,6 +1172,35 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 note.innerHTML =
                     warnings.length > 0 ? `<span class="warn">⚠ ${warnings.join("; ")}</span>` : "";
                 note.hidden = warnings.length === 0;
+
+                // 每个 harness 的原始 / 折算对照（人读）：rawCu 是未折算的账，standardCpuSeconds 是
+                // 折算后的核·秒。放在公式下面，页面自己**不算**任何一项，只显示 payload 里的数。
+                const calibrationTable = document.getElementById("calibration-table");
+                if (calibrationTable !== null) {
+                    if (calibration === undefined || calibration.mode === "none") {
+                        calibrationTable.hidden = true;
+                    } else {
+                        const rows = payload.runs
+                            .map((run) => {
+                                const scale = run.score.cpuScale;
+                                // 名单与数字都从 payload 来：名字走 escapeHtml（它不是我们写的），
+                                // 数字走 toFixed（`Number.prototype.toFixed` 的结果只含数字与小数点）。
+                                const label =
+                                    escapeHtml(run.name) + (EXCLUDED.has(run.id) ? " (left the line-up)" : "");
+                                return (
+                                    `<tr><td>${label}</td>` +
+                                    `<td>${run.score.rawCu.toFixed(3)}</td>` +
+                                    `<td>${run.score.standardCpuSeconds.toFixed(3)}</td>` +
+                                    `<td>${run.score.gbSeconds.toFixed(3)}</td>` +
+                                    `<td>${scale === 1 ? "—" : formatScale(scale)}</td>` +
+                                    `<td>${run.score.cu.toFixed(3)}</td></tr>`
+                                );
+                            })
+                            .join("");
+                        calibrationTable.querySelector("tbody").innerHTML = rows;
+                        calibrationTable.hidden = false;
+                    }
+                }
             }
 
             /**
@@ -1172,6 +1329,12 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 const colors = new Map();
                 payload.runs.forEach((run, order) => colors.set(run.id, colorOf(run, order)));
 
+                // **混合折算口径时，CU 不是名次。** `calibration.blocked` 说明这一批里有的 run
+                // 折算了、有的没有（或口径不同）：柱子的长度仍然各自成立，但「谁更省」这句话在
+                // 这批数据上不成立。所以 CU 那一张图**不按值排序、也不给前两名实心强调**——
+                // 按名字排、所有柱子同样处理，页面不暗示任何名次。
+                // 峰值那两张图不受影响（峰值不折算，本来就是绝对量）。
+                const calibrationBlocked = payload.calibration?.blocked === true;
                 const specs = [
                     { id: "bar-cu", value: (run) => run.score.cu, digits: 3, unit: " CU" },
                     // The mirrored one (left half): reversed value axis + y ticks on the right, which puts
@@ -1190,6 +1353,8 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
 
                 barCharts = specs.map((spec) => {
                     const mirrored = spec.mirror === true;
+                    // 折算口径混合时 CU 图不给名次（见上面 calibrationBlocked 的注释）
+                    const noRanking = spec.id === "bar-cu" && calibrationBlocked;
                     const sorted = scored
                         .map((run) => ({
                             run,
@@ -1200,14 +1365,18 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                         }))
                         .filter((entry) => Number.isFinite(entry.value))
                         // This chart's own ranking: the smaller the metric, the higher up — first place
-                        // sits at the top
-                        .sort((a, b) => a.value - b.value);
+                        // sits at the top. When the CU units are mixed there is no ranking to draw, so
+                        // the rows fall back to the names.
+                        .sort((a, b) =>
+                            noRanking ? a.label.localeCompare(b.label) : a.value - b.value,
+                        );
                     // Only harnesses still in the line-up take a rank: an excluded one (if the data still
                     // carries it) never takes a slot and is always dimmed.
                     let rank = 0;
                     const entries = sorted.map((entry) => {
                         const excluded = EXCLUDED.has(entry.run.id);
-                        const dim = excluded || rank >= 2;
+                        // 没有名次可言时（noRanking）也不做「前两名实心」的强调：所有柱子一样重
+                        const dim = excluded || (!noRanking && rank >= 2);
                         if (!excluded) rank += 1;
                         return {
                             ...entry,
@@ -1332,7 +1501,39 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
             function renderAll() {
                 renderChart();
                 renderMethod();
+                renderCuUnit();
                 renderBars();
+            }
+
+            /**
+             * The CU chart's caption: when the payload carries CPU calibration, CU is *not* plain
+             * core·s + GB·s any more — the CPU part is expressed in this project's standard CPU
+             * units (a unit this project defines; no real reference machine was measured) — and
+             * the caption has to say so, or the headline number is explained by the wrong formula.
+             * 每个 harness 具体用多大的系数见下面的对照表。
+             */
+            function renderCuUnit() {
+                const unit = document.getElementById("cu-unit");
+                if (unit === null) return;
+                const calibration = payload.calibration;
+                if (calibration === undefined || calibration.mode === "none") return;
+                const scales = new Set(
+                    payload.runs
+                        .filter((run) => run.score !== undefined)
+                        .map((run) => run.score.cpuScale ?? 1),
+                );
+                const label =
+                    scales.size === 1
+                        ? `× cpuScale ${formatScale([...scales][0])}`
+                        : `${scales.size} per-run cpuScale`;
+                unit.textContent =
+                    `core·s${scales.size === 1 ? ` (${label})` : ""} in project-standard CPU units ` +
+                    `+ GB·s (local, not rescaled) · whole run · ` +
+                    // 混合口径时不说 "lower is leaner"：那正是这句不能成立的时候
+                    (calibration.blocked === true
+                        ? "values only — mixed units, not a ranking"
+                        : "lower is leaner") +
+                    (calibration.retrospective === true ? " · 历史重算（本地预览）" : "");
             }
 
             function wireControls() {
@@ -1369,6 +1570,36 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                     // do not follow the smoothing window.
                     renderChart();
                 });
+            }
+
+            /**
+             * `cpuScale` 的显示形式：`9.386899999999999` → `9.3869`。
+             * 只格式化显示，不参与任何计算（浮点尾巴不是信息）。
+             */
+            function formatScale(value) {
+                return Number.isFinite(value) ? String(Number(value.toFixed(4))) : String(value);
+            }
+
+            /**
+             * Escape a dynamic string before it goes into innerHTML.
+             *
+             * Everything the page prints comes out of a data file that a *harness name*, a `--label`
+             * or a calibration path can carry arbitrary characters into — a chart must not turn a
+             * data file into markup (harness ids are validated on the write side, but the payload
+             * can be hand-edited or come from a fork). Text-only spots use textContent instead.
+             */
+            function escapeHtml(value) {
+                return String(value ?? "").replace(
+                    /[&<>"']/g,
+                    (char) =>
+                        ({
+                            "&": "&amp;",
+                            "<": "&lt;",
+                            ">": "&gt;",
+                            '"': "&quot;",
+                            "'": "&#39;",
+                        })[char],
+                );
             }
 
             function showError(title, why, command) {
@@ -1424,9 +1655,66 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
              */
             const DATA_CANDIDATES = ["data/perf-chart.json", "../data/perf-chart.json"];
 
+            /**
+             * `?data=<relative path>` — preview another payload without touching the published one.
+             * 用途：把校准后的载荷写到新文件（例如 data/perf-chart-calibrated.json）再用
+             * `?data=../data/perf-chart-calibrated.json` 打开，`data/perf-chart.json` 里的
+             * 未知字段（cu2 之类）一个字节都不动。
+             *
+             * Same-origin **relative** paths only: an absolute URL, a protocol-relative `//host/`
+             * or a `data:` URI is refused. 界面边界就是静态服务器的根（本仓库根）——`..` 由
+             * `new URL()` 在解析相对地址时折叠，越不出站点根；跨源在 `origin` 那一关就挡下了。
+             */
+            function resolveDataPath(raw, baseHref) {
+                const value = (raw ?? "").trim();
+                if (value === "") return null;
+                if (REFUSED_DATA_PATHS.some((pattern) => pattern.test(value))) return null;
+                let url;
+                try {
+                    url = new URL(value, baseHref);
+                } catch {
+                    return null;
+                }
+                const base = new URL(baseHref);
+                if (url.origin !== base.origin) return null;
+                const normalized = absolutePath(url.pathname);
+                if (!normalized.startsWith("/") || normalized === "/") return null;
+                return normalized + url.search;
+            }
+
+            /**
+             * 路径串归一化（`a//b/./c` → `/a/b/c`）。
+             *
+             * 它**不做**越界判定——那由 `new URL(value, baseHref)` 完成：浏览器解析相对地址时
+             * 就把 `..` 折叠掉了，而跨源在 `origin` 那一关就被拒（本站是静态服务，能取到的
+             * 就是仓库里的文件）。这里只把路径理整齐，免得 `a//b` 与 `a/b` 在缓存里算两份。
+             */
+            function absolutePath(pathname) {
+                const segments = [];
+                for (const segment of pathname.split("/")) {
+                    if (segment === "" || segment === "." || segment === "..") continue;
+                    segments.push(segment);
+                }
+                return `/${segments.join("/")}`;
+            }
+            /** 明确拒绝的形状：绝对 URL、协议相对、反斜杠、内嵌 scheme。 */
+            const REFUSED_DATA_PATHS = [
+                /^[a-z][a-z0-9+.-]*:/i, // http: data: javascript: file: …
+                /^\/\//, // //host/path（协议相对，等于跨源）
+                /\\/, // 反斜杠会被某些服务器当路径分隔符
+            ];
+
+            /** 这个页面自己相对站点根的位置（`?data=` 的相对路径按它解析）。 */
+            function dataBaseHref() {
+                const path = window.location.pathname;
+                return window.location.origin + path.replace(/[^/]*$/, "");
+            }
+
             async function loadPayload() {
+                const requested = resolveDataPath(new URLSearchParams(window.location.search).get("data"), dataBaseHref());
+                const candidates = requested === null ? DATA_CANDIDATES : [requested];
                 const failures = [];
-                for (const url of DATA_CANDIDATES) {
+                for (const url of candidates) {
                     try {
                         const response = await fetch(url, { cache: "no-store" });
                         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1454,14 +1742,22 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 try {
                     data = await loadPayload();
                 } catch (error) {
+                    const requested = new URLSearchParams(window.location.search).get("data");
                     showError(
                         "The data did not load",
-                        `Neither data file could be read (${error.message}): either it hasn't been ` +
-                            "generated yet, or the page was opened over file:// (fetch is blocked by CORS).",
+                        requested === null
+                            ? `Neither data file could be read (${error.message}): either it hasn't ` +
+                                  "been generated yet, or the page was opened over file:// (fetch is " +
+                                  "blocked by CORS)."
+                            : `?data=${requested} could not be read (${error.message}): the path has ` +
+                                  "to be relative to the site root (same origin; absolute or " +
+                                  "protocol-relative URLs are refused).",
                         "cd " +
                             "<repo root> && bun run scripts/perf/gen-chart-data.ts\n" +
                             "cd <repo root> && python3 -m http.server 8080\n" +
-                            "→ http://localhost:8080/docs/perf-chart.html",
+                            "→ http://localhost:8080/docs/perf-chart.html\n" +
+                            "→ …/docs/perf-chart.html?data=../data/perf-chart-calibrated.json" +
+                            "   # preview another payload, published data untouched",
                     );
                     return;
                 }
@@ -1469,8 +1765,17 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 // Two lines in the footer: which run stands for each harness (one curve per harness,
                 // so the page has to say which one it picked), and where the data came from.
                 document.getElementById("pick-rule").textContent = `${data.pickRule}.`;
+                const calibration = data.calibration;
+                const calibrationNote =
+                    calibration === undefined || calibration.mode === "none"
+                        ? ""
+                        : ` · CPU calibration ${
+                              calibration.retrospective === true ? "applied afterwards" : "as recorded"
+                          } (7-Zip ${calibration.toolVersion ?? "?"}` +
+                          (calibration.files?.length ? ` · ${calibration.files.join(", ")}` : "") +
+                          ")";
                 document.getElementById("data-meta").textContent =
-                    `Generated ${data.generatedAt} · artifacts ${data.sourceDir}`;
+                    `Generated ${data.generatedAt} · artifacts ${data.sourceDir}${calibrationNote}`;
                 document.getElementById("app").hidden = false;
                 // Wait for the legend icons before drawing the first version: Chart.js does not repaint
                 // by itself when an icon arrives late.

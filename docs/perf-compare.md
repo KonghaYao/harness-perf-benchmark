@@ -470,6 +470,36 @@ https://code.kimi.com/kimi-code/install.sh | bash` 装到 `~/.kimi-code/bin`）�
   这个形态。图表页现在**会画出它**（`gen-chart-data.ts` 默认收 `data/runs` 下最近的运行），跨批混画
   由页面自己兜着。只想看批次内排名就照旧用 `--exclude kimi` 生成数据。
 
+## ccode（`ccode-cli`）：已接入，Linux 批次读数
+
+`ccode-cli --write --auto-approve -p '<prompt>'` 走 OpenAI Chat Completions：provider 全走环境变量
+（`CCODE_API_BASE` 带 `/v1`、`CCODE_API_KEY` 假值、`CCODE_MODEL`），隔离靠 `CCODE_SESSION_DIR` 指向
+沙盒（默认落 `~/.ccode/sessions`）。`--write` 必给（默认工具集是只读的），`--auto-approve` 免掉
+headless 下无人可批的确认。工具是 `bash` + `{command}`，与 pi / mcode 同形。
+
+**消费规律：撞上限就停。** `--turns N` 映射成 ccode 的 `--max-turns N`；**demo 永远显式给这个
+flag**，调用方没给 `--turns` 时传 0（ccode 的「不限轮」）——省掉它会落回 ccode 自己的默认 50，100 轮
+的剧本只跑一半，而柱子照画、读 CU 看不出来（上游 CI 跑批不带 `--turns`，所以这条是必须的）。
+`--max-turns N` 配 N 轮剧本实测正好 N 条请求，尾部那条「任务结束」不发（3 轮冒烟 3 条、100 轮长剧本
+100 条）；不设上限时它跑到剧本尾部再退（= 轮数 + 1 条）；上限大于剧本轮数时同理（实测 50 轮剧本配
+`--max-turns 100` 收到 51 条）。
+
+**它是这一批里唯一快到采样分辨率边界的 harness。** 100 轮端到端 0.26s，10ms 采样只拿到 24 拍，
+启动段与收尾段都测不出来（分段 0.000 / 0.111 / 0.000 CU）。**所以这一行只看 CU，别看 CPU 峰值**：
+10ms 间隔下单个 tick 就是整格 100%，任何在采样窗口里干了活的运行都会顶到 99%，那是量化不是负载。
+CU 不受这个影响——它按累计 CPU 的差分积分（macOS 的 rusage 与 Linux 的 procfs 两条后端都是差分，
+不是「百分比 × 一次另测的间隔」），与峰值怎么取无关。
+
+读数（`--label 265k-linux`，3 次串行，Linux / Intel Core Ultra 7 265K / 10ms procfs / 进程树；
+表里是中位那次，3 次端到端都在 0.2~0.3s；CPU 峰值那一列对这个量级的运行没有意义，故不列）：
+
+| 运行 | 端到端 | 请求数 | CU | 核·秒 | GB·秒 | CPU 均值 | RSS 均值 / 峰值 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `20260922-003430` | 0.26s | 100 | **0.114** | 0.1132 | 0.0009 | 47.2% | 3.8MB / 4.4MB |
+
+同批 14 家里最低（第二名 peri 0.606、第三名 pi 1.417）。在这个量级上它更像「启动 + 100 次 HTTP
+往返 + 100 次 `sh -c`」的裸成本，而不是一个运行时的开销。
+
 ## 统一计分（**Beta**）：CPU 与内存 1:1
 
 > **状态：Beta（2026-09-19 起试行）**。系数是本项目定的、实现（逐拍积分 / 后代取大 / 尾部补齐）
@@ -597,6 +627,84 @@ CU 看**面积**，峰值看**最坏一刻**——机器的内存水位与规格
   偏移 96/104 与「单位是 Mach tick 不是纳秒」）；它与 `tree_cpu_pct`（进程表里看得见的后代）
   是两套互补的下界，**不能相加**，计分时取较大者。
 
+### CPU 校准：把「本机秒」折成「项目标准 CPU 单位秒」（2026-09-22 起可选启用）
+
+**为什么要有它**：CU 是 `1.0 × 核·秒 + 1.0 × GB·秒`，而「核·秒」记的是**本机的秒**。同一部剧本
+同一个 harness，在一台快机器上 0.6 核·秒、在慢机器上 4 核·秒——这个差额不是 harness 省或费，
+是机器快慢。上半年的所有批次都出自同一台机器（Apple Silicon 18 核），所以表里的 CU 只在
+**同机**可比，跨机器只能比结构与名次。这一条把那个缺口补上：**用固定版本的 7-Zip 内置基准量
+一把本机的尺子**，把核·秒折成**项目标准 CPU 单位**秒。
+
+> **这个单位是本项目自定的，没有一台真实参考机器被测量过。** baseline = 1000 是「1 标准单位·秒
+> = 1000 个 7-Zip normalized benchmark MIPS」这条**定义**，不是某台机器的实测值；所有文字都不说
+> 「本机一秒等于某台参考机器的几秒」，只说「等于多少个项目标准 CPU 单位秒」。7-Zip 的 Rating 本身
+> 是相对速度的估算，不是指令数。
+
+```
+cpuScale = mean(单线程 R/U) / 1000        ← 乘进 core·s，只乘 CPU 项
+标准 CPU 单位·秒 = 本机核·秒 × cpuScale
+CU（折算后）    = 1.0 × 标准 CPU 单位·秒 + 1.0 × GB·秒      内存项不折算（本机实测）
+```
+
+**折算会改变名次，别读成「只是换了个单位」**：只有 CPU 项乘了系数，内存项仍是本机 GB·秒——两项
+量纲不同，所以 `cu` 的排序与 `rawCu` 的排序**可能不同**（实测能翻转：CPU 重的 harness 会被顶下去，
+内存重、CPU 轻的会升上来）。页面上的 `score`（百分制）也是按折算后的 `cu` 算的，它只在同一口径的
+批次内可比。
+
+口径（写在 `scripts/perf/calibrate.ts` 的文件头，CLI 在 `scripts/perf/calibrate-cli.ts`，这里只是复述）：
+
+- **固定 7-Zip 26.01 + 固定参数 `b 1 -mmt1 -md25`**，只取输出里 `25:`（2^25 = 32MiB 字典）那一行
+  的四列（压缩 / 解压各一次 `Speed / Usage / R/U / Rating`）。换版本或换参数就是换了尺子，
+  校准 JSON 与读取端都认这两个字段（`tool.version` / `tool.args`），不认「差不多」。
+- **单线程那一路取 `R/U` 的算术平均**（`R/U` 是 7-Zip 按处理器频率归一化后的每秒百万指令数），
+  baseline 固定 **1000 benchmark MIPS per CPU-second**——**7-Zip 历史 normalized rating 的项目单位
+  （本项目自定，无真实参考机器），不是真实机器指令数，也不是 SPEC / 云商的 vCPU 数**。
+  浮点尾巴只影响显示：`cpuScale` 在日志与页面上按 4 位小数格式化（`9.386899999999999` → `9.3869`），
+  计算仍用全精度。
+- **重复 ≥3 次（默认 5），前 1 轮 warmup 不计入**，逐轮记均值 / 样本标准差 / CV；CV 超阈值
+  （单线程 5%、整机 10%）就出 warning——那一份 `cpuScale` 只是「量的时候那台机器」，不是稳定口径。
+- **另有 `-mmt<threads>` 一路的原始 Rating 均值 / 1000**，作为**整机吞吐标准单位**（默认线程数
+  =`availableParallelism()`）。它是**本次观察吞吐**，**不是**「单线程读数 × 逻辑核数」——后者是
+  假装的实测，工具里没有这条路径。
+- **方向是乘**：机器越快，同样的核·秒折出的标准单位秒越**多**。写成除法会让快机器显得更便宜，
+  恰好是反的（`scripts/perf/calibrate.test.ts` 有一条用例专门钉这个方向）。
+- 校准**不改 CU 的 1:1 系数**：CPU 与内存仍然逐秒同价，变的只是核·秒的单位
+  （本机秒 → 项目标准 CPU 单位秒）。
+
+**怎么用**：
+
+```sh
+bun run cpu:calibrate                                  # → data/calibration/<timestamp>/{calibration.json,*.log}
+bun run scripts/perf/run.ts --script … --cpu-calibration data/calibration/<timestamp>/calibration.json
+bun run scripts/perf/gen-chart-data.ts --cpu-calibration data/calibration/<timestamp>/calibration.json \
+    --out data/perf-chart-calibrated.json              # 另存新文件，不动已发布的 data/perf-chart.json
+# 预览：http://localhost:8080/docs/perf-chart.html?data=../data/perf-chart-calibrated.json
+```
+
+- **宿主核对是硬门槛**：校准值只在那台机器上成立，`run.ts`（开跑前）与 `gen-chart-data.ts`
+  （折算前）都会拿校准 JSON 里的宿主快照与产物的 `host` **逐项比对**（hostname / platform /
+  arch / cpuModel / cpus / totalMemBytes），对不上直接报错，**不静默换 scale**。老布局的产物没有
+  `host`，因此不能与显式校准一起用。
+- **口径必须一致**：有校准的那些运行，其 `method` / 工具版本 / 参数 / baseline / 重复数必须一致；
+  **不同机器各自的 scale 是允许的**（那正是折算的意义），但混了「有校准 / 无校准」或口径不一致时，
+  `gen-chart-data.ts` 默认**拒绝出图**（百分制分数只在同一单位里有意义），要看得显式加
+  `--allow-mixed-calibration`，payload 里会挂 `calibration.blocked`，页面据此不再给名次。
+- **产物里记的是摘要**：`run.json.cpuCalibration` 存 `cpuScale` / baseline / 原始值 / 重复数 /
+  二进制 hash 与口径口令；逐轮原始读数、日志 sha256、宿主全字段在**校准 JSON 本身**里
+  （`data/calibration/<ts>/`，含 warmup/single/machine 各轮原始输出），两者互相可复核。
+
+**这一节的历史读数是未计校准时的**（表里的 CU 都是本机秒）：上表那批运行产于 2026-09-19~21，
+那时还没有校准字段，页面与 `data/perf-chart.json` 里的 `cu` 就是 `rawCu`。把校准套到历史产物上
+（`gen-chart-data.ts --cpu-calibration`）得到的是**本地重算预览**，payload 里会标
+`calibration.retrospective = true` / `mode: "local-preview"`，页面上也写着「历史重算」——
+**原始 `run.json` / `samples.csv` 一概不动**，这是审计要求。
+
+**要正式发榜必须整批重跑**（用户已明确允许目前只看历史预览）：理由不是「数据脏」，而是三条口径
+事实上都变了——① `run.ts` 现在会把校准记进 `run.json`，产物自带口径；② **只有 CPU 项被折算、
+内存项不变，两项量纲不同，名次会变**（CPU 重的那家在折算后被顶到后面、内存重 CPU 轻的升上来）；
+③ 跨批次混画本来就被禁止（`--label`）。所以「按新口径发榜」= 同一台机器、同一个 `--label`、
+同一份校准，**整批重跑**，不能把历史产物与新产物拼在一张榜上。
+
 ## 逐家的收尾与辅助请求（本批次实测）
 
 | harness | 收尾段 | 收尾段里有请求吗 | 辅助请求（本批次实测） |
@@ -706,9 +814,19 @@ harness 的 CPU 是真实的锯齿（几拍突发、几拍归零），不平滑�
 ```sh
 bun run scripts/perf/gen-chart-data.ts --exclude opencode   # 本批：每个 harness 取最近 3 次里居中的一次
 bun run scripts/perf/gen-chart-data.ts --pick 20260919-204152 --pick 20260919-204208 …   # 或显式点名
+bun run scripts/perf/gen-chart-data.ts --cpu-calibration data/calibration/<ts>/calibration.json \
+    --out data/perf-chart-calibrated.json --allow-mixed-calibration   # 套校准的历史预览（另存新文件）
 cd <仓库根> && python3 -m http.server 8080        # 页面用 fetch 读 JSON，file:// 会被 CORS 挡
 # → http://localhost:8080/docs/perf-chart.html
+# → http://localhost:8080/docs/perf-chart.html?data=../data/perf-chart-calibrated.json   # 预览另一份载荷
 ```
+
+**校准**（见上一节）：页面上主 CU 图用的就是 payload 里已折算的 `score.cu`，另外在口径区多印一张
+**原始 / 折算对照表**（`raw CU` / `standard core·s` / `GB·s` / `cpuScale` / 折算后 `CU`），以及工具
+版本、测量时间、宿主、单线程 CV、整机 `-mmt<n>` 的实测等效吞吐；公式本身仍**只从 payload 的
+`scoreFormula.lines` 印**（页面不自己记公式）。`?data=` **只接受同源相对路径**（绝对 URL、`//host`
+与 `data:` 一律拒绝），所以预览另一份载荷不会碰到已发布的 `data/perf-chart.json`（它里面那些
+生成器不再输出的历史字段——例如 `cu2`——一个字节都不动）。
 
 Chart.js 先试 unpkg 的 CDN（`chart.js@4`）**2s 超时**，拿不到就换仓库里的
 `docs/vendor/chart.umd.min.js`（该目录已 gitignore，换机器可能没有）：本机浏览器走 PAC 代理

@@ -17,12 +17,14 @@ const HARNESS_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
  * 命令名 → harness id。只在「命令名与目录名不同」时才需要登记：
  * - Claude Code 的二进制叫 `claude`，目录名沿用仓库里的 playground 名 `claude-code`；
  * - MiniMax Code CLI 的二进制叫 `mcode`，目录名是 `minimax-code`；
- * - Antigravity CLI 的二进制叫 `agy`，目录名是 `antigravity`。
+ * - Antigravity CLI 的二进制叫 `agy`，目录名是 `antigravity`；
+ * - ccode 的默认构建产物叫 `ccode-cli`，harness id 是 `ccode`。
  */
 export const HARNESS_ALIASES: Readonly<Record<string, string>> = {
     claude: "claude-code",
     mcode: "minimax-code",
     agy: "antigravity",
+    "ccode-cli": "ccode",
 };
 
 /** 图例/表格里的展示名（只影响观感，进不了路径）。 */
@@ -41,6 +43,7 @@ export const DISPLAY_NAMES: Readonly<Record<string, string>> = {
     zcode: "ZCode",
     kimi: "Kimi Code",
     "qwen-code": "Qwen Code",
+    ccode: "ccode",
 };
 
 /** 展示名：认识的给规范写法，不认识的原样用 id。 */

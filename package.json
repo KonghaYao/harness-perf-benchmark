@@ -6,6 +6,8 @@
     "dev": "bun run src/server.ts",
     "start": "bun run src/server.ts",
     "test": "bun test",
+    "spec:check": "bun run scripts/perf/spec-cpu-check.ts",
+    "cpu:calibrate": "bun run scripts/perf/calibrate-cli.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

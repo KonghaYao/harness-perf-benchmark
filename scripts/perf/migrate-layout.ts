@@ -199,6 +199,8 @@ export function buildMigratedMeta(
         prompt: null,
         label: null,
         host: null,
+        // 老产物没有校准信息，也没有宿主快照：这里既不能编一个 scale，也不能按 1 假装校准过。
+        cpuCalibration: null,
         startedAtMs: legacy?.harnessStartedAtMs ?? 0,
         startedAt: legacy?.startIso ?? "",
         endedAtMs: null,

@@ -51,6 +51,15 @@ export interface PerfConfig {
     withTree: boolean;
     /** 追加到 harness 命令行的参数，原样透传。 */
     periArgs: string[];
+    /**
+     * CPU 校准 JSON 的路径（可选）。给了就把它记进 `run.json` 的 `cpuCalibration`，
+     * 并用它的 `cpuScale` 把 CU 里的核·秒折成项目标准 CPU 单位（项目自定，无真实参考机器；
+     * 内存项不折算）。
+     *
+     * **没有隐式默认值**：不给就是不校准（CU 保持本机的秒），不自动找最近一份校准文件
+     * ——「这次运行到底用的哪把尺子」必须是命令行里看得见的事。
+     */
+    cpuCalibrationPath: string | null;
 }
 
 const DEFAULT_PORT = 3457;
@@ -131,6 +140,7 @@ export function loadPerfConfig(
             sampler: { type: "string" },
             "no-tree": { type: "boolean" },
             "peri-arg": { type: "string", multiple: true },
+            "cpu-calibration": { type: "string" },
         },
         allowPositionals: false,
         strict: true,
@@ -176,6 +186,10 @@ export function loadPerfConfig(
         sampler: samplerKind(values.sampler),
         withTree: values["no-tree"] !== true,
         periArgs: values["peri-arg"] ?? [],
+        cpuCalibrationPath:
+            values["cpu-calibration"]?.trim() === "" || values["cpu-calibration"] === undefined
+                ? null
+                : resolve(cwd, values["cpu-calibration"].trim()),
     };
 }
 
