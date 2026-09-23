@@ -65,6 +65,11 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     # pi 要 133 轮（落成剧本 135 条 = 133 + 2 条收尾）：它从约 140 条消息起自动压缩，压缩期每轮
     # 追加一条 messages=2 的总结请求，同样取号。实测 135 个请求 = 1 条初始 + 100 轮工具调用 +
     # 34 条压缩总结；131 轮只有 99 个工具轮、128 轮只有 98 个（轮数要往上加，不是往下减）。
+  bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash \\
+    --out data/scenarios/long-run-copilot.json
+    # GitHub Copilot CLI：OpenAI Chat Completions，shell 工具是 bash + {command}。
+    # 标准 100×4KB 长剧本会插入上下文摘要请求，但返回的 bash 调用仍会执行：
+    # 实测 102 个请求、100 个成功工具轮，不需要像 pi 那样补工具条目。
   bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash --args command+description \\
     --out data/scenarios/long-run-dsh.json
   bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash \\
@@ -216,6 +221,7 @@ const delayMs = positiveInt(values["delay-ms"], "--delay-ms", 0);
  *   cline 3.0.62                                  run_commands            {commands: [command]}
  *   kimi 2.0.0                                    Bash                   {command}
  *   ccode c8fb352（make ccode-cli）               bash                    {command}
+ *   GitHub Copilot CLI 1.0.88                     bash                    {command}
  * opencode v2 的 shell 工具就叫 `shell`（v1 的 `bash` 没了）：名字换了，形状还是 {command}。
  * 注意 v1（opencode）与 v2（opencode2）是**两个 harness**，各自一份剧本，别把这份形状混过去。
  * dsh 的 description 是**必填**：缺了会被工具自己拒掉

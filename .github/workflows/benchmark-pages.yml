@@ -17,7 +17,7 @@
 #     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
 #     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
 #     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
-#   - 十四家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
+#   - 十五家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
 #   - opencode **v1** 已退出排名，这里不装、不跑；v2 是另一家（npm 包 `@opencode/cli`，bin 名
 #     `opencode2`），在排名里，沙盒是 playground/opencode2。两者同名不同代，别混。
 #   - peri 走 GitHub release，Antigravity CLI（agy）、Hermes Agent（hermes）与 Kimi Code CLI
@@ -75,7 +75,7 @@ concurrency:
 
 jobs:
   bench-and-publish:
-    # 整批 42 次运行（十四家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
+    # 整批 45 次运行（十五家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
     timeout-minutes: 150
     runs-on: ${{ github.event.inputs.runner || 'macos-latest' }}
     environment:
@@ -166,7 +166,7 @@ jobs:
         with:
           node-version: 26.9.0
 
-      - name: 装 harness（peri + 八家 npm CLI + agy / hermes 官方脚本）
+      - name: 装 harness（peri + 九家 npm CLI + agy / hermes 官方脚本）
         if: steps.decide.outputs.bench == '1'
         env:
           PERI_INSTALL_VERSION: ${{ github.event.inputs.peri_version }}
@@ -195,6 +195,7 @@ jobs:
             @anthropic-ai/claude-code \
             @openai/codex \
             @earendil-works/pi-coding-agent \
+            @github/copilot \
             @deepseek-ai/dsh \
             @minimax-ai/code \
             @opencode/cli \
@@ -317,7 +318,7 @@ jobs:
       - name: 报一下装到了什么版本
         if: steps.decide.outputs.bench == '1'
         run: |
-          for bin in peri agy claude codex pi dsh mcode opencode2 hermes cline kimi qwen ccode-cli; do
+          for bin in peri agy claude codex pi copilot dsh mcode opencode2 hermes cline kimi qwen ccode-cli; do
             printf '%-8s %s\n' "${bin}" "$(command -v "${bin}" || echo '（不在 PATH 里）')"
           done
           peri --version || true
@@ -325,6 +326,7 @@ jobs:
           claude --version || true
           codex --version || true
           pi --version || true
+          copilot --version || true
           dsh --version || true
           mcode --version || true
           # v2 的版本号自己带名字（实测 `opencode v2.0.10`），打印出来正好当「装的是 v2 不是 v1」
@@ -336,7 +338,7 @@ jobs:
           qwen --version || true
           ccode-cli --help | head -1 || true
 
-      - name: 生成剧本（按各家工具形状，含 ZCode）
+      - name: 生成剧本（按各家工具形状）
         if: steps.decide.outputs.bench == '1'
         env:
           TURNS: ${{ github.event.inputs.turns || '100' }}
@@ -351,6 +353,9 @@ jobs:
           # pi 从约 140 条消息起自动压缩，压缩期每轮多一条 messages=2 的总结请求：
           # 100 轮实测要 135 条（--turns 133），131 条只有 99 轮。
           gen --turns "$((TURNS + 33))" --tool bash --out data/scenarios/long-run-pi.json
+          # Copilot CLI：bash + {command}；标准 100×4KB 剧本会插入上下文摘要请求，
+          # 但仍执行返回的工具调用，100 条工具条目正好跑满 100 轮，无需额外补条目。
+          gen --turns "${TURNS}" --tool bash --out data/scenarios/long-run-copilot.json
           gen --turns "${TURNS}" --tool bash --args command+description \
             --out data/scenarios/long-run-dsh.json
           gen --turns "${TURNS}" --tool bash --out data/scenarios/long-run-minimax-code.json
@@ -392,7 +397,7 @@ jobs:
           # 所以剧本给 TURNS 条即可（不加轮数）。
           gen --turns "${TURNS}" --tool bash --out data/scenarios/long-run-ccode.json
 
-      - name: 跑批次（十三家串行，每家 repeats 次）
+      - name: 跑批次（十五家串行，每家 repeats 次）
         if: steps.decide.outputs.bench == '1'
         env:
           REPEATS: ${{ github.event.inputs.repeats || '3' }}
@@ -414,7 +419,7 @@ jobs:
             return 0
           }
           for round in $(seq 1 "${REPEATS}"); do
-            for harness in peri claude-code codex pi deepseek minimax-code antigravity opencode2 hermes cline zcode kimi qwen-code ccode; do
+            for harness in peri claude-code codex pi copilot deepseek minimax-code antigravity opencode2 hermes cline zcode kimi qwen-code ccode; do
               echo "::group::第 ${round} 轮 · ${harness}"
               run_one "${harness}"
               echo "::endgroup::"

@@ -35,6 +35,7 @@ export const DISPLAY_NAMES: Readonly<Record<string, string>> = {
     "claude-code": "Claude Code",
     codex: "Codex",
     pi: "pi",
+    copilot: "GitHub Copilot CLI",
     dsh: "dsh",
     "minimax-code": "MiniMax Code",
     antigravity: "Antigravity CLI",

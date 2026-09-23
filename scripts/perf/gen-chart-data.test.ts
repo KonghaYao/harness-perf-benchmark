@@ -136,6 +136,7 @@ describe("isLongRunScript", () => {
             "long-run.json",
             "long-run-codex.json",
             "long-run-pi.json",
+            "long-run-copilot.json",
             "long-run-dsh.json",
             // harness 名里带连字符的（minimax-code）也要认：早年只写 [a-z]+ 会把它挡在外面
             "long-run-minimax-code.json",
