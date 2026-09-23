@@ -19,5 +19,6 @@ playground/cline/.cline/
 playground/zcode/.home/
 playground/kimi/.kimi-home/
 playground/ccode/.ccode-sandbox/
+playground/copilot/.copilot/
 vendor
 _site

@@ -115,6 +115,7 @@ footing.
 | Kimi Code (`kimi`) | [kimi.com/code](https://www.kimi.com/code/) | OpenAI Chat Completions | Isolated `KIMI_CODE_HOME`, generated `config.toml` provider (`type = "openai"`), `-p` headless mode |
 | [Qwen Code](https://github.com/QwenLM/qwen-code) (`qwen`) | latest npm release | OpenAI Chat Completions | Isolated `HOME` / `QWEN_HOME` / XDG directories, one-shot headless mode with `--bare --safe-mode` |
 | ccode (`ccode-cli`) | [MoyaMryia/ccode](https://github.com/MoyaMryia/ccode) | OpenAI Chat Completions | Isolated `CCODE_SESSION_DIR`, provider from environment variables (`CCODE_API_BASE` / `_API_KEY` / `_MODEL`), `--write --auto-approve -p` headless mode |
+| GitHub Copilot CLI | [github/copilot-cli](https://github.com/github/copilot-cli) | OpenAI Chat Completions | Isolated `COPILOT_HOME`, offline mode, and BYOK provider environment |
 
 Each harness runs in its own playground sandbox. The mock protocol adapter and tool schema match the harness under test; this avoids treating unsupported tool names or protocol mismatches as performance data. Credentials are placeholders — the mock does not validate them, so no real key is ever involved.
 
@@ -234,6 +235,12 @@ bun run scripts/perf/gen-long-run.ts \
   --out data/scenarios/long-run-ccode.json
 ```
 
+# GitHub Copilot CLI
+bun run scripts/perf/gen-long-run.ts \
+  --turns 100 \
+  --tool bash \
+  --out data/scenarios/long-run-copilot.json
+
 ### Run a harness
 
 Each playground entry point starts the local mock, injects an isolated configuration, launches its harness, samples the process tree, and writes one run directory. The corresponding harness binary must be available on `PATH`.
@@ -252,6 +259,7 @@ cd playground/cline        && bun perf-demo.ts --exhausted stop --timeout-ms 600
 cd playground/ccode        && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 cd playground/kimi         && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 cd playground/qwen-code    && bun perf-demo.ts --exhausted stop --timeout-ms 600000
+cd playground/copilot      && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 # cd playground/opencode  && bun perf-demo.ts --exhausted stop --timeout-ms 600000   # OpenCode v1: kept for reproduction
 ```
 
