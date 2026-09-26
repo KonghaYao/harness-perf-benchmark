@@ -47,7 +47,7 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
   --tool <name>         工具名（默认 Bash；--args exec / commandline 时各有各的默认，见下）
   --args <shape>        工具参数形状（默认 command）:
                           command              {command}                peri / opencode / Claude Code / MiniMax Code / opencode2 / hermes
-                          command+description  {command, description}   pi / dsh
+                          command+description  {command, description}   dsh / Grok Build
                           exec                 裸 JavaScript 源码        codex（custom 工具）
                           commandline          {CommandLine, Cwd, …}    agy（Antigravity CLI）
                           commands             {commands: [command]}    cline（Cline CLI）
@@ -126,6 +126,11 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     --out data/scenarios/long-run-qwen-code.json
     # Qwen Code（qwen，npm 包 @qwen-code/qwen-code）：工具叫 run_shell_command、参数 {command}。
     # 100 轮实测 101 条请求（1 条初始 + 100 个工具轮 + 1 条收尾），没有标题生成、上下文压缩或预测请求。
+  bun run scripts/perf/gen-long-run.ts --turns 101 --tool run_terminal_command --args command+description \
+    --out data/scenarios/long-run-grok.json
+    # Grok Build（grok，官方 install.sh）：模型侧 shell 工具叫 run_terminal_command，
+    # 参数 {command, description} 都必填（与 dsh 同形）。开局先发一条 session_title 请求，
+    # 所以 +1：101 轮覆盖 100 个工具轮。context_window 拉到 100 万后 100×4KB 不触发压缩。
   bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash \
     --out data/scenarios/long-run-ccode.json
     # ccode（本仓库构建的 ccode-cli，纯 C / 单二进制）：shell 工具叫 **bash**、参数 {command}
@@ -136,19 +141,20 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     # （50 轮剧本配 --max-turns 100 收到 51 条，同一规律）。
     # 没有标题生成、没有上下文压缩（默认 context-tokens 1000000 未触顶），轮数不用加。
 
-  各家自己的辅助请求都会消费条目（opencode / dsh / agy / opencode2 / hermes 的标题生成、
+  各家自己的辅助请求都会消费条目（opencode / dsh / agy / opencode2 / hermes / grok 的标题生成、
   pi · agy · hermes · **cline** 的压缩摘要），所以「脚本轮数」≥「主循环实际轮数」是常态；脚本不够用时看
   mock.log 里是谁在取号。各家要跑到 100 轮的实际轮数：peri 100 · opencode 100 ·
   Claude Code 100 · codex 100 · dsh 100 · mcode 100 · kimi 100 · qwen-code 100 · ccode 100 · **pi 133**（压缩从约 140 条消息起
   每轮多吃一条）· **agy 104** · **opencode2 101**（标题请求吃第一条）· **hermes 102**
-  （标题与主请求抢开头那一条 + 压缩前后各一条）· **cline 101**（压缩吃掉一条）。
+  （标题与主请求抢开头那一条 + 压缩前后各一条）· **cline 101**（压缩吃掉一条）· **grok 101**
+  （标题请求吃第一条；收尾后的 dashboard 短句落在尾部空白上）。
   剧本尾部固定两条收尾（轮数之外）：主流程的「任务结束」文本 + 给 peri 预测请求的空白
   响应（后者消掉 peri 固定 5.0s 的收尾等待，机制见 docs/perf-compare.md）。
-  注：agy / opencode2 的标题请求在**主流程之前**（序列第一条），尾部那两条收尾它们只用到
-  第一条；hermes 的标题与主请求几乎同时发出（谁先不定），同样只用到第一条；cline 也没有
-  预测请求，同样只用到第一条；
-  peri 的预测与 hermes 的技能库复盘在**主流程之后**，正好落在第二条空白上——多出来的一条
-  不会被浪费，留着只在各家共用同一份
+  注：agy / opencode2 / grok 的标题请求在**主流程之前**（序列第一条），尾部那两条收尾
+  它们只用到第一条；hermes 的标题与主请求几乎同时发出（谁先不定），同样只用到第一条；
+  cline 也没有预测请求，同样只用到第一条；
+  peri 的预测、hermes 的技能库复盘，以及 grok 收尾后的 dashboard 短句，都在**主流程之后**，
+  正好落在第二条空白上——多出来的一条不会被浪费，留着只在各家共用同一份
   生成器时无害。
 
 配套运行（各 playground 的 perf-demo.ts 默认剧本已指向自家那份；timeout 只作兜底，
@@ -220,6 +226,7 @@ const delayMs = positiveInt(values["delay-ms"], "--delay-ms", 0);
  *   hermes 0.21.3                                 terminal                {command}
  *   cline 3.0.62                                  run_commands            {commands: [command]}
  *   kimi 2.0.0                                    Bash                   {command}
+ *   grok 1.0.41                                   run_terminal_command   {command, description}
  *   ccode c8fb352（make ccode-cli）               bash                    {command}
  *   GitHub Copilot CLI 1.0.88                     bash                    {command}
  * opencode v2 的 shell 工具就叫 `shell`（v1 的 `bash` 没了）：名字换了，形状还是 {command}。
