@@ -22,6 +22,7 @@ The benchmark does not call a real model. Every harness talks to the same local 
 | [pi](https://github.com/earendil-works/pi) | 0.85.1 | 1.271 | 65.5% | 128.8% | 186.2 MB | 234.4 MB |
 | [Codex CLI](https://github.com/openai/codex) | 0.155.1 | 1.383 | **10.5%** | **26.0%** | 123.4 MB | 163.7 MB |
 | [peri](https://github.com/KonghaYao/peri) | 3.17.0 | 2.102 | 32.6% | 43.7% | 54.7 MB | 71.7 MB |
+| [Grok Build](https://github.com/xai-org/grok-build) (`grok`) † | 1.0.41 | 2.357 | 26.9% | 63.8% | 96.7 MB | 102.6 MB |
 | [Claude Code](https://github.com/anthropics/claude-code) | 2.1.277 | 2.828 | 71.8% | 122.4% | 310.9 MB | 351.0 MB |
 | [DeepSeek Harness (`dsh`)](https://github.com/deepseek-ai/deepseek-harness) | 0.1.5-rc.2 | 3.101 | 46.3% | 128.0% | 185.6 MB | 231.2 MB |
 | [Cline](https://github.com/cline/cline) (`cline`) † | 3.0.62 | 3.397 | 23.3% | 138.4% | 443.5 MB | 706.1 MB |
@@ -36,16 +37,17 @@ Bold marks the leanest value in each column (lower is leaner in all of them).
 † The six unmarked rows come from one batch (label `codex-proxy-fix`, September 19, 2026, 20:39–20:43,
 three serial runs each). Antigravity CLI, OpenCode v2, Hermes Agent and Cline were measured in separate
 probe batches (labels `agy-probe`, `oc2-probe`, `hermes-probe` and `cline-probe`, September 20), Kimi
-Code in its own (label `kimi-probe`, September 21), and ccode on a Linux box (label `265k-linux`,
-September 22, Intel Core Ultra 7 265K, procfs sampler at a 10 ms interval — see the peak note below).
+Code in its own (label `kimi-probe`, September 21), ccode on a Linux box (label `265k-linux`,
+September 22, Intel Core Ultra 7 265K, procfs sampler at a 10 ms interval — see the peak note below),
+and Grok Build in its own (label `grok-probe`, September 26, Apple M4 Pro, 12 cores, load average about 5.3).
 **Only CU compares across batches** — it is an absolute quantity, while the other columns are
 single-machine readings that move with machine load, so for the † rows treat them as indicative. ccode's
 single-sample CPU peak is the one number here that is an artefact rather than a reading: on a 10 ms
 sampler one tick is a whole 100%, so any run that does work inside a sample lands on 99%. Its CU is
 unaffected — CU integrates the run's cumulative CPU readings, it does not use the peak column at all — so
-for this row read CU and the memory columns, not the peak. The CI workflow installs and runs all thirteen
-published harnesses under a single batch label, so the next batch it publishes puts every row on the same
-footing.
+for this row read CU and the memory columns, not the peak. The CI workflow installs and runs every wired
+harness, including Grok Build, under a single batch label, so the next batch it publishes puts every row
+on the same footing.
 
 ### Reading the results
 
@@ -81,6 +83,14 @@ footing.
   (4.36) lands between Cline and Antigravity CLI. Its shell commands are children of the measured root,
   so their ~0.24 core-seconds per run are captured through the child-process counters (the channel Cline's
   grandchildren escape).
+- **Grok Build is a single process whose shell children are on the root.** On the `grok-probe` batch
+  (grok 1.0.41, three serial runs, median `20260926-125311`) it finishes the 100 tool rounds in 5.1 s
+  (startup 0.3 s, running 4.7 s, tail 0.1 s) at 2.357 CU. RSS stays near 97 MB mean / 103 MB peak, and
+  mean CPU is 26.9% of one core (peak 63.8%). The process-count column stays at 1; the short-lived
+  shells show up on the root's child-CPU counter (0.50 core-seconds). Request count is 103: one
+  session-title call, 100 tool rounds, the stop entry, and one dashboard-line call that lands on the
+  blank tail. No compaction on this script (`context_window = 1000000`). These seconds are this
+  machine's; only the CU is the cross-batch figure.
 - **ccode is the leanest row on the chart, and it is a different kind of program.** It is a single static
   binary (C89 + POSIX, TLS compiled in, no interpreter and no dependency tree), so it starts, runs 100
   tool rounds and exits in 0.26 s with a 4.4 MB RSS peak — a rounded-out memory floor rather than a
@@ -116,6 +126,7 @@ footing.
 | [Qwen Code](https://github.com/QwenLM/qwen-code) (`qwen`) | latest npm release | OpenAI Chat Completions | Isolated `HOME` / `QWEN_HOME` / XDG directories, one-shot headless mode with `--bare --safe-mode` |
 | ccode (`ccode-cli`) | [MoyaMryia/ccode](https://github.com/MoyaMryia/ccode) | OpenAI Chat Completions | Isolated `CCODE_SESSION_DIR`, provider from environment variables (`CCODE_API_BASE` / `_API_KEY` / `_MODEL`), `--write --auto-approve -p` headless mode |
 | GitHub Copilot CLI | [github/copilot-cli](https://github.com/github/copilot-cli) | OpenAI Chat Completions | Isolated `COPILOT_HOME`, offline mode, and BYOK provider environment |
+| Grok Build (`grok`) | [xai-org/grok-build](https://github.com/xai-org/grok-build) | OpenAI Chat Completions | Isolated `GROK_HOME` and `HOME`, generated `[model.llm-mock]` in `config.toml`, `-p` headless mode with `--yolo` |
 
 Each harness runs in its own playground sandbox. The mock protocol adapter and tool schema match the harness under test; this avoids treating unsupported tool names or protocol mismatches as performance data. Credentials are placeholders — the mock does not validate them, so no real key is ever involved.
 
@@ -149,11 +160,12 @@ The tool shape is adapted to each harness:
 - `exec` with bare JavaScript source for Codex;
 - lowercase `bash` for pi and MiniMax Code;
 - lowercase `bash` with `{command, description}` for DeepSeek Harness;
+- `run_terminal_command` with `{command, description}` for Grok Build;
 - `run_command` with five camelCase fields (`CommandLine`, `Cwd`, …) for Antigravity CLI;
 - `terminal` with `{command}` for Hermes Agent;
 - `run_commands` with `{commands: [...]}` for Cline — the only array-shaped argument among the twelve.
 
-Some harnesses issue additional internal requests, such as context compaction or session-title generation. These consume script entries too, so each harness's script is sized to them: a 100-turn run needs **102** entries (100 turns plus two completion entries) for most harnesses, **135** for pi, **106** for Antigravity CLI, **103** for OpenCode v2, **104** for Hermes Agent and **103** for Cline. ccode also takes the 102-entry script but stops at its own turn cap before the closing entry, so it consumes 100.
+Some harnesses issue additional internal requests, such as context compaction or session-title generation. These consume script entries too, so each harness's script is sized to them: a 100-turn run needs **102** entries (100 turns plus two completion entries) for most harnesses, **135** for pi, **106** for Antigravity CLI, **103** for OpenCode v2, **104** for Hermes Agent, **103** for Cline, and **103** for Grok Build (`--turns 101`: the opening session-title request eats one tool entry, then 100 tool rounds, a stop entry, and a blank entry taken by the dashboard-line request). ccode also takes the 102-entry script but stops at its own turn cap before the closing entry, so it consumes 100.
 
 ## Reproduce the benchmark
 
@@ -233,6 +245,13 @@ bun run scripts/perf/gen-long-run.ts \
   --turns 100 \
   --tool bash \
   --out data/scenarios/long-run-ccode.json
+
+# Grok Build: run_terminal_command + {command, description}; +1 covers the session-title request
+bun run scripts/perf/gen-long-run.ts \
+  --turns 101 \
+  --tool run_terminal_command \
+  --args command+description \
+  --out data/scenarios/long-run-grok.json
 ```
 
 # GitHub Copilot CLI
@@ -260,6 +279,7 @@ cd playground/ccode        && bun perf-demo.ts --exhausted stop --timeout-ms 600
 cd playground/kimi         && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 cd playground/qwen-code    && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 cd playground/copilot      && bun perf-demo.ts --exhausted stop --timeout-ms 600000
+cd playground/grok         && bun perf-demo.ts --exhausted stop --timeout-ms 600000
 # cd playground/opencode  && bun perf-demo.ts --exhausted stop --timeout-ms 600000   # OpenCode v1: kept for reproduction
 ```
 

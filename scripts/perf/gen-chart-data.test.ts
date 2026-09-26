@@ -144,6 +144,7 @@ describe("isLongRunScript", () => {
             "long-run-opencode2.json",
             "long-run-antigravity.json",
             "long-run-hermes.json",
+            "long-run-grok.json",
         ]) {
             expect(isLongRunScript(`/repo/data/scenarios/${name}`)).toBe(true);
         }

@@ -17,13 +17,14 @@
 #     静默退到 ps（CPU 读数分辨率约 60ms、child_cpu_pct 恒为 0），CU 会偏低且页面上看不出异常；
 #     真要换就显式传 runner=ubuntu-latest，并知道自己在读一份下界。runner 上跑出来的数字
 #     与开发机不是一个批次——跨批次只比 CU，别比分数、别比绝对时长（见 docs/perf-compare.md）。
-#   - 十五家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
+#   - 十六家串行、每家 repeats 次，图表取端到端时长居中的那一次（gen-chart-data --window）。
 #   - opencode **v1** 已退出排名，这里不装、不跑；v2 是另一家（npm 包 `@opencode/cli`，bin 名
 #     `opencode2`），在排名里，沙盒是 playground/opencode2。两者同名不同代，别混。
-#   - peri 走 GitHub release，Antigravity CLI（agy）、Hermes Agent（hermes）与 Kimi Code CLI
-#     （kimi）走它们各自的官方 install.sh（agy / hermes 装到 ~/.local/bin，kimi 装到
-#     ~/.kimi-code/bin）；ccode 没有安装包也没有 install.sh，从 GitHub 取源码 `make ccode-cli`
-#     装到 ~/bin。五家都必须装成，装不上这一趟就整趟失败——线上继续挂上一批的站点，
+#   - peri 走 GitHub release。Antigravity CLI（agy）、Hermes Agent（hermes）、Kimi Code CLI
+#     （kimi）与 Grok Build（grok）走各自的官方 install.sh（agy / hermes 装到 ~/.local/bin，
+#     kimi 装到 ~/.kimi-code/bin，grok 装到 ~/.grok/bin）。ccode 没有安装包也没有 install.sh，
+#     从 GitHub 取源码 `make ccode-cli` 装到 ~/bin。这几家都必须装成，装不上这一趟就整趟失败——
+#     线上继续挂上一批的站点，
 #     不会悄悄少一条曲线（十条曲线里少一条比整个榜单停更是更坏的失真）。
 
 name: benchmark · gh-pages
@@ -32,7 +33,7 @@ on:
   workflow_dispatch:
     inputs:
       turns:
-        description: 长剧本轮数（pi 自动 +33、agy 自动 +4、opencode2 自动 +1、hermes 自动 +2、cline 自动 +⌈n/100⌉：它们的压缩/标题请求会多吃条目）
+        description: 长剧本轮数（pi 自动 +33、agy 自动 +4、opencode2 与 grok 自动 +1、hermes 自动 +2、cline 自动 +⌈n/100⌉：它们的压缩/标题请求会多吃条目）
         default: "100"
       repeats:
         description: 每家跑几次（图表取端到端时长居中的那一次）
@@ -75,7 +76,7 @@ concurrency:
 
 jobs:
   bench-and-publish:
-    # 整批 45 次运行（十五家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
+    # 整批 48 次运行（十六家 × 3），慢的机器上要几十分钟；给足上限，超了就是真卡住了。
     timeout-minutes: 150
     runs-on: ${{ github.event.inputs.runner || 'macos-latest' }}
     environment:
@@ -315,10 +316,24 @@ jobs:
           "${HOME}/bin/ccode-cli" --help >/dev/null
           echo "${HOME}/bin" >> "${GITHUB_PATH}"
 
+      # Grok Build（grok，xAI）：官方 install.sh 把单文件二进制落到 ~/.grok/bin/grok。
+      # 第一个参数钉版本（与本机实测的 1.0.41 对齐）；不传则是当天 stable。
+      # 沙盒（GROK_HOME、config.toml、假 api_key）由 playground/grok/perf-demo.ts 在起
+      # harness 时注入，这里只需要一个能跑的 grok。安装脚本会改 runner 的 shell rc，
+      # 那是一次性 HOME，不影响宿主。
+      - name: 装 Grok Build（官方 install.sh，装到 ~/.grok/bin）
+        if: steps.decide.outputs.bench == '1'
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/grok-install.sh https://x.ai/cli/install.sh
+          bash /tmp/grok-install.sh 1.0.41
+          "$HOME/.grok/bin/grok" --version
+          echo "${HOME}/.grok/bin" >> "${GITHUB_PATH}"
+
       - name: 报一下装到了什么版本
         if: steps.decide.outputs.bench == '1'
         run: |
-          for bin in peri agy claude codex pi copilot dsh mcode opencode2 hermes cline kimi qwen ccode-cli; do
+          for bin in peri agy claude codex pi copilot dsh mcode opencode2 hermes cline kimi qwen ccode-cli grok; do
             printf '%-8s %s\n' "${bin}" "$(command -v "${bin}" || echo '（不在 PATH 里）')"
           done
           peri --version || true
@@ -337,6 +352,7 @@ jobs:
           kimi --version || true
           qwen --version || true
           ccode-cli --help | head -1 || true
+          grok --version || true
 
       - name: 生成剧本（按各家工具形状）
         if: steps.decide.outputs.bench == '1'
@@ -396,8 +412,12 @@ jobs:
           # ccode：bash + command，与 pi / mcode 同形；撞上自己的 --max-turns 就停，
           # 所以剧本给 TURNS 条即可（不加轮数）。
           gen --turns "${TURNS}" --tool bash --out data/scenarios/long-run-ccode.json
+          # Grok Build（grok）：模型侧工具是 run_terminal_command + {command, description}。
+          # 开局一条 session_title 请求吃掉一条，100×4KB 在 context_window=1000000 下不压缩，故 +1。
+          gen --turns "$((TURNS + 1))" --tool run_terminal_command --args command+description \
+            --out data/scenarios/long-run-grok.json
 
-      - name: 跑批次（十五家串行，每家 repeats 次）
+      - name: 跑批次（十六家串行，每家 repeats 次）
         if: steps.decide.outputs.bench == '1'
         env:
           REPEATS: ${{ github.event.inputs.repeats || '3' }}
@@ -419,7 +439,7 @@ jobs:
             return 0
           }
           for round in $(seq 1 "${REPEATS}"); do
-            for harness in peri claude-code codex pi copilot deepseek minimax-code antigravity opencode2 hermes cline zcode kimi qwen-code ccode; do
+            for harness in peri claude-code codex pi copilot deepseek minimax-code antigravity opencode2 hermes cline zcode kimi qwen-code ccode grok; do
               echo "::group::第 ${round} 轮 · ${harness}"
               run_one "${harness}"
               echo "::endgroup::"

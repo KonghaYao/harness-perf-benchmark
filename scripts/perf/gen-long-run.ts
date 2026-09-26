@@ -47,7 +47,7 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
   --tool <name>         工具名（默认 Bash；--args exec / commandline 时各有各的默认，见下）
   --args <shape>        工具参数形状（默认 command）:
                           command              {command}                peri / opencode / Claude Code / MiniMax Code / opencode2 / hermes
-                          command+description  {command, description}   pi / dsh
+                          command+description  {command, description}   dsh / Grok Build
                           exec                 裸 JavaScript 源码        codex（custom 工具）
                           commandline          {CommandLine, Cwd, …}    agy（Antigravity CLI）
                           commands             {commands: [command]}    cline（Cline CLI）
@@ -126,6 +126,11 @@ const USAGE = `生成长剧本（多轮工具调用，跑到自然结束）
     --out data/scenarios/long-run-qwen-code.json
     # Qwen Code（qwen，npm 包 @qwen-code/qwen-code）：工具叫 run_shell_command、参数 {command}。
     # 100 轮实测 101 条请求（1 条初始 + 100 个工具轮 + 1 条收尾），没有标题生成、上下文压缩或预测请求。
+  bun run scripts/perf/gen-long-run.ts --turns 101 --tool run_terminal_command --args command+description \
+    --out data/scenarios/long-run-grok.json
+    # Grok Build（grok，官方 install.sh）：模型侧 shell 工具叫 run_terminal_command，
+    # 参数 {command, description} 都必填（与 dsh 同形）。开局先发一条 session_title 请求，
+    # 所以 +1：101 轮覆盖 100 个工具轮。context_window 拉到 100 万后 100×4KB 不触发压缩。
   bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash \
     --out data/scenarios/long-run-ccode.json
     # ccode（本仓库构建的 ccode-cli，纯 C / 单二进制）：shell 工具叫 **bash**、参数 {command}
@@ -220,6 +225,7 @@ const delayMs = positiveInt(values["delay-ms"], "--delay-ms", 0);
  *   hermes 0.21.3                                 terminal                {command}
  *   cline 3.0.62                                  run_commands            {commands: [command]}
  *   kimi 2.0.0                                    Bash                   {command}
+ *   grok 1.0.41                                   run_terminal_command   {command, description}
  *   ccode c8fb352（make ccode-cli）               bash                    {command}
  *   GitHub Copilot CLI 1.0.88                     bash                    {command}
  * opencode v2 的 shell 工具就叫 `shell`（v1 的 `bash` 没了）：名字换了，形状还是 {command}。
