@@ -585,6 +585,11 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 // and stays legible on white. There is no icon in logos/ for it either, so the
                 // legend shows this swatch (the same fallback every harness without an icon gets).
                 ccode: "#111827",
+                // Teal: the bands already taken are rose / blue x2 / orange / green / purple /
+                // magenta / cyan / olive / copper / graphite / amber / indigo / ink. Grok's mark
+                // is near-black, which would sit on top of ccode, so the series uses a dark teal
+                // that stays clear of minimax-code's cyan and hermes's graphite.
+                grok: "#0f766e",
             };
             const PALETTE = Object.values(COLORS);
 
@@ -651,6 +656,7 @@ harnesses. https://github.com/KonghaYao/harness-perf-benchmark
                 // (the docs the config.toml schema was verified against live under it).
                 kimi: "https://www.kimi.com/code/",
                 ccode: "https://github.com/MoyaMryia/ccode",
+                grok: "https://github.com/xai-org/grok-build",
             };
 
             // Legend icon objects: Chart.js's pointStyle wants an **already-loaded Image**, so they are

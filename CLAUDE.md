@@ -11,7 +11,7 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 
 | 端点 | 协议 | 谁在用 |
 | --- | --- | --- |
-| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、opencode2、pi、dsh、MiniMax Code、Hermes Agent、Cline、Kimi Code、ccode、脚本自测 |
+| `POST /v1/chat/completions` | OpenAI Chat Completions | peri、opencode、opencode2、pi、dsh、MiniMax Code、Hermes Agent、Cline、Kimi Code、ccode、Grok Build、脚本自测 |
 | `POST /v1/messages` | Anthropic Messages | Claude Code |
 | `POST /v1/responses` | OpenAI Responses | Codex |
 | `POST /v1beta/models/{model}:generateContent` | Google Gemini API | Antigravity CLI |
@@ -19,7 +19,7 @@ llm-mock 是**脚本化的模型 API mock**（Bun 运行时，唯一依赖 hono�
 两个用途：
 
 - **性能压测**：以脚本控制的节奏驱动 harness（peri / Claude Code / Codex / pi / dsh / MiniMax Code /
-  Antigravity CLI / opencode2 / Hermes Agent / Cline / Kimi Code / ccode；opencode **v1** 已退出排名、不再跑，见
+  Antigravity CLI / opencode2 / Hermes Agent / Cline / Kimi Code / ccode / Grok Build；opencode **v1** 已退出排名、不再跑，见
   「与 harness 集成」开头），测量 harness 进程自身的 CPU / 内存开销（不采 GPU）；
 - **功能测试**：不调用真实模型，复现 agent 的多轮循环、工具调用与流式渲染。
 
@@ -43,6 +43,7 @@ cd playground/hermes      && bun perf-demo.ts --timeout-ms 600000   # Hermes Age
 cd playground/cline       && bun perf-demo.ts --timeout-ms 600000   # Cline（cline）沙盒
 cd playground/kimi        && bun perf-demo.ts --timeout-ms 600000   # Kimi Code（kimi）沙盒
 cd playground/ccode       && bun perf-demo.ts --timeout-ms 600000   # ccode（ccode-cli）沙盒
+cd playground/grok        && bun perf-demo.ts --timeout-ms 600000   # Grok Build（grok）沙盒
 # cd playground/opencode  && bun perf-demo.ts --timeout-ms 600000   # opencode v1 已退出排名：代码保留，常规批次不再跑
 ```
 
@@ -85,6 +86,10 @@ cd playground/ccode       && bun perf-demo.ts --timeout-ms 600000   # ccode（cc
 - `playground/ccode`：**`CCODE_SESSION_DIR` 指向沙盒**（ccode 默认落 `~/.ccode/sessions`），
   provider 全走环境变量（`CCODE_API_BASE` / `CCODE_API_KEY` / `CCODE_MODEL`，**不用生成配置文件**），
   命令带 `--write --auto-approve`（默认只读工具集跑不到 bash；headless 下无人可批）。
+- `playground/grok`：**`GROK_HOME` 与 `HOME` 都指向沙盒**（config.toml / sessions / auth 从
+  `GROK_HOME` 找；`HOME` 挡住 `~/.agents` 里的个人 skill）。provider 按本次端口写进沙盒
+  `config.toml` 的 `[model.llm-mock]`（`api_backend = "chat_completions"`，`base_url` 带 `/v1`）。
+  命令是 `grok -p … -m llm-mock --yolo --tools run_terminal_cmd`。
 
 需要复核采样口径时跑 `bun run scripts/perf/verify.ts`（对 `yes` / `sleep` 这类已知负载回归，
 并打印两个候选后端的开销与分辨率）。想把「CPU 与内存」混成一个可比的数（谁跑完同一部剧本烧的资源
@@ -120,6 +125,8 @@ bun run scripts/perf/gen-long-run.ts --turns 100 \
   --out data/scenarios/long-run-kimi.json  # kimi：Bash + {command}，与 peri / Claude Code 同形；102 条 = 100 轮 + 2 条收尾 → 100 个工具轮（无标题 / 压缩 / 预测请求）
 bun run scripts/perf/gen-long-run.ts --turns 100 --tool bash \
   --out data/scenarios/long-run-ccode.json  # ccode：bash + {command}，与 pi / mcode 同形；102 条 = 100 轮 + 2 条收尾，但撞上 --max-turns 就停，实收 100 条（无标题 / 压缩 / 预测请求）
+bun run scripts/perf/gen-long-run.ts --turns 101 --tool run_terminal_command --args command+description \
+  --out data/scenarios/long-run-grok.json  # grok：run_terminal_command + {command, description}；103 条 = 101 轮 + 2 条收尾 → 100 个工具轮（标题吃掉一条，空白收尾给 dashboard 请求）
 
 cd playground/peri && bun perf-demo.ts --exhausted stop --timeout-ms 1200000
 ```
@@ -147,7 +154,7 @@ cline 要 103 条（`--turns 101`，见「与 harness 集成」的消费规律�
 
 产物落在**一次运行一个目录**里：`data/runs/<harness>/<runId>/`（`--out-dir` 可改，`data/` 已在
 .gitignore 里），`<harness>` 是 `peri` / `opencode` / `opencode2` / `claude-code` / `codex` / `pi` /
-`dsh` / `minimax-code` / `antigravity` / `hermes` / `cline` / `kimi` / `ccode` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
+`dsh` / `minimax-code` / `antigravity` / `hermes` / `cline` / `kimi` / `ccode` / `grok` 之一（由 `--harness` 指定，或从启动命令的第一个 token 查别名表推断——`claude` →
 `claude-code`、`mcode` → `minimax-code`、`agy` → `antigravity`，见 `scripts/perf/harness-id.ts`），
 `<runId>` 形如 `20260919-140136`（同秒第二次运行加 `-2` 后缀）：
 
@@ -342,6 +349,7 @@ cd playground/hermes      && bun perf-demo.ts       # Hermes Agent（Nous Resear
 cd playground/cline       && bun perf-demo.ts       # Cline（`npm i -g cline`）压测
 cd playground/kimi        && bun perf-demo.ts       # Kimi Code CLI（官方 install.sh 装 ~/.kimi-code/bin）压测
 cd playground/ccode       && bun perf-demo.ts       # ccode（本仓库 make ccode-cli 的产物放进 PATH）压测
+cd playground/grok        && bun perf-demo.ts       # Grok Build（官方 install.sh 装 ~/.grok/bin）压测
 bun run scripts/perf/verify.ts                      # 采样口径验证实验
 bun test                                            # 全部测试
 bun run typecheck                                   # tsc --noEmit（含 scripts/ 与 playground/）
@@ -781,6 +789,48 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
   CU 0.114（0.113 核·秒 + 0.001 GB·秒）、CPU 均值 47.2%、RSS 均值 3.8MB / 峰值 4.4MB——那批 14 家里
   最低的一行（第二名 peri 0.606）。
 
+### Grok Build（`grok`）
+
+- 二进制从 PATH 找（`Bun.which("grok")`，实测 **1.0.41**；官方 `install.sh` 装到
+  `~/.grok/bin/grok`，并通常软链进 `~/.local/bin`）。`--peri <path>` 可显式指定。
+  **启动时先跑一次 `--version`**：官方输出形如 `grok 1.0.41 (4220f3b224a6)`，对不上就报错；
+- harness 命令是 `grok -p '<prompt>' -m llm-mock --yolo --tools run_terminal_cmd
+  --disable-web-search --no-subagents --no-auto-update --no-plan --output-format plain`。
+  `-p` 是官方无头模式。`--yolo` 免掉无人可批的确认。`--tools` 的过滤名是 `run_terminal_cmd`，
+  模型侧看到的 shell 工具叫 **`run_terminal_command`**。`search_tool` / `use_tool` 是 MCP 元工具，
+  文档写明会留在工具集里，剧本不调用它们；
+- 走 **OpenAI Chat Completions**（`POST {base_url}/chat/completions`、`stream: true`）。自定义模型
+  写在沙盒 `config.toml` 的 `[model.llm-mock]`：`api_backend = "chat_completions"`，`base_url` 带
+  `/v1`，`api_key` 给假值（mock 不校验鉴权），`context_window = 1000000`，`max_retries = 0`
+  （协议对不上时不要在死循环里重试），`stream_tool_calls = false`；
+- 隔离靠 **`GROK_HOME` 与 `HOME` 都指向沙盒**（`playground/grok/.grok-home/`）。`GROK_HOME` 是
+  官方数据根（config / sessions / auth），指过去就不读用户的 `~/.grok`。`HOME` 一起换，是为了
+  挡住 `~/.agents` 里的个人 skill——只改 `GROK_HOME` 时那些 skill 仍会进每次请求。
+  另加 `GROK_DISABLE_AUTOUPDATER=1` / `GROK_MEMORY=0` / `GROK_TITLE_REFRESH=0`，以及 `NO_PROXY`
+  保住 loopback。**不注入死代理**（cline 的教训：对着死端口重试会把读数拖慢）；
+- **provider 不吃环境变量插值**，demo 每次按本次端口全量重写 `config.toml`
+  （与 pi 的 models.json、kimi 的 config.toml 同理）；
+- 工具参数是 `{command, description}`，**两个都必填**（schema 的 required 就是这两项；`timeout`
+  可选）。缺 description 会被工具拒掉。默认剧本是
+  `data/scenarios/long-run-grok.json`（`gen-long-run.ts --turns 101 --tool run_terminal_command
+  --args command+description`）；
+- **消费规律（实测 1.0.41，标准 100 轮 × 4KB，三次都是 103 条请求 / 100 个工具结果）**：
+  1. 开局一条 `messages=2` 的会话标题请求，吃掉第一条工具条目，那次工具调用**不执行**
+     （`features.title_refresh = false` 只停掉后面的改标题，停不掉这一条）；
+  2. 接着主请求（`messages=4`）和 100 个工具轮。末次带工具结果的请求 `messages=204`，
+     没有中途把历史压短，所以这条剧本**没有压缩**；
+  3. 主流程吃到「任务结束」后退出（退出码 0）。收尾之后还有一条 dashboard 短句请求
+     （`last=user:"Write an ultra-short dashboard line…"`），落在尾部那条空白上——空白条要留着。
+  所以 100 轮用 `--turns 101`（103 条 = 101 轮 + 2 条收尾）；
+- 进程形状是**单进程**（`procs` 恒为 1）。短命 shell 是根进程的子进程，CPU 记在根进程的
+  `ri_child_*` 上（中位那次 0.502 核·秒），`child_cpu_pct` 兜得住；
+- **本地读数还是「单跑」的**（`--label grok-probe`，3 次串行，Apple M4 Pro / 12 核，
+  load 约 5.3，见 `docs/perf-compare.md`）。时长居中的一次是 `20260926-125311`：
+  端到端 5.1s（启动 0.35s · 运转 4.68s · 收尾 0.09s）、CU **2.357**
+  （1.875 核·秒 + 0.482 GB·秒）、CPU 均值 26.9% / 峰值 63.8%、RSS 均值 96.7MB / 峰值 102.6MB。
+  三次 CU 2.357 / 2.381 / 2.411，都自行退出。**跨批次只比 CU**。CI 已经带上它
+  （安装脚本钉 `1.0.41` + 生成剧本 + 跑批）。
+
 ## 已知限制与坑（压测相关）
 
 - **`--max-turns` 在 peri 的 `-p` 模式下是空操作**，所以压测时长由 `--timeout-ms` 兜底，
@@ -819,7 +869,11 @@ v2 是两个被测对象，读数不可混**，这也是老沙盒加版本守卫
   都发**），所以 100 轮要 104 条剧本（`--turns 102`）；**cline 是压缩那一路**——没有标题生成，
   但默认 `--compaction agentic`，实测每约 90 轮把当轮换成一条 `messages=2` 的续写摘要请求
   （"Summarize this session for continuation…"），所以 100 轮要 103 条剧本（`--turns 101`）；
-  Claude Code / Codex / MiniMax Code / Kimi Code 本次没见到。脚本不足时先看 `*-mock.log` 里
+  Claude Code / Codex / MiniMax Code / Kimi Code 本次没见到。**Grok Build 有两条辅助请求**：
+  开局一条 `messages=2` 的会话标题（吃掉第一条工具条目，工具调用本身不执行），收尾之后一条
+  dashboard 短句请求（`last=user:"Write an ultra-short dashboard line…"`，落在尾部空白上）。
+  `context_window = 1000000` 且 `title_refresh = false` 时，100×4KB 剧本不再插压缩、也不再改标题，
+  所以 100 轮要 103 条（`--turns 101`）。脚本不足时先看 `*-mock.log` 里
   是谁在取号（每行都有 `messages=` / `input=` 与末条消息的角色），症状是「明明在正常工作，
   却提前收到收尾文本」；
 - 各 harness 的 `-p` / `run` / `exec` 模式普遍没有轮数上限，loop 剧本不会自行收敛
